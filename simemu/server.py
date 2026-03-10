@@ -23,6 +23,7 @@ except ImportError:
 
 import asyncio
 import os
+import socket
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,7 +84,24 @@ async def _idle_shutdown_loop(timeout_minutes: int) -> None:
 async def lifespan(app: FastAPI):
     timeout = int(os.environ.get("SIMEMU_IDLE_TIMEOUT", "20"))
     task = asyncio.create_task(_idle_shutdown_loop(timeout))
+
+    # Federation mDNS advertising
+    _fed_port = int(os.environ.get("SIMEMU_FED_PORT", "8766"))
+    _identity = os.environ.get("SIMEMU_IDENTITY", socket.gethostname())
+    _fed_started = False
+    try:
+        from .fed import start_federation
+        start_federation(_identity, _fed_port)
+        _fed_started = True
+    except ImportError:
+        print("[simemu] zeroconf not installed — skipping federation mDNS", flush=True)
+
     yield
+
+    if _fed_started:
+        from .fed import stop_federation
+        stop_federation()
+
     task.cancel()
     try:
         await task
@@ -186,6 +204,27 @@ def _output_dir() -> Path:
     d = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# ── federation endpoints ──────────────────────────────────────────────────────
+
+@app.get("/fed/info", summary="Federation identity and capabilities")
+async def fed_info():
+    return {
+        "machine": socket.gethostname(),
+        "service": "simemu",
+        "version": app.version,
+        "capabilities": ["simulators"],
+    }
+
+
+@app.get("/fed/runs", summary="Active simulator allocations")
+async def fed_runs():
+    allocations = state.get_all()
+    return [
+        {"slug": slug, "simulator": alloc.device_name, "agent": alloc.agent, "platform": alloc.platform}
+        for slug, alloc in allocations.items()
+    ]
 
 
 # ── status & discovery ────────────────────────────────────────────────────────
