@@ -22,7 +22,9 @@ except ImportError:
     )
 
 import asyncio
+import json
 import os
+import pathlib
 import socket
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -87,7 +89,12 @@ async def lifespan(app: FastAPI):
 
     # Federation mDNS advertising
     _fed_port = int(os.environ.get("SIMEMU_FED_PORT", "8766"))
-    _identity = os.environ.get("SIMEMU_IDENTITY", socket.gethostname())
+    _fed_config_path = pathlib.Path.home() / ".fed" / "config.json"
+    try:
+        _fed_cfg = json.loads(_fed_config_path.read_text())
+        _identity = _fed_cfg.get("identity") or os.environ.get("SIMEMU_IDENTITY", socket.gethostname())
+    except Exception:
+        _identity = os.environ.get("SIMEMU_IDENTITY", socket.gethostname())
     _fed_started = False
     try:
         from .fed import start_federation
@@ -115,6 +122,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+from .dashboard import register_dashboard
+register_dashboard(app, state.get_all)
 
 
 # ── request / response models ─────────────────────────────────────────────────
