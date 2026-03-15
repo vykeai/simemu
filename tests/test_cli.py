@@ -1,0 +1,227 @@
+import io
+import os
+import sys
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from simemu import cli
+from simemu.state import Allocation
+
+
+class CliTests(unittest.TestCase):
+    def test_status_json_prints_allocations_array(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        buf = io.StringIO()
+
+        with patch("simemu.cli.state.get_all", return_value={"fitkind-ios": alloc}):
+            with redirect_stdout(buf):
+                cli.cmd_status(SimpleNamespace(json=True))
+
+        output = buf.getvalue()
+        self.assertIn('"slug": "fitkind-ios"', output)
+        self.assertIn('"platform": "ios"', output)
+
+    def test_status_text_handles_empty_allocations(self) -> None:
+        buf = io.StringIO()
+
+        with patch("simemu.cli.state.get_all", return_value={}):
+            with redirect_stdout(buf):
+                cli.cmd_status(SimpleNamespace(json=False))
+
+        self.assertIn("No simulators currently reserved.", buf.getvalue())
+
+    def test_release_stops_active_ios_recording_before_release(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+            recording_pid=4242,
+        )
+        buf = io.StringIO()
+        stop_mock = Mock()
+
+        with patch("simemu.cli.state.release", return_value=alloc) as release_mock:
+            with patch("simemu.cli.ios.record_stop", stop_mock):
+                with patch("simemu.cli._agent", return_value="fitkind"):
+                    with redirect_stdout(buf):
+                        cli.cmd_release(SimpleNamespace(slug="fitkind-ios"))
+
+        release_mock.assert_called_once_with("fitkind-ios", agent="fitkind")
+        stop_mock.assert_called_once_with(4242)
+        self.assertIn("Released 'fitkind-ios' (iPhone 16 Pro)", buf.getvalue())
+
+    def test_record_start_tracks_recording_state_and_prints_stop_hint(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        buf = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.record_start", return_value=555) as record_start_mock:
+                    with patch("simemu.cli.state.set_recording") as set_recording_mock:
+                        with redirect_stdout(buf):
+                            cli.cmd_record(SimpleNamespace(
+                                slug="fitkind-ios",
+                                action="start",
+                                output="/tmp/demo.mp4",
+                                codec="h264",
+                                json=False,
+                            ))
+
+        record_start_mock.assert_called_once_with("SIM-001", "/tmp/demo.mp4", codec="h264")
+        set_recording_mock.assert_called_once_with("fitkind-ios", 555, "/tmp/demo.mp4")
+        self.assertIn("Recording started → /tmp/demo.mp4", buf.getvalue())
+        self.assertIn("simemu record stop fitkind-ios", buf.getvalue())
+
+    def test_record_stop_clears_recording_state(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+            recording_pid=555,
+            recording_output="/tmp/demo.mp4",
+        )
+        buf = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.record_stop") as record_stop_mock:
+                    with patch("simemu.cli.state.set_recording") as set_recording_mock:
+                        with redirect_stdout(buf):
+                            cli.cmd_record(SimpleNamespace(
+                                slug="fitkind-ios",
+                                action="stop",
+                                json=False,
+                            ))
+
+        record_stop_mock.assert_called_once_with(555)
+        set_recording_mock.assert_called_once_with("fitkind-ios", None, None)
+        self.assertIn("Recording stopped → /tmp/demo.mp4", buf.getvalue())
+
+    def test_screenshot_uses_env_max_size_for_ios_and_reports_saved_path(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch") as touch_mock:
+                with patch("simemu.cli._auto_path", return_value="/tmp/fitkind-ios.png"):
+                    with patch("simemu.cli.ios.screenshot") as screenshot_mock:
+                        with patch.dict(os.environ, {"SIMEMU_SCREENSHOT_MAX_SIZE": "1000"}, clear=False):
+                            with redirect_stdout(stdout), redirect_stderr(stderr):
+                                cli.cmd_screenshot(SimpleNamespace(
+                                    slug="fitkind-ios",
+                                    output=None,
+                                    format="png",
+                                    max_size=None,
+                                    json=False,
+                                ))
+
+        touch_mock.assert_called_once_with("fitkind-ios")
+        screenshot_mock.assert_called_once_with("SIM-001", "/tmp/fitkind-ios.png", fmt="png", max_size=1000)
+        self.assertIn("Screenshot saved: /tmp/fitkind-ios.png", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_screenshot_warns_and_ignores_non_png_format_on_android(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-android",
+            sim_id="EMU-001",
+            platform="android",
+            device_name="Pixel 9",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch") as touch_mock:
+                with patch("simemu.cli.android.screenshot") as screenshot_mock:
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        cli.cmd_screenshot(SimpleNamespace(
+                            slug="fitkind-android",
+                            output="/tmp/android-shot.png",
+                            format="jpeg",
+                            max_size=720,
+                            json=True,
+                        ))
+
+        touch_mock.assert_called_once_with("fitkind-android")
+        screenshot_mock.assert_called_once_with("EMU-001", "/tmp/android-shot.png", max_size=720)
+        self.assertIn("Warning: Android only supports PNG screenshots; ignoring --format.", stderr.getvalue())
+        self.assertIn('"path": "/tmp/android-shot.png"', stdout.getvalue())
+
+    def test_install_passes_timeout_to_ios_adapter(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch") as touch_mock:
+                with patch("simemu.cli.ios.install") as install_mock:
+                    with redirect_stdout(stdout):
+                        cli.cmd_install(SimpleNamespace(
+                            slug="fitkind-ios",
+                            app="/tmp/Fitkind.app",
+                            timeout=180,
+                        ))
+
+        touch_mock.assert_called_once_with("fitkind-ios")
+        install_mock.assert_called_once_with("SIM-001", "/tmp/Fitkind.app", timeout=180)
+        self.assertIn("Installing /tmp/Fitkind.app on 'fitkind-ios' (iPhone 16 Pro)...", stdout.getvalue())
+        self.assertIn("Done.", stdout.getvalue())
+
+    def test_launch_passes_extra_arguments_to_android_adapter(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-android",
+            sim_id="EMU-001",
+            platform="android",
+            device_name="Pixel 9",
+            agent="fitkind",
+        )
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch") as touch_mock:
+                with patch("simemu.cli.android.launch") as launch_mock:
+                    cli.cmd_launch(SimpleNamespace(
+                        slug="fitkind-android",
+                        bundle_or_package="com.fitkind.app",
+                        extra=["--es", "route", "paywall"],
+                    ))
+
+        touch_mock.assert_called_once_with("fitkind-android")
+        launch_mock.assert_called_once_with("EMU-001", "com.fitkind.app", ["--es", "route", "paywall"])
+
+
+if __name__ == "__main__":
+    unittest.main()

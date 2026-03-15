@@ -28,9 +28,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-STATE_DIR = Path("/tmp/simemu")
-STATE_FILE = STATE_DIR / "state.json"
-LOCK_FILE = STATE_DIR / "state.lock"
+
+def state_dir() -> Path:
+    return Path(os.environ.get("SIMEMU_STATE_DIR", "/tmp/simemu"))
+
+
+def state_file() -> Path:
+    return state_dir() / "state.json"
+
+
+def lock_file() -> Path:
+    return state_dir() / "state.lock"
 
 
 @dataclass
@@ -49,8 +57,9 @@ class Allocation:
 
 @contextmanager
 def _locked_state():
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    lock_fd = open(LOCK_FILE, "w")
+    base_dir = state_dir()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_file(), "w")
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         state = _read_raw()
@@ -69,18 +78,20 @@ def _locked_state():
 
 
 def _read_raw() -> dict:
-    if STATE_FILE.exists():
+    current_state_file = state_file()
+    if current_state_file.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
+            return json.loads(current_state_file.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     return {"allocations": {}}
 
 
 def _write_raw(state: dict):
-    tmp = STATE_FILE.with_suffix(".tmp")
+    current_state_file = state_file()
+    tmp = current_state_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(STATE_FILE)
+    tmp.replace(current_state_file)
 
 
 def acquire(slug: str, sim_id: str, platform: str, device_name: str, agent: str) -> "Allocation":
