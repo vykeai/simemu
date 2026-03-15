@@ -255,7 +255,8 @@ def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = 
 
 def open_url(avd_name: str, url: str) -> None:
     _ensure_booted(avd_name)
-    _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url)
+    escaped_url = url.replace("&", r"\&")
+    _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", escaped_url)
 
 
 def push(avd_name: str, local_path: str, remote_path: str) -> None:
