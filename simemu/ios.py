@@ -422,6 +422,15 @@ def _raise_sim_window(device_name: str) -> None:
 end tell'''], capture_output=True, check=False)
 
 
+def _open_sim_window(udid: str) -> None:
+    """Ask Simulator.app to show the target device window."""
+    subprocess.run(
+        ["open", "-a", "Simulator", "--args", "-CurrentDeviceUDID", udid],
+        capture_output=True,
+        check=False,
+    )
+
+
 def _get_sim_bounds(udid: str) -> tuple[float, float, float, float]:
     """Return (px, py, sw, sh) — screen origin and pixel size of the simulator content area."""
     import subprocess as _sp
@@ -541,20 +550,25 @@ def tap(udid: str, x: int, y: int) -> None:
     import time as _t
 
     _ensure_booted(udid)
+    _open_sim_window(udid)
     device_name = _get_device_name(udid)
     device_w, device_h = _get_device_logical_size(device_name)
     px, py, sw, sh = _get_sim_bounds(udid)
     cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
     _raise_sim_window(device_name)
+    sim_pid = _get_simulator_pid()
 
     def _click(Q):
         src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
         pos = Q.CGPoint(x=cx, y=cy)
+        e_mv = Q.CGEventCreateMouseEvent(src, Q.kCGEventMouseMoved,   pos, Q.kCGMouseButtonLeft)
         e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
         e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
-        Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
+        Q.CGEventPostToPid(sim_pid, e_mv)
+        _t.sleep(0.03)
+        Q.CGEventPostToPid(sim_pid, e_dn)
         _t.sleep(0.05)
-        Q.CGEventPost(Q.kCGSessionEventTap, e_up)
+        Q.CGEventPostToPid(sim_pid, e_up)
 
     _post_mouse_hidden(_click)
 
@@ -729,6 +743,7 @@ def set_animations(udid: str, enabled: bool) -> None:
 def focus(udid: str) -> None:
     """Bring the Simulator window to the front and activate the app so the user can see it."""
     import subprocess as _sp
+    _open_sim_window(udid)
     device_name = _get_device_name(udid)
     _sp.run(["osascript", "-e", f'''tell application "Simulator" to activate
 tell application "System Events"
