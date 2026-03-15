@@ -139,9 +139,31 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
       - "com.example.app/.MainActivity"  → explicit activity
     """
     if "/" not in package_activity:
-        # Use monkey to launch the main launcher activity — more reliable than guessing
-        _adb(avd_name, "shell", "monkey", "-p", package_activity,
-             "-c", "android.intent.category.LAUNCHER", "1")
+        # Prefer the launcher-intent path, but fall back to the conventional
+        # MainActivity name used by our app templates when monkey is rejected.
+        try:
+            _adb(avd_name, "shell", "monkey", "-p", package_activity,
+                 "-c", "android.intent.category.LAUNCHER", "1")
+        except subprocess.CalledProcessError:
+            base_package = package_activity
+            for suffix in (".dev", ".staging", ".prod", ".debug", ".release"):
+                if base_package.endswith(suffix):
+                    base_package = base_package[: -len(suffix)]
+                    break
+
+            candidates = (
+                f"{package_activity}/.app.MainActivity",
+                f"{package_activity}/{base_package}.app.MainActivity",
+            )
+            last_error: subprocess.CalledProcessError | None = None
+            for component in candidates:
+                try:
+                    _adb(avd_name, "shell", "am", "start", "-n", component)
+                    return
+                except subprocess.CalledProcessError as exc:
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
     else:
         cmd = ["shell", "am", "start", "-n", package_activity] + (args or [])
         _adb(avd_name, *cmd)

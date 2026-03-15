@@ -304,9 +304,10 @@ def input_text(udid: str, text: str) -> None:
     _ensure_booted(udid)
     """Paste text into the simulator via the pasteboard (works in any focused text field)."""
     import subprocess as _sp
-    # Write to the simulator's pasteboard, then trigger paste
+    # Newer Xcode builds expose simulator pasteboard via pbcopy/pbpaste instead of
+    # the older `simctl pasteboard set` subcommand.
     proc = _sp.run(
-        ["xcrun", "simctl", "pasteboard", "set", udid],
+        ["xcrun", "simctl", "pbcopy", udid],
         input=text.encode(),
         capture_output=True,
     )
@@ -340,10 +341,15 @@ def location_clear(udid: str) -> None:
 # Keyed by the device-type token in the simemu naming convention.
 # Fallback: (390, 844) — standard iPhone 14/15/16 size.
 _IOS_DEVICE_LOGICAL_SIZE: dict[str, tuple[int, int]] = {
+    # iPhone 17 family
+    "iPhone17ProMax":  (440, 956),
+    "iPhone17Pro":     (402, 874),
+    "iPhone17":        (393, 852),
     # iPhone 16 family
     "iPhone16ProMax":  (440, 956),
     "iPhone16Plus":    (430, 932),
     "iPhone16Pro":     (402, 874),
+    "iPhone16e":       (390, 844),
     "iPhone16":        (390, 844),
     # iPhone 15 family
     "iPhone15ProMax":  (430, 932),
@@ -398,13 +404,18 @@ def _get_device_name(udid: str) -> str:
 
 
 def _raise_sim_window(device_name: str) -> None:
-    """Raise the Simulator window to the front of z-order without activating the app.
+    """Activate Simulator and raise the target window for reliable text focus.
 
-    This lets CGEventPost deliver clicks to the Simulator window without
-    changing which app has keyboard focus or moving the user's cursor.
+    Buttons can often be clicked with the window merely raised, but SwiftUI
+    text fields frequently need Simulator to be the active app to receive first
+    responder status. We still keep the user's cursor hidden/restored around
+    the click itself, but we intentionally activate Simulator here so field
+    focus and paste work consistently.
     """
     import subprocess as _sp
     _sp.run(["osascript", "-e", f'''tell application "System Events"
+    tell application "Simulator" to activate
+    delay 0.1
     tell process "Simulator"
         perform action "AXRaise" of (first window whose name contains "{device_name}")
     end tell
@@ -505,15 +516,18 @@ def _post_mouse_hidden(events_fn) -> None:
     """
     import importlib as _il
     Quartz = _il.import_module("Quartz")
+    display_id = getattr(Quartz, "kCGDirectMainDisplay", None)
+    if display_id is None:
+        display_id = Quartz.CGMainDisplayID()
 
     loc = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
     orig = Quartz.CGPoint(x=loc.x, y=loc.y)
-    Quartz.CGDisplayHideCursor(Quartz.kCGDirectMainDisplay)
+    Quartz.CGDisplayHideCursor(display_id)
     try:
         events_fn(Quartz)
         Quartz.CGWarpMouseCursorPosition(orig)
     finally:
-        Quartz.CGDisplayShowCursor(Quartz.kCGDirectMainDisplay)
+        Quartz.CGDisplayShowCursor(display_id)
 
 
 def tap(udid: str, x: int, y: int) -> None:
