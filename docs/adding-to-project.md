@@ -67,9 +67,12 @@ simemu acquire android myapp-android --device "Biscuit MedPhone 6.3in API35" --w
 # Android boots without a window. iOS window stays behind other apps.
 # Add --window to acquire/boot only when you need to watch directly:
 #   simemu acquire android myapp-android --device "..." --wait 120 --window
+# Save all screenshots under ~/Desktop/screenshots/{project-name}/:
+#   export PROJECT_SCREENSHOT_DIR=~/Desktop/screenshots/$(basename "$(git rev-parse --show-toplevel)")
+#   mkdir -p "$PROJECT_SCREENSHOT_DIR"
 # PROVE DELIVERABLES WITH SCREENSHOTS — never verbal claims:
-#   simemu screenshot myapp-ios     -o /tmp/ios_<feature>.png
-#   simemu screenshot myapp-android -o /tmp/and_<feature>.png
+#   simemu screenshot myapp-ios     -o "$PROJECT_SCREENSHOT_DIR/ios_<feature>.png"
+#   simemu screenshot myapp-android -o "$PROJECT_SCREENSHOT_DIR/and_<feature>.png"
 #   (read both files to verify visually before committing)
 # ───────────────────────────────────────────────────────────────────────────
 
@@ -81,8 +84,8 @@ simemu launch  myapp-android com.example.myapp
 simemu clear-data myapp-android com.example.myapp   # reset app data (Android)
 
 # Screenshot
-simemu screenshot myapp-ios     -o /tmp/ios_<feature>.png
-simemu screenshot myapp-android -o /tmp/and_<feature>.png
+simemu screenshot myapp-ios     -o "$PROJECT_SCREENSHOT_DIR/ios_<feature>.png"
+simemu screenshot myapp-android -o "$PROJECT_SCREENSHOT_DIR/and_<feature>.png"
 
 # UI interaction
 simemu tap        myapp-ios 195 400
@@ -167,6 +170,7 @@ If you are an agent reading this:
 5. Never call `xcrun simctl` or `adb` — the hook will block it.
 6. **Never release another project's slugs** — even if they appear free or idle.
 7. **Prove all UI work with screenshots** — take a screenshot after every significant UI change and read the file to verify before reporting done.
+8. Save proof screenshots under `~/Desktop/screenshots/{project-name}/` so they persist beyond the session.
 
 ---
 

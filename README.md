@@ -15,6 +15,7 @@ simemu acquire ios           simemu acquire ios           simemu acquire android
 ```
 
 > 📸 **Screenshots are the proof of delivery — never verbal claims.**
+> Save them to `~/Desktop/screenshots/{project-name}/`, not `/tmp`.
 
 ---
 
@@ -113,7 +114,9 @@ simemu install myapp-ios  path/to/App.app --timeout 60
 simemu launch  myapp-ios  com.example.myapp
 
 # Prove it works with a screenshot
-simemu screenshot myapp-ios --max-size 1000 -o /tmp/ios_home.png
+export PROJECT_SCREENSHOT_DIR=~/Desktop/screenshots/$(basename "$(git rev-parse --show-toplevel)")
+mkdir -p "$PROJECT_SCREENSHOT_DIR"
+simemu screenshot myapp-ios --max-size 1000 -o "$PROJECT_SCREENSHOT_DIR/ios_home.png"
 
 # Reset app to clean state in one command
 simemu reset-app myapp-ios com.example.myapp
