@@ -1,9 +1,12 @@
 # simemu
 
+Simulator and emulator allocation manager for multi-agent iOS/Android development.
+
+---
+
 ## Screenshot Storage
 
-Save every screenshot to `~/Desktop/screenshots/{project-name}/`.
-Use the git repo name for `{project-name}`:
+Save every screenshot to `~/Desktop/screenshots/simemu/`.
 
 ```bash
 export PROJECT_SCREENSHOT_DIR=~/Desktop/screenshots/$(basename "$(git rev-parse --show-toplevel)")
@@ -12,44 +15,162 @@ mkdir -p "$PROJECT_SCREENSHOT_DIR"
 
 Do not keep proof or review screenshots in `/tmp`.
 
-## What This Is
-`simemu` is the simulator allocation manager for multi-agent iOS and Android development. It assigns named slugs to reserved devices, proxies simulator/emulator operations through one CLI, and prevents direct `xcrun simctl` / `adb` usage outside the tool.
+---
 
-## Tech Stack
-Python 3.11+, setuptools, optional FastAPI/uvicorn server components
+## Project Management — Keel
+
+This project is managed by **keel** ([vykeai/keel](https://github.com/vykeai/keel)). Keel is the single source of truth
+for tasks, specs, decisions, and roadmap. **Do NOT create or maintain manual TASKS.md,
+ROADMAP.md, or similar tracking files.**
+
+### With MCP access (preferred)
+- Read state: `keel_status`, `keel_list_tasks`
+- Start work: `keel_update_task { id, status: "active", assignee: "claude" }`
+- Finish: `keel_update_task { status: "done" }` + `keel_add_note` with summary
+- Blocked: `keel_update_task { status: "blocked" }` + `keel_add_note` with reason
+- Architecture changes: `keel_update_architecture_doc`
+- Decisions: `keel_log_decision` before implementing
+- Search first: `keel_search "topic"` — update existing, don't duplicate
+
+### Without MCP
+- CLI: `keel status`, `keel tasks`, `keel task update <id> --status active`
+- Read `views/` for current state — never edit views (generated)
+
+---
+
+## Execution — Cloudy
+
+Use **cloudy** ([vykeai/cloudy](https://github.com/vykeai/cloudy)) for multi-task orchestration.
+
+```bash
+cloudy plan --spec ./docs/spec.md          # decompose spec → task graph
+cloudy run --execution-model sonnet        # execute all tasks
+cloudy check                               # re-validate completed tasks
+```
+
+**From inside Claude Code sessions** — unset nesting vars:
+```bash
+env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT cloudy run --spec spec.md
+```
+
+---
+
+## Skills — Runecode
+
+**runecode** ([vykeai/runecode](https://github.com/vykeai/runecode)) provides reusable Claude Code skills:
+
+| Skill | Purpose |
+|-------|---------|
+| `/test-write` | Write tests for changed code |
+| `/review-self` | Review your own code before committing |
+| `/security-audit` | Audit changes for vulnerabilities |
+| `/dead-code` | Find unused exports and unreachable code |
+| `/tech-debt` | Identify technical debt |
+| `/pr-description` | Write PR description from current diff |
+
+**Project health**: `runecode doctor` checks setup. `runecode audit` scores and auto-fixes gaps.
+
+---
+
+## Python Conventions
+
+- **Python 3.11+** — use modern syntax (match/case, type unions with `|`, etc.)
+- **Type hints everywhere** — all function signatures, return types, and class attributes
+- **Pydantic v2** for data validation and settings where applicable
+- **async/await** for I/O-bound code — never block the event loop
+- **No bare `except:`** — always catch specific exceptions
+- **f-strings** for string formatting — never `.format()` or `%` interpolation
+- **pathlib.Path** over `os.path` for file operations
+- **`if __name__ == "__main__":`** guard on all executable modules
+
+---
+
+## Project Structure
+
+```
+simemu/
+├── simemu/     # or src/ — main package
+│   ├── __init__.py
+│   └── ...
+├── tests/
+│   ├── test_*.py       # or simemu/tests/
+│   └── conftest.py
+├── pyproject.toml       # package metadata + dependencies
+└── README.md
+```
+
+---
 
 ## Key Commands
-- `pip3 install -e .` — install the CLI locally
-- `simemu --version` — verify the CLI is available
-- `simemu list ios` — show available iOS simulators
-- `simemu list android` — show available Android emulators
 
-## Conventions
-- CLI entrypoint lives in `simemu/cli.py`
-- Platform-specific behavior stays in `simemu/ios.py` and `simemu/android.py`
-- Reservation and state logic must stay consistent across CLI commands
-- Slugs, agent identity, and JSON output shape are part of the tool contract
+```bash
+# Virtual environment
+python3 -m venv .venv && source .venv/bin/activate
 
-## Architecture Notes
-- `simemu` is infrastructure for other repos, not a product-specific app
-- Backwards compatibility matters because downstream projects embed exact `simemu` workflows in their agent docs
-- Guard-hook assumptions in consuming repos depend on `simemu` remaining the only supported simulator interface
+# Install
+pip install -e ".[dev]"     # or: pip install -r requirements.txt
+
+# Test
+pytest                      # or: python -m pytest
+pytest -x                   # stop on first failure
+pytest -k "test_name"       # run specific test
+
+# Type check
+mypy .                      # or: pyright
+
+# Lint
+ruff check .
+ruff format .
+```
+
+---
+
+## Testing (pytest)
+
+- Test files: `tests/test_*.py` or `tests/**/test_*.py`
+- Use `pytest` fixtures for setup/teardown
+- Use `pytest.mark.asyncio` for async tests
+- Mock external services — never hit real APIs in tests
+- Aim for meaningful coverage, not 100% line coverage
+
+---
+
+## FastAPI Patterns (if applicable)
+
+- All routes prefixed `/api/v1`
+- CRUD: GET (list/get), POST (create), PATCH (update), DELETE
+- Use Pydantic models for request/response schemas
+- Async locking for concurrent file/DB writes
+- Health check endpoint: `GET /health`
+
+---
+
+## Git Conventions
+
+- Commit after every meaningful chunk of work
+- Concise messages: `feat:`, `fix:`, `refactor:`
+- Never commit `.env`, credentials, `__pycache__/`, or `.venv/`
+
+---
 
 ## Do Not
-- Break slug reservation semantics without updating downstream tooling and docs
-- Change command names or argument behavior casually
-- Bypass the centralized state/reservation model in ad hoc scripts
-- Introduce direct-project assumptions into the shared simulator layer
 
-## CLI Rules
-- Read commands should keep stable text/JSON output
-- Errors must be explicit and non-zero
-- Cross-platform behavior should be consistent where the command surface is shared
-- Simulator screenshots are delivery evidence, so capture-related commands must stay reliable
+- Use `os.path` when `pathlib.Path` works
+- Use bare `except:` — always catch specific exceptions
+- Use mutable default arguments (`def f(x=[])`)
+- Import from `__pycache__` or `.pyc` files
+- Use `print()` for logging — use the `logging` module or structured output
+- Leave debug `print()` statements in shipped code
+- Use `subprocess.run(shell=True)` without sanitizing input
+
+---
 
 ## Definition of Done
-- [ ] `pip3 install -e .` works
-- [ ] `simemu --help` output is accurate
-- [ ] Changed commands are tested manually or automatically on the relevant platform
-- [ ] Any contract changes are reflected in downstream docs
-- [ ] Changes committed AND pushed
+
+- [ ] All tests pass (`pytest`)
+- [ ] Type checks pass (`mypy` or `pyright`) if configured
+- [ ] No lint errors (`ruff check .`)
+- [ ] `/review-self` passed — no obvious issues in diff
+- [ ] Changes committed (frequent, progressive — not batched at end)
+- [ ] Keel task updated: `keel_update_task { status: "done" }` + `keel_add_note`
+- [ ] If using cloudy: all three validation phases pass
