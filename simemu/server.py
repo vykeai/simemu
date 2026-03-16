@@ -229,6 +229,10 @@ async def fed_runs():
 
 # ── status & discovery ────────────────────────────────────────────────────────
 
+@app.get("/health", summary="Server health")
+def health():
+    return {"status": "ok"}
+
 @app.get("/status", summary="All current reservations")
 def get_status():
     allocations = state.get_all()

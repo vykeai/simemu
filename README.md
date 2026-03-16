@@ -292,6 +292,16 @@ simemu serve --idle-timeout 30      # run server manually in foreground
 simemu idle-shutdown --after 20     # one-shot, no daemon required
 ```
 
+Normal `simemu` CLI usage now auto-starts a background API server if nothing is listening on `127.0.0.1:8765`.
+
+Disable autostart when needed:
+
+```bash
+simemu --no-autostart status
+SIMEMU_NO_AUTOSTART=1 simemu status
+SIMEMU_AUTOSTART=0 simemu status
+```
+
 ---
 
 ## 📸 Screenshot-as-proof workflow

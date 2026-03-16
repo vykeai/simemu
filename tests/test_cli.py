@@ -14,6 +14,40 @@ from simemu.state import Allocation
 
 
 class CliTests(unittest.TestCase):
+    def test_autostart_server_spawns_background_serve_when_missing(self) -> None:
+        proc = Mock()
+        with patch("simemu.cli._autostart_disabled", return_value=False):
+            with patch("simemu.cli._server_reachable", side_effect=[False, True]):
+                with patch("subprocess.Popen", return_value=proc) as popen_mock:
+                    cli._autostart_server_if_needed()
+
+        args = popen_mock.call_args.args[0]
+        self.assertEqual([sys.executable, "-m", "simemu.cli", "serve"], args)
+
+    def test_autostart_server_respects_disable_flag(self) -> None:
+        with patch("simemu.cli._autostart_disabled", return_value=True):
+            with patch("subprocess.Popen") as popen_mock:
+                cli._autostart_server_if_needed()
+
+        popen_mock.assert_not_called()
+
+    def test_main_skips_autostart_for_serve(self) -> None:
+        with patch("simemu.cli.build_parser") as build_parser_mock:
+            serve_func = Mock()
+            parser = Mock()
+            parser.parse_args.return_value = SimpleNamespace(
+                func=serve_func,
+                no_autostart=False,
+            )
+            build_parser_mock.return_value = parser
+            serve_func.__name__ = "cmd_serve"
+
+            with patch("simemu.cli._autostart_server_if_needed") as autostart_mock:
+                cli.main()
+
+        autostart_mock.assert_not_called()
+        serve_func.assert_called_once()
+
     def test_status_json_prints_allocations_array(self) -> None:
         alloc = Allocation(
             slug="fitkind-ios",

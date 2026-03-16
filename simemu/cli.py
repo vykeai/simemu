@@ -12,6 +12,7 @@ import argparse
 import datetime
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -38,6 +39,47 @@ def _auto_path(slug: str, ext: str) -> str:
 
 def _print_json(data):
     print(json.dumps(data, indent=2))
+
+
+def _autostart_disabled() -> bool:
+    value = (os.environ.get("SIMEMU_AUTOSTART") or "").strip().lower()
+    if value in {"0", "false", "no", "off"}:
+        return True
+    no_value = (os.environ.get("SIMEMU_NO_AUTOSTART") or "").strip().lower()
+    return no_value in {"1", "true", "yes", "on"}
+
+
+def _server_reachable(host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _autostart_server_if_needed() -> None:
+    import subprocess
+
+    if _autostart_disabled() or _server_reachable():
+        return
+
+    log_path = _output_dir() / "autostart.log"
+    with log_path.open("ab") as log_file:
+        subprocess.Popen(
+            [sys.executable, "-m", "simemu.cli", "serve"],
+            stdout=log_file,
+            stderr=log_file,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+            cwd=str(Path.cwd()),
+        )
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        if _server_reachable():
+            return
+        time.sleep(0.1)
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
@@ -965,6 +1007,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--version", action="version", version="simemu 0.1.0")
+    p.add_argument("--no-autostart", action="store_true",
+                   help="Do not auto-start the simemu API server for this invocation")
     sub = p.add_subparsers(dest="command", required=True)
 
     # acquire
@@ -1424,6 +1468,7 @@ def cmd_daemon(args):
     """Manage the simemu background daemon (launchd agent on macOS)."""
     import shutil
     import subprocess as _sp
+    import urllib.request
     label = "com.simemu.daemon"
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
@@ -1477,6 +1522,18 @@ def cmd_daemon(args):
             print("simemu daemon is not installed.")
 
     elif args.action == "status":
+        manual_server = None
+        for url in ("http://127.0.0.1:8765/health", "http://127.0.0.1:8765/status"):
+            try:
+                with urllib.request.urlopen(url, timeout=1.5) as resp:
+                    manual_server = {
+                        "url": url.rsplit("/", 1)[0],
+                        "status": resp.status,
+                    }
+                    break
+            except Exception:
+                continue
+
         result = _sp.run(
             ["launchctl", "list", label],
             capture_output=True, text=True,
@@ -1490,11 +1547,18 @@ def cmd_daemon(args):
             print("simemu daemon is NOT running.")
             if plist_path.exists():
                 print(f"  Plist exists ({plist_path}) — run 'simemu daemon install' to start it.")
+        if manual_server:
+            print(f"simemu API server is RUNNING  ({manual_server['url']})")
+            print("  Note: this is a live server process, not the launchd-managed daemon.")
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if getattr(args, "no_autostart", False):
+        os.environ["SIMEMU_NO_AUTOSTART"] = "1"
+    if getattr(args.func, "__name__", "") not in {"cmd_serve", "cmd_daemon"}:
+        _autostart_server_if_needed()
     try:
         args.func(args)
     except RuntimeError as e:
