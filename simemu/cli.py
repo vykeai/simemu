@@ -344,21 +344,10 @@ def cmd_ready(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        presentation = _ios_presentation_status(args.slug, alloc.sim_id)
-        healed = False
-        initial_stable = ios.stabilize(alloc.sim_id)
-        if initial_stable.get("window_visible_on_active_desktop") is False and presentation["saved_layout"] is None:
-            raise RuntimeError(
-                f"Simulator window for '{args.slug}' is not visible on the active desktop. "
-                f"Run `simemu present {args.slug}` or save a layout with `simemu present {args.slug} --save-layout`."
-            )
-        if presentation["layout_drifted"] or presentation["display_drifted"]:
-            if presentation["saved_layout"] is not None:
-                ios.present(alloc.sim_id, layout=presentation["saved_layout"])
-                healed = True
-        result = ios.stabilize(alloc.sim_id)
+        prep = _ensure_ios_ready_or_heal(args.slug, alloc.sim_id)
+        result = prep["stable"]
         result.update(_ios_presentation_status(args.slug, alloc.sim_id))
-        result["healed"] = healed
+        result["healed"] = prep["healed"]
         result["ready"] = True
     else:
         result = {
@@ -751,28 +740,33 @@ def _layout_differs(current: dict, saved: dict, tolerance: float = 2.0) -> bool:
     return False
 
 
-def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
+def _ensure_ios_ready_or_heal(slug: str, sim_id: str) -> dict:
     saved_layout = state.get_presentation(slug)
+    stable = ios.stabilize(sim_id)
     if not saved_layout:
-        stable = ios.stabilize(sim_id)
         if stable.get("window_visible_on_active_desktop") is False:
             raise RuntimeError(
                 f"Simulator window for '{slug}' is not visible on the active desktop. "
                 f"Run `simemu present {slug}` or save a layout with `simemu present {slug} --save-layout`."
             )
-        return
+        return {"healed": False, "stable": stable}
 
-    stable = ios.stabilize(sim_id)
     if stable.get("window_visible_on_active_desktop") is False:
         ios.present(sim_id, layout=saved_layout)
-        return
+        return {"healed": True, "stable": ios.stabilize(sim_id)}
     try:
         current_layout = ios.current_presentation_layout(sim_id)
     except Exception:
         ios.present(sim_id, layout=saved_layout)
-        return
+        return {"healed": True, "stable": ios.stabilize(sim_id)}
     if _layout_differs(current_layout, saved_layout):
         ios.present(sim_id, layout=saved_layout)
+        return {"healed": True, "stable": ios.stabilize(sim_id)}
+    return {"healed": False, "stable": stable}
+
+
+def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
+    _ensure_ios_ready_or_heal(slug, sim_id)
 
 
 def _ios_presentation_status(slug: str, sim_id: str) -> dict:
