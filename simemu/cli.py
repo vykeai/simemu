@@ -712,6 +712,17 @@ def _layout_differs(current: dict, saved: dict, tolerance: float = 2.0) -> bool:
 def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
     saved_layout = state.get_presentation(slug)
     if not saved_layout:
+        stable = ios.stabilize(sim_id)
+        if stable.get("window_visible_on_active_desktop") is False:
+            raise RuntimeError(
+                f"Simulator window for '{slug}' is not visible on the active desktop. "
+                f"Run `simemu present {slug}` or save a layout with `simemu present {slug} --save-layout`."
+            )
+        return
+
+    stable = ios.stabilize(sim_id)
+    if stable.get("window_visible_on_active_desktop") is False:
+        ios.present(sim_id, layout=saved_layout)
         return
     try:
         current_layout = ios.current_presentation_layout(sim_id)

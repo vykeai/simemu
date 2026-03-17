@@ -428,10 +428,11 @@ class CliTests(unittest.TestCase):
         with patch("simemu.cli.state.require", return_value=alloc):
             with patch("simemu.cli.state.touch"):
                 with patch("simemu.cli.state.get_presentation", return_value=layout):
-                    with patch("simemu.cli.ios.current_presentation_layout", return_value={"x": 100, "y": 200, "width": 300, "height": 600}):
-                        with patch("simemu.cli.ios.present") as present_mock:
-                            with patch("simemu.cli.ios.tap") as tap_mock:
-                                cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
+                        with patch("simemu.cli.ios.current_presentation_layout", return_value={"x": 100, "y": 200, "width": 300, "height": 600}):
+                            with patch("simemu.cli.ios.present") as present_mock:
+                                with patch("simemu.cli.ios.tap") as tap_mock:
+                                    cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
 
         present_mock.assert_called_once_with("SIM-001", layout=layout)
         tap_mock.assert_called_once_with("SIM-001", 12, 34)
@@ -449,10 +450,11 @@ class CliTests(unittest.TestCase):
         with patch("simemu.cli.state.require", return_value=alloc):
             with patch("simemu.cli.state.touch"):
                 with patch("simemu.cli.state.get_presentation", return_value=layout):
-                    with patch("simemu.cli.ios.current_presentation_layout", return_value=layout):
-                        with patch("simemu.cli.ios.present") as present_mock:
-                            with patch("simemu.cli.ios.tap") as tap_mock:
-                                cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
+                        with patch("simemu.cli.ios.current_presentation_layout", return_value=layout):
+                            with patch("simemu.cli.ios.present") as present_mock:
+                                with patch("simemu.cli.ios.tap") as tap_mock:
+                                    cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
 
         present_mock.assert_not_called()
         tap_mock.assert_called_once_with("SIM-001", 12, 34)
@@ -470,13 +472,51 @@ class CliTests(unittest.TestCase):
         with patch("simemu.cli.state.require", return_value=alloc):
             with patch("simemu.cli.state.touch"):
                 with patch("simemu.cli.state.get_presentation", return_value=layout):
-                    with patch("simemu.cli.ios.current_presentation_layout", side_effect=RuntimeError("no frame")):
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
+                        with patch("simemu.cli.ios.current_presentation_layout", side_effect=RuntimeError("no frame")):
+                            with patch("simemu.cli.ios.present") as present_mock:
+                                with patch("simemu.cli.ios.tap") as tap_mock:
+                                    cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
+
+        present_mock.assert_called_once_with("SIM-001", layout=layout)
+        tap_mock.assert_called_once_with("SIM-001", 12, 34)
+
+    def test_tap_ios_heals_when_window_is_not_visible_and_layout_exists(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        layout = {"x": 10, "y": 20, "width": 300, "height": 600}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=layout):
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": False}):
                         with patch("simemu.cli.ios.present") as present_mock:
                             with patch("simemu.cli.ios.tap") as tap_mock:
                                 cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
 
         present_mock.assert_called_once_with("SIM-001", layout=layout)
         tap_mock.assert_called_once_with("SIM-001", 12, 34)
+
+    def test_tap_ios_fails_fast_when_window_not_visible_and_no_saved_layout(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=None):
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": False}):
+                        with self.assertRaisesRegex(RuntimeError, "not visible on the active desktop"):
+                            cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
 
     def test_launch_passes_extra_arguments_to_android_adapter(self) -> None:
         alloc = Allocation(
