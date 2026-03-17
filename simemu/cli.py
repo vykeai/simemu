@@ -250,6 +250,7 @@ def cmd_focus(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
+        _prepare_ios_interaction(args.slug, alloc.sim_id)
         ios.focus(alloc.sim_id)
         print(f"Simulator window for '{args.slug}' brought to front.")
     else:
@@ -851,6 +852,7 @@ def cmd_key(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
+        _prepare_ios_interaction(args.slug, alloc.sim_id)
         ios.key(alloc.sim_id, args.key)
     else:
         android.key(alloc.sim_id, args.key)

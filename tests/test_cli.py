@@ -518,6 +518,42 @@ class CliTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "not visible on the active desktop"):
                             cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
 
+    def test_focus_ios_uses_preflight_before_focusing(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=None):
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
+                        with patch("simemu.cli.ios.focus") as focus_mock:
+                            cli.cmd_focus(SimpleNamespace(slug="fitkind-ios"))
+
+        focus_mock.assert_called_once_with("SIM-001")
+
+    def test_key_ios_uses_preflight_before_keypress(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=None):
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
+                        with patch("simemu.cli.ios.key") as key_mock:
+                            cli.cmd_key(SimpleNamespace(slug="fitkind-ios", key="home"))
+
+        key_mock.assert_called_once_with("SIM-001", "home")
+
     def test_launch_passes_extra_arguments_to_android_adapter(self) -> None:
         alloc = Allocation(
             slug="fitkind-android",
