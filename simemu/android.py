@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,14 @@ from .discover import get_android_serial
 
 # Android screenrecord hard cap (3 minutes); warn agents approaching this
 SCREENRECORD_MAX_SECONDS = 180
+
+
+def _sidecar_dir() -> Path:
+    """
+    Use a per-user writable temp directory for recording metadata.
+    Shared `/tmp/simemu` can be owned by another user on multi-agent Macs.
+    """
+    return Path(tempfile.gettempdir()) / f"simemu-{os.getuid()}"
 
 
 def _serial(avd_name: str) -> str:
@@ -210,7 +219,7 @@ def record_start(avd_name: str, output_path: str) -> int:
         stderr=subprocess.DEVNULL,
     )
     # Store metadata in a sidecar for record_stop
-    sidecar = Path(f"/tmp/simemu/rec_{proc.pid}.path")
+    sidecar = _sidecar_dir() / f"rec_{proc.pid}.path"
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     sidecar.write_text(f"{serial}\n{remote}\n{output_path}")
     return proc.pid
@@ -218,7 +227,7 @@ def record_start(avd_name: str, output_path: str) -> int:
 
 def record_stop(pid: int) -> Optional[str]:
     """Stop recording and pull the video file. Returns local output path."""
-    sidecar = Path(f"/tmp/simemu/rec_{pid}.path")
+    sidecar = _sidecar_dir() / f"rec_{pid}.path"
     try:
         os.kill(pid, signal.SIGINT)
     except ProcessLookupError:
