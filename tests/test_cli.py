@@ -319,6 +319,26 @@ class CliTests(unittest.TestCase):
         present_mock.assert_called_once_with("SIM-001", layout=layout)
         self.assertIn("using saved layout", stdout.getvalue())
 
+    def test_tap_ios_auto_restores_saved_layout_before_gesture(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        layout = {"x": 10, "y": 20, "width": 300, "height": 600}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=layout):
+                    with patch("simemu.cli.ios.present") as present_mock:
+                        with patch("simemu.cli.ios.tap") as tap_mock:
+                            cli.cmd_tap(SimpleNamespace(slug="fitkind-ios", x=12, y=34, pct=False))
+
+        present_mock.assert_called_once_with("SIM-001", layout=layout)
+        tap_mock.assert_called_once_with("SIM-001", 12, 34)
+
     def test_launch_passes_extra_arguments_to_android_adapter(self) -> None:
         alloc = Allocation(
             slug="fitkind-android",

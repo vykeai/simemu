@@ -676,11 +676,18 @@ def _resolve_coords(args, alloc, x_attr="x", y_attr="y"):
     return x, y
 
 
+def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
+    layout = state.get_presentation(slug)
+    if layout:
+        ios.present(sim_id, layout=layout)
+
+
 def cmd_tap(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     x, y = _resolve_coords(args, alloc)
     if alloc.platform == "ios":
+        _prepare_ios_interaction(args.slug, alloc.sim_id)
         ios.tap(alloc.sim_id, x, y)
     else:
         android.tap(alloc.sim_id, x, y)
@@ -692,6 +699,7 @@ def cmd_swipe(args):
     x1, y1 = _resolve_coords(args, alloc, "x1", "y1")
     x2, y2 = _resolve_coords(args, alloc, "x2", "y2")
     if alloc.platform == "ios":
+        _prepare_ios_interaction(args.slug, alloc.sim_id)
         ios.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration / 1000.0)
     else:
         android.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration)
@@ -764,6 +772,7 @@ def cmd_long_press(args):
     state.touch(args.slug)
     x, y = _resolve_coords(args, alloc)
     if alloc.platform == "ios":
+        _prepare_ios_interaction(args.slug, alloc.sim_id)
         ios.long_press(alloc.sim_id, x, y, duration=args.duration / 1000.0)
     else:
         android.long_press(alloc.sim_id, x, y, duration=args.duration)
