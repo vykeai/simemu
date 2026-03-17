@@ -740,6 +740,45 @@ end tell''',
     return parts[0], parts[1], parts[2], parts[3]
 
 
+def _get_window_frame(udid: str) -> tuple[float, float, float, float]:
+    import subprocess as _sp
+
+    device_name = _get_device_name(udid)
+    r = _sp.run([
+        "osascript", "-e",
+        f'''tell application "System Events"
+    tell process "Simulator"
+        set w to first window whose name contains "{device_name}"
+        set p to position of w
+        set s to size of w
+        return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
+    end tell
+end tell''',
+    ], capture_output=True, text=True, check=False)
+    frame_str = r.stdout.strip()
+    if not frame_str or "," not in frame_str:
+        raise RuntimeError(f"Could not get simulator window frame for {udid}")
+    parts = [float(v.strip()) for v in frame_str.split(",")]
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _set_window_frame(udid: str, x: float, y: float, width: float, height: float) -> None:
+    import subprocess as _sp
+
+    device_name = _get_device_name(udid)
+    _sp.run([
+        "osascript", "-e",
+        f'''tell application "System Events"
+    tell process "Simulator"
+        set w to first window whose name contains "{device_name}"
+        set position of w to {{{int(x)}, {int(y)}}}
+        set size of w to {{{int(width)}, {int(height)}}}
+        perform action "AXRaise" of w
+    end tell
+end tell''',
+    ], capture_output=True, check=False)
+
+
 def _desktop_idle_seconds() -> float:
     try:
         import importlib as _il
@@ -793,6 +832,7 @@ def _stabilized_bounds(udid: str, retries: int = 5, delay: float = 0.2) -> tuple
 def stabilize(udid: str) -> dict:
     idle_seconds = _wait_for_desktop_idle()
     device_name, bounds = _stabilized_bounds(udid)
+    window_x, window_y, window_width, window_height = _get_window_frame(udid)
     return {
         "stable": True,
         "udid": udid,
@@ -805,14 +845,40 @@ def stabilize(udid: str) -> dict:
         },
         "desktop_idle_seconds": idle_seconds,
         "frontmost_app": _frontmost_app_name(),
+        "window_frame": {
+            "x": window_x,
+            "y": window_y,
+            "width": window_width,
+            "height": window_height,
+        },
     }
 
 
-def present(udid: str) -> dict:
+def present(udid: str, layout: Optional[dict] = None) -> dict:
     _ensure_booted(udid)
     _open_sim_window(udid)
+    if layout:
+        _set_window_frame(
+            udid,
+            layout["x"],
+            layout["y"],
+            layout["width"],
+            layout["height"],
+        )
     focus(udid)
     return stabilize(udid)
+
+
+def current_presentation_layout(udid: str) -> dict:
+    _ensure_booted(udid)
+    _open_sim_window(udid)
+    x, y, width, height = _get_window_frame(udid)
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+    }
 
 
 def _logical_to_screen(

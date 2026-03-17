@@ -33,12 +33,20 @@ def state_dir() -> Path:
     return Path(os.environ.get("SIMEMU_STATE_DIR", "/tmp/simemu"))
 
 
+def config_dir() -> Path:
+    return Path(os.environ.get("SIMEMU_CONFIG_DIR", Path.home() / ".simemu"))
+
+
 def state_file() -> Path:
     return state_dir() / "state.json"
 
 
 def lock_file() -> Path:
     return state_dir() / "state.lock"
+
+
+def presentation_file() -> Path:
+    return config_dir() / "presentation.json"
 
 
 @dataclass
@@ -92,6 +100,46 @@ def _write_raw(state: dict):
     tmp = current_state_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2))
     tmp.replace(current_state_file)
+
+
+@contextmanager
+def _locked_presentation():
+    base_dir = config_dir()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = base_dir / "presentation.lock"
+    lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        current = _read_presentation_raw()
+        pending = []
+
+        def save(new_state):
+            pending.append(new_state)
+
+        yield current, save
+
+        if pending:
+            _write_presentation_raw(pending[-1])
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def _read_presentation_raw() -> dict:
+    current_file = presentation_file()
+    if current_file.exists():
+        try:
+            return json.loads(current_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"layouts": {}}
+
+
+def _write_presentation_raw(state: dict):
+    current_file = presentation_file()
+    tmp = current_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(current_file)
 
 
 def acquire(slug: str, sim_id: str, platform: str, device_name: str, agent: str) -> "Allocation":
@@ -182,3 +230,23 @@ def require(slug: str) -> "Allocation":
             f"No reservation for '{slug}'. Check `simemu status` and ask the project owner to assign a slug."
         )
     return alloc
+
+
+def get_presentation(slug: str) -> Optional[dict]:
+    state = _read_presentation_raw()
+    return state["layouts"].get(slug)
+
+
+def set_presentation(slug: str, layout: dict) -> None:
+    with _locked_presentation() as (state, save):
+        state["layouts"][slug] = layout
+        save(state)
+
+
+def clear_presentation(slug: str) -> bool:
+    with _locked_presentation() as (state, save):
+        existed = slug in state["layouts"]
+        if existed:
+            del state["layouts"][slug]
+            save(state)
+        return existed

@@ -252,7 +252,7 @@ class CliTests(unittest.TestCase):
                         cli.cmd_present(SimpleNamespace(slug="fitkind-ios", json=False))
 
         touch_mock.assert_called_once_with("fitkind-ios")
-        present_mock.assert_called_once_with("SIM-001")
+        present_mock.assert_called_once_with("SIM-001", layout=None)
         self.assertIn("Presented 'fitkind-ios' (iPhone 16 Pro).", stdout.getvalue())
 
     def test_stabilize_ios_json_prints_payload(self) -> None:
@@ -275,6 +275,49 @@ class CliTests(unittest.TestCase):
         touch_mock.assert_called_once_with("fitkind-ios")
         stabilize_mock.assert_called_once_with("SIM-001")
         self.assertIn('"stable": true', stdout.getvalue())
+
+    def test_present_ios_save_layout_persists_current_frame(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        layout = {"x": 1, "y": 2, "width": 300, "height": 600}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.current_presentation_layout", return_value=layout) as layout_mock:
+                    with patch("simemu.cli.state.set_presentation") as save_mock:
+                        with redirect_stdout(stdout):
+                            cli.cmd_present(SimpleNamespace(slug="fitkind-ios", json=False, save_layout=True, clear_layout=False))
+
+        layout_mock.assert_called_once_with("SIM-001")
+        save_mock.assert_called_once_with("fitkind-ios", layout)
+        self.assertIn("Saved current layout for 'fitkind-ios'.", stdout.getvalue())
+
+    def test_present_ios_uses_saved_layout_when_restoring(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        layout = {"x": 1, "y": 2, "width": 300, "height": 600}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=layout):
+                    with patch("simemu.cli.ios.present", return_value={"stable": True}) as present_mock:
+                        with redirect_stdout(stdout):
+                            cli.cmd_present(SimpleNamespace(slug="fitkind-ios", json=False, save_layout=False, clear_layout=False))
+
+        present_mock.assert_called_once_with("SIM-001", layout=layout)
+        self.assertIn("using saved layout", stdout.getvalue())
 
     def test_launch_passes_extra_arguments_to_android_adapter(self) -> None:
         alloc = Allocation(

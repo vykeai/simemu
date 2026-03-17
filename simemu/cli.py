@@ -261,11 +261,34 @@ def cmd_present(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        result = ios.present(alloc.sim_id)
+        clear_layout = getattr(args, "clear_layout", False)
+        save_layout = getattr(args, "save_layout", False)
+
+        if clear_layout:
+            removed = state.clear_presentation(args.slug)
+            message = f"Cleared saved layout for '{args.slug}'." if removed else f"No saved layout for '{args.slug}'."
+            if args.json:
+                _print_json({"cleared": removed, "slug": args.slug})
+            else:
+                print(message)
+            return
+
+        if save_layout:
+            layout = ios.current_presentation_layout(alloc.sim_id)
+            state.set_presentation(args.slug, layout)
+            if args.json:
+                _print_json({"saved": True, "slug": args.slug, "layout": layout})
+            else:
+                print(f"Saved current layout for '{args.slug}'.")
+            return
+
+        layout = state.get_presentation(args.slug)
+        result = ios.present(alloc.sim_id, layout=layout)
         if args.json:
             _print_json(result)
         else:
-            print(f"Presented '{args.slug}' ({alloc.device_name}).")
+            suffix = " using saved layout" if layout else ""
+            print(f"Presented '{args.slug}' ({alloc.device_name}){suffix}.")
     else:
         message = (
             f"'{args.slug}' is Android — presentation is controlled at boot time "
@@ -1100,6 +1123,10 @@ def build_parser() -> argparse.ArgumentParser:
     # present
     present_p = sub.add_parser("present", help="Restore a simulator window into a known visible state (iOS)")
     present_p.add_argument("slug")
+    present_p.add_argument("--save-layout", action="store_true",
+                           help="Save the current iOS simulator window frame for this slug")
+    present_p.add_argument("--clear-layout", action="store_true",
+                           help="Clear any saved presentation layout for this slug")
     present_p.add_argument("--json", action="store_true", help="Output as JSON")
     present_p.set_defaults(func=cmd_present)
 
