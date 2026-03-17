@@ -8,10 +8,17 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
+import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
+
+
+_LAST_BUSY_NOTIFICATION_AT = 0.0
+_HUD_PROCESS: subprocess.Popen | None = None
 
 
 def _simctl(*args, capture: bool = False, check: bool = True) -> Optional[str]:
@@ -422,6 +429,163 @@ def _raise_sim_window(device_name: str) -> None:
 end tell'''], capture_output=True, check=False)
 
 
+def _frontmost_app_name() -> Optional[str]:
+    result = subprocess.run(
+        [
+            "osascript",
+            "-e",
+            '''tell application "System Events"
+    set frontApps to (application processes whose frontmost is true)
+    if (count of frontApps) is 0 then return ""
+    return name of item 1 of frontApps
+end tell''',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    name = result.stdout.strip()
+    return name or None
+
+
+def _activate_app(app_name: str) -> None:
+    escaped = app_name.replace('"', '\\"')
+    subprocess.run(
+        ["osascript", "-e", f'tell application "{escaped}" to activate'],
+        capture_output=True,
+        check=False,
+    )
+
+
+def _notify_shared_desktop_wait() -> None:
+    global _LAST_BUSY_NOTIFICATION_AT
+    now = time.time()
+    if now - _LAST_BUSY_NOTIFICATION_AT < 10:
+        return
+    _LAST_BUSY_NOTIFICATION_AT = now
+    subprocess.run(
+        [
+            "osascript",
+            "-e",
+            'display notification "Simemu is using a simulator for a moment. Please pause keyboard and mouse input." with title "simemu"',
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+
+def _hud_enabled() -> bool:
+    value = (os.environ.get("SIMEMU_HUD", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _start_hud_overlay() -> None:
+    global _HUD_PROCESS
+    if not _hud_enabled():
+        return
+    if _HUD_PROCESS and _HUD_PROCESS.poll() is None:
+        return
+    script = r"""
+import signal
+import tkinter as tk
+
+root = tk.Tk()
+root.withdraw()
+root.overrideredirect(True)
+root.attributes("-topmost", True)
+root.attributes("-alpha", 0.94)
+root.configure(bg="#0f0a14")
+
+frame = tk.Frame(root, bg="#201326", highlightthickness=1, highlightbackground="#6c3b62")
+frame.pack(fill="both", expand=True)
+
+title = tk.Label(
+    frame,
+    text="simemu using Simulator / Emulator",
+    bg="#201326",
+    fg="#f4e9f2",
+    font=("SF Pro Display", 14, "bold"),
+    padx=18,
+    pady=10,
+)
+title.pack()
+
+subtitle = tk.Label(
+    frame,
+    text="Give me a sec. Please pause keyboard and mouse input.",
+    bg="#201326",
+    fg="#c9b6c8",
+    font=("SF Pro Text", 11),
+    padx=18,
+    pady=(0, 12),
+)
+subtitle.pack()
+
+root.update_idletasks()
+width = 420
+height = 86
+screen_w = root.winfo_screenwidth()
+x = max(20, screen_w - width - 24)
+y = 26
+root.geometry(f"{width}x{height}+{x}+{y}")
+root.deiconify()
+
+def _close(*_args):
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+signal.signal(signal.SIGTERM, _close)
+signal.signal(signal.SIGINT, _close)
+root.mainloop()
+"""
+    try:
+        _HUD_PROCESS = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        _HUD_PROCESS = None
+
+
+def _stop_hud_overlay() -> None:
+    global _HUD_PROCESS
+    proc = _HUD_PROCESS
+    _HUD_PROCESS = None
+    if not proc:
+        return
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        return
+
+
+@contextmanager
+def _interactive_overlay():
+    _start_hud_overlay()
+    try:
+        yield
+    finally:
+        _stop_hud_overlay()
+
+
+@contextmanager
+def _restore_frontmost_app():
+    previous = _frontmost_app_name()
+    try:
+        yield
+    finally:
+        if previous and previous != "Simulator":
+            _activate_app(previous)
+
+
 def _open_sim_window(udid: str) -> None:
     """Ask Simulator.app to show the target device window."""
     subprocess.run(
@@ -456,6 +620,80 @@ end tell''',
 
     parts = [float(v.strip()) for v in bounds_str.split(",")]
     return parts[0], parts[1], parts[2], parts[3]
+
+
+def _desktop_idle_seconds() -> float:
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        events = [
+            Quartz.kCGAnyInputEventType,
+        ]
+        ages = [
+            Quartz.CGEventSourceSecondsSinceLastEventType(
+                Quartz.kCGEventSourceStateCombinedSessionState,
+                event_type,
+            )
+            for event_type in events
+        ]
+        return min(ages)
+    except Exception:
+        return 999.0
+
+
+def _wait_for_desktop_idle(min_idle_seconds: float = 1.0, max_wait_seconds: float = 5.0) -> float:
+    deadline = time.time() + max_wait_seconds
+    idle = _desktop_idle_seconds()
+    warned = False
+    while idle < min_idle_seconds and time.time() < deadline:
+        if not warned:
+            _notify_shared_desktop_wait()
+            warned = True
+        time.sleep(0.2)
+        idle = _desktop_idle_seconds()
+    return idle
+
+
+def _stabilized_bounds(udid: str, retries: int = 5, delay: float = 0.2) -> tuple[str, tuple[float, float, float, float]]:
+    _ensure_booted(udid)
+    _open_sim_window(udid)
+    device_name = _get_device_name(udid)
+    last_error: Exception | None = None
+    for _ in range(retries):
+        _raise_sim_window(device_name)
+        try:
+            return device_name, _get_sim_bounds(udid)
+        except Exception as exc:
+            last_error = exc
+            time.sleep(delay)
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"Could not stabilize simulator window for {udid}")
+
+
+def stabilize(udid: str) -> dict:
+    idle_seconds = _wait_for_desktop_idle()
+    device_name, bounds = _stabilized_bounds(udid)
+    return {
+        "stable": True,
+        "udid": udid,
+        "device_name": device_name,
+        "content_bounds": {
+            "x": bounds[0],
+            "y": bounds[1],
+            "width": bounds[2],
+            "height": bounds[3],
+        },
+        "desktop_idle_seconds": idle_seconds,
+        "frontmost_app": _frontmost_app_name(),
+    }
+
+
+def present(udid: str) -> dict:
+    _ensure_booted(udid)
+    _open_sim_window(udid)
+    focus(udid)
+    return stabilize(udid)
 
 
 def _logical_to_screen(
@@ -549,28 +787,29 @@ def tap(udid: str, x: int, y: int) -> None:
     Quartz = _il.import_module("Quartz")
     import time as _t
 
-    _ensure_booted(udid)
-    _open_sim_window(udid)
-    device_name = _get_device_name(udid)
-    device_w, device_h = _get_device_logical_size(device_name)
-    px, py, sw, sh = _get_sim_bounds(udid)
-    cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
-    _raise_sim_window(device_name)
-    sim_pid = _get_simulator_pid()
+    with _interactive_overlay():
+        _wait_for_desktop_idle()
+        _ensure_booted(udid)
+        device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
+        device_w, device_h = _get_device_logical_size(device_name)
+        cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
+        with _restore_frontmost_app():
+            _raise_sim_window(device_name)
+            sim_pid = _get_simulator_pid()
 
-    def _click(Q):
-        src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
-        pos = Q.CGPoint(x=cx, y=cy)
-        e_mv = Q.CGEventCreateMouseEvent(src, Q.kCGEventMouseMoved,   pos, Q.kCGMouseButtonLeft)
-        e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
-        e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
-        Q.CGEventPostToPid(sim_pid, e_mv)
-        _t.sleep(0.03)
-        Q.CGEventPostToPid(sim_pid, e_dn)
-        _t.sleep(0.05)
-        Q.CGEventPostToPid(sim_pid, e_up)
+            def _click(Q):
+                src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
+                pos = Q.CGPoint(x=cx, y=cy)
+                e_mv = Q.CGEventCreateMouseEvent(src, Q.kCGEventMouseMoved,   pos, Q.kCGMouseButtonLeft)
+                e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
+                e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
+                Q.CGEventPostToPid(sim_pid, e_mv)
+                _t.sleep(0.03)
+                Q.CGEventPostToPid(sim_pid, e_dn)
+                _t.sleep(0.05)
+                Q.CGEventPostToPid(sim_pid, e_up)
 
-    _post_mouse_hidden(_click)
+            _post_mouse_hidden(_click)
 
 
 def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) -> None:
@@ -583,34 +822,36 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
     Quartz = _il.import_module("Quartz")
     import time as _t
 
-    _ensure_booted(udid)
-    device_name = _get_device_name(udid)
-    device_w, device_h = _get_device_logical_size(device_name)
-    px, py, sw, sh = _get_sim_bounds(udid)
-    _raise_sim_window(device_name)
+    with _interactive_overlay():
+        _wait_for_desktop_idle()
+        _ensure_booted(udid)
+        device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
+        device_w, device_h = _get_device_logical_size(device_name)
 
-    sx1, sy1 = _logical_to_screen(x1, y1, px, py, sw, sh, device_w, device_h)
-    sx2, sy2 = _logical_to_screen(x2, y2, px, py, sw, sh, device_w, device_h)
-    steps = max(10, int(duration * 60))
-    step_delay = duration / steps
+        sx1, sy1 = _logical_to_screen(x1, y1, px, py, sw, sh, device_w, device_h)
+        sx2, sy2 = _logical_to_screen(x2, y2, px, py, sw, sh, device_w, device_h)
+        steps = max(10, int(duration * 60))
+        step_delay = duration / steps
 
-    def _drag(Q):
-        src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
-        start = Q.CGPoint(x=sx1, y=sy1)
-        e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, start, Q.kCGMouseButtonLeft)
-        Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
-        _t.sleep(step_delay)
-        for i in range(1, steps + 1):
-            t = i / steps
-            pos = Q.CGPoint(x=int(sx1 + (sx2 - sx1) * t), y=int(sy1 + (sy2 - sy1) * t))
-            e_drag = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDragged, pos, Q.kCGMouseButtonLeft)
-            Q.CGEventPost(Q.kCGSessionEventTap, e_drag)
+        def _drag(Q):
+            src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
+            start = Q.CGPoint(x=sx1, y=sy1)
+            e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, start, Q.kCGMouseButtonLeft)
+            Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
             _t.sleep(step_delay)
-        end = Q.CGPoint(x=sx2, y=sy2)
-        e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp, end, Q.kCGMouseButtonLeft)
-        Q.CGEventPost(Q.kCGSessionEventTap, e_up)
+            for i in range(1, steps + 1):
+                t = i / steps
+                pos = Q.CGPoint(x=int(sx1 + (sx2 - sx1) * t), y=int(sy1 + (sy2 - sy1) * t))
+                e_drag = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDragged, pos, Q.kCGMouseButtonLeft)
+                Q.CGEventPost(Q.kCGSessionEventTap, e_drag)
+                _t.sleep(step_delay)
+            end = Q.CGPoint(x=sx2, y=sy2)
+            e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp, end, Q.kCGMouseButtonLeft)
+            Q.CGEventPost(Q.kCGSessionEventTap, e_up)
 
-    _post_mouse_hidden(_drag)
+        with _restore_frontmost_app():
+            _raise_sim_window(device_name)
+            _post_mouse_hidden(_drag)
 
 
 def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
@@ -622,23 +863,25 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
     Quartz = _il.import_module("Quartz")
     import time as _t
 
-    _ensure_booted(udid)
-    device_name = _get_device_name(udid)
-    device_w, device_h = _get_device_logical_size(device_name)
-    px, py, sw, sh = _get_sim_bounds(udid)
-    cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
-    _raise_sim_window(device_name)
+    with _interactive_overlay():
+        _wait_for_desktop_idle()
+        _ensure_booted(udid)
+        device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
+        device_w, device_h = _get_device_logical_size(device_name)
+        cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
 
-    def _press(Q):
-        src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
-        pos = Q.CGPoint(x=cx, y=cy)
-        e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
-        e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
-        Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
-        _t.sleep(duration)
-        Q.CGEventPost(Q.kCGSessionEventTap, e_up)
+        def _press(Q):
+            src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
+            pos = Q.CGPoint(x=cx, y=cy)
+            e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
+            e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
+            Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
+            _t.sleep(duration)
+            Q.CGEventPost(Q.kCGSessionEventTap, e_up)
 
-    _post_mouse_hidden(_press)
+        with _restore_frontmost_app():
+            _raise_sim_window(device_name)
+            _post_mouse_hidden(_press)
 
 
 def rotate(udid: str, orientation: str) -> None:

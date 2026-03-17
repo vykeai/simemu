@@ -235,6 +235,47 @@ class CliTests(unittest.TestCase):
         self.assertIn("Installing /tmp/Fitkind.app on 'fitkind-ios' (iPhone 16 Pro)...", stdout.getvalue())
         self.assertIn("Done.", stdout.getvalue())
 
+    def test_present_ios_prints_confirmation(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch") as touch_mock:
+                with patch("simemu.cli.ios.present", return_value={"stable": True}) as present_mock:
+                    with redirect_stdout(stdout):
+                        cli.cmd_present(SimpleNamespace(slug="fitkind-ios", json=False))
+
+        touch_mock.assert_called_once_with("fitkind-ios")
+        present_mock.assert_called_once_with("SIM-001")
+        self.assertIn("Presented 'fitkind-ios' (iPhone 16 Pro).", stdout.getvalue())
+
+    def test_stabilize_ios_json_prints_payload(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        payload = {"stable": True, "device_name": "iPhone 16 Pro"}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch") as touch_mock:
+                with patch("simemu.cli.ios.stabilize", return_value=payload) as stabilize_mock:
+                    with redirect_stdout(stdout):
+                        cli.cmd_stabilize(SimpleNamespace(slug="fitkind-ios", json=True))
+
+        touch_mock.assert_called_once_with("fitkind-ios")
+        stabilize_mock.assert_called_once_with("SIM-001")
+        self.assertIn('"stable": true', stdout.getvalue())
+
     def test_launch_passes_extra_arguments_to_android_adapter(self) -> None:
         alloc = Allocation(
             slug="fitkind-android",

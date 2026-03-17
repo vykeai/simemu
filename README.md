@@ -25,6 +25,7 @@ simemu acquire ios           simemu acquire ios           simemu acquire android
 - 🔀 **Platform dispatch** — same commands on iOS and Android; the slug carries the platform
 - 🖥️ **Headless Android by default** — boots without a window, saving 300–700 MB RAM per emulator
 - 👆 **Full gesture proxy** — tap, swipe, long-press with `--pct` (percentage coordinates), rotate, key events
+- 🧭 **Shared-desktop readiness** — `present` and `stabilize` make iOS simulator interaction safer on a human-used Mac
 - 📷 **Capture pipeline** — screenshot, screen recording, crash logs, side-by-side comparison
 - ♻️ **App lifecycle** — install (with timeout), launch, terminate, `reset-app` (force-stop + clear + relaunch in one command)
 - 📡 **Device state** — GPS, permissions, network, battery, status bar, biometrics, appearance
@@ -161,6 +162,8 @@ simemu release myapp-android
 | `simemu boot <slug> [--window]` | Boot a reserved simulator |
 | `simemu shutdown <slug>` | Shut down without releasing |
 | `simemu reboot <slug>` | Shut down and boot again (fastest fix for hung emulators) |
+| `simemu present <slug> [--json]` | Restore an iOS simulator window into a known visible state |
+| `simemu stabilize <slug> [--json]` | Preflight simulator readiness for interactive work |
 | `simemu erase <slug> [--yes]` | Factory reset — wipes all data |
 | `simemu check <slug> [--bundle <id>]` | Verify simulator is booted; optionally check app is in foreground |
 | `simemu env <slug>` | Show device info (UDID, screen size, Maestro device ID) as JSON |
@@ -188,6 +191,29 @@ Use fractions of screen size instead of calculating device-specific pixel coordi
 simemu tap        myapp-ios 0.5 0.92 --pct          # bottom-centre tap, any device
 simemu swipe      myapp-ios 0.5 0.75 0.5 0.25 --pct # swipe up
 simemu long-press myapp-android 0.5 0.5 --pct       # dead centre
+```
+
+### Shared-desktop workflow
+
+On a Mac that a human is actively using, interactive iOS gestures should start with:
+
+```bash
+simemu present myapp-ios
+simemu stabilize myapp-ios --json
+simemu tap myapp-ios 0.5 0.92 --pct
+```
+
+`simemu tap`, `swipe`, and `long-press` now wait briefly for desktop idle, restore the previous frontmost app afterwards, and avoid acting against stale simulator bounds.
+
+During focus-sensitive iOS interaction, `simemu` can also show:
+
+- a macOS notification when it needs the desktop to go idle
+- a small topmost HUD while it is briefly using Simulator
+
+Disable the HUD with:
+
+```bash
+export SIMEMU_HUD=0
 ```
 
 ### 📡 Device state

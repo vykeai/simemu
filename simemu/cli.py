@@ -248,12 +248,52 @@ def cmd_clipboard(args):
 
 def cmd_focus(args):
     alloc = state.require(args.slug)
+    state.touch(args.slug)
     if alloc.platform == "ios":
         ios.focus(alloc.sim_id)
         print(f"Simulator window for '{args.slug}' brought to front.")
     else:
         print(f"'{args.slug}' is an Android emulator. Android runs headless by default — "
               f"boot with --window if you need a visible window.")
+
+
+def cmd_present(args):
+    alloc = state.require(args.slug)
+    state.touch(args.slug)
+    if alloc.platform == "ios":
+        result = ios.present(alloc.sim_id)
+        if args.json:
+            _print_json(result)
+        else:
+            print(f"Presented '{args.slug}' ({alloc.device_name}).")
+    else:
+        message = (
+            f"'{args.slug}' is Android — presentation is controlled at boot time "
+            f"with --window."
+        )
+        if args.json:
+            _print_json({"stable": True, "platform": "android", "message": message})
+        else:
+            print(message)
+
+
+def cmd_stabilize(args):
+    alloc = state.require(args.slug)
+    state.touch(args.slug)
+    if alloc.platform == "ios":
+        result = ios.stabilize(alloc.sim_id)
+    else:
+        result = {
+            "stable": True,
+            "slug": args.slug,
+            "platform": alloc.platform,
+            "device_name": alloc.device_name,
+            "note": "Android presentation is already window-independent for most commands.",
+        }
+    if args.json:
+        _print_json(result)
+    else:
+        print(f"'{args.slug}' is stable.")
 
 
 def cmd_install(args):
@@ -1056,6 +1096,18 @@ def build_parser() -> argparse.ArgumentParser:
     focus_p = sub.add_parser("focus", help="Bring the simulator window to front (iOS)")
     focus_p.add_argument("slug")
     focus_p.set_defaults(func=cmd_focus)
+
+    # present
+    present_p = sub.add_parser("present", help="Restore a simulator window into a known visible state (iOS)")
+    present_p.add_argument("slug")
+    present_p.add_argument("--json", action="store_true", help="Output as JSON")
+    present_p.set_defaults(func=cmd_present)
+
+    # stabilize
+    stabilize_p = sub.add_parser("stabilize", help="Preflight simulator readiness for interactive work")
+    stabilize_p.add_argument("slug")
+    stabilize_p.add_argument("--json", action="store_true", help="Output as JSON")
+    stabilize_p.set_defaults(func=cmd_stabilize)
 
     # animations
     anim_p = sub.add_parser("animations",
