@@ -592,7 +592,8 @@ class CliTests(unittest.TestCase):
                 with patch("simemu.cli.state.get_presentation", return_value=None):
                     with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
                         with patch("simemu.cli.ios.focus") as focus_mock:
-                            cli.cmd_focus(SimpleNamespace(slug="fitkind-ios"))
+                            with redirect_stdout(io.StringIO()):
+                                cli.cmd_focus(SimpleNamespace(slug="fitkind-ios"))
 
         focus_mock.assert_called_once_with("SIM-001")
 
@@ -610,7 +611,8 @@ class CliTests(unittest.TestCase):
                 with patch("simemu.cli.state.get_presentation", return_value=None):
                     with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": True}):
                         with patch("simemu.cli.ios.key") as key_mock:
-                            cli.cmd_key(SimpleNamespace(slug="fitkind-ios", key="home"))
+                            with redirect_stdout(io.StringIO()):
+                                cli.cmd_key(SimpleNamespace(slug="fitkind-ios", key="home"))
 
         key_mock.assert_called_once_with("SIM-001", "home")
 

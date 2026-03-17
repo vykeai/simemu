@@ -305,14 +305,14 @@ def cmd_stabilize(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
+        if getattr(args, "heal", False):
+            prep = _ensure_ios_ready_or_heal(args.slug, alloc.sim_id)
+            result = prep["stable"]
+            healed = prep["healed"]
+        else:
+            result = ios.stabilize(alloc.sim_id)
+            healed = False
         presentation = _ios_presentation_status(args.slug, alloc.sim_id)
-        healed = False
-        if getattr(args, "heal", False) and presentation["layout_drifted"]:
-            ios.present(alloc.sim_id, layout=presentation["saved_layout"])
-            healed = True
-        result = ios.stabilize(alloc.sim_id)
-        if healed:
-            presentation = _ios_presentation_status(args.slug, alloc.sim_id)
         result.update(presentation)
         result["healed"] = healed
     else:
