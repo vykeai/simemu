@@ -1,6 +1,7 @@
 import io
 import os
 import sys
+import urllib.error
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -14,6 +15,55 @@ from simemu.state import Allocation
 
 
 class CliTests(unittest.TestCase):
+    def test_desktop_lease_requests_activate_and_release(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        calls = []
+
+        def fake_scouty_json(method, path, payload=None, timeout=2.0):
+            calls.append((method, path, payload))
+            if path == "/desktop/lease/request":
+                return {"lease_id": "lease-123", "countdown_remaining_seconds": 0.0}
+            return {"ok": True}
+
+        with patch("simemu.cli._scouty_json", side_effect=fake_scouty_json):
+            with patch("simemu.cli.time.sleep") as sleep_mock:
+                with cli._desktop_lease(alloc, "tap", "Tap 10,20 on fitkind-ios", estimated_seconds=5):
+                    pass
+
+        sleep_mock.assert_not_called()
+        self.assertEqual(
+            [
+                ("POST", "/desktop/lease/request"),
+                ("POST", "/desktop/lease/activate"),
+                ("POST", "/desktop/lease/release"),
+            ],
+            [(method, path) for method, path, _ in calls],
+        )
+        self.assertEqual("fitkind", calls[0][2]["project"])
+        self.assertEqual("fitkind-ios", calls[0][2]["slug"])
+
+    def test_desktop_lease_yields_when_scouty_unavailable(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        yielded = False
+
+        with patch("simemu.cli._scouty_json", side_effect=urllib.error.URLError("offline")):
+            with cli._desktop_lease(alloc, "focus", "Bring fitkind-ios to the foreground", estimated_seconds=4):
+                yielded = True
+
+        self.assertTrue(yielded)
+
     def test_autostart_server_spawns_background_serve_when_missing(self) -> None:
         proc = Mock()
         with patch("simemu.cli._autostart_disabled", return_value=False):

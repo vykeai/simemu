@@ -593,7 +593,7 @@ def _build_window(screen_x, screen_y, screen_w, _screen_h):
     height = 106
     x = max(screen_x + 20, screen_x + screen_w - width - 24)
     y = screen_y + 26
-    win.geometry(f"{width}x{height}+{x}+{y}")
+    win.geometry(f"{{width}}x{{height}}+{{x}}+{{y}}")
     win.deiconify()
     windows.append(win)
 

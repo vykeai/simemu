@@ -14,9 +14,11 @@ import json
 import os
 import socket
 import sys
-from pathlib import Path
-
 import time
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from pathlib import Path
 
 from . import state, ios, android
 from .discover import list_ios, list_android, find_simulator, NoSimulatorAvailable
@@ -39,6 +41,69 @@ def _auto_path(slug: str, ext: str) -> str:
 
 def _print_json(data):
     print(json.dumps(data, indent=2))
+
+
+def _project_name(alloc: state.Allocation) -> str:
+    if alloc.agent and not alloc.agent.startswith("pid-"):
+        return alloc.agent
+    if "-" in alloc.slug:
+        return alloc.slug.split("-", 1)[0]
+    return alloc.slug
+
+
+def _scouty_base_url() -> str:
+    return (os.environ.get("SCOUTY_BASE_URL") or "http://127.0.0.1:7331").rstrip("/")
+
+
+def _scouty_json(method: str, path: str, payload: dict | None = None, timeout: float = 2.0) -> dict:
+    body = None
+    headers = {}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        f"{_scouty_base_url()}{path}",
+        data=body,
+        method=method,
+        headers=headers,
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read()
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+@contextmanager
+def _desktop_lease(alloc: state.Allocation, action: str, reason: str, estimated_seconds: int = 5):
+    lease_id = None
+    countdown_seconds = int(os.environ.get("SIMEMU_DESKTOP_LEASE_COUNTDOWN", "3"))
+    try:
+        payload = {
+            "tool": "simemu",
+            "project": _project_name(alloc),
+            "slug": alloc.slug,
+            "platform": alloc.platform,
+            "action": action,
+            "reason": reason,
+            "estimated_seconds": estimated_seconds,
+            "countdown_seconds": countdown_seconds,
+        }
+        lease = _scouty_json("POST", "/desktop/lease/request", payload)
+        lease_id = lease.get("lease_id")
+        if lease_id:
+            remaining = lease.get("countdown_remaining_seconds")
+            delay = countdown_seconds if remaining is None else max(0.0, float(remaining))
+            if delay > 0:
+                time.sleep(delay)
+            _scouty_json("POST", "/desktop/lease/activate", {"lease_id": lease_id})
+        yield
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+        yield
+    finally:
+        if lease_id:
+            try:
+                _scouty_json("POST", "/desktop/lease/release", {"lease_id": lease_id})
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+                pass
 
 
 def _autostart_disabled() -> bool:
@@ -256,8 +321,9 @@ def cmd_focus(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        _prepare_ios_interaction(args.slug, alloc.sim_id)
-        ios.focus(alloc.sim_id)
+        with _desktop_lease(alloc, "focus", f"Bring {args.slug} to the foreground", estimated_seconds=4):
+            _prepare_ios_interaction(args.slug, alloc.sim_id)
+            ios.focus(alloc.sim_id)
         print(f"Simulator window for '{args.slug}' brought to front.")
     else:
         print(f"'{args.slug}' is an Android emulator. Android runs headless by default — "
@@ -1004,8 +1070,9 @@ def cmd_tap(args):
     state.touch(args.slug)
     x, y = _resolve_coords(args, alloc)
     if alloc.platform == "ios":
-        _prepare_ios_interaction(args.slug, alloc.sim_id)
-        ios.tap(alloc.sim_id, x, y)
+        with _desktop_lease(alloc, "tap", f"Tap {x},{y} on {args.slug}", estimated_seconds=5):
+            _prepare_ios_interaction(args.slug, alloc.sim_id)
+            ios.tap(alloc.sim_id, x, y)
     else:
         android.tap(alloc.sim_id, x, y)
 
@@ -1016,8 +1083,9 @@ def cmd_swipe(args):
     x1, y1 = _resolve_coords(args, alloc, "x1", "y1")
     x2, y2 = _resolve_coords(args, alloc, "x2", "y2")
     if alloc.platform == "ios":
-        _prepare_ios_interaction(args.slug, alloc.sim_id)
-        ios.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration / 1000.0)
+        with _desktop_lease(alloc, "swipe", f"Swipe {x1},{y1} to {x2},{y2} on {args.slug}", estimated_seconds=6):
+            _prepare_ios_interaction(args.slug, alloc.sim_id)
+            ios.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration / 1000.0)
     else:
         android.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration)
     print(f"Swiped ({x1},{y1}) → ({x2},{y2}) on '{args.slug}'.")
@@ -1078,8 +1146,9 @@ def cmd_key(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        _prepare_ios_interaction(args.slug, alloc.sim_id)
-        ios.key(alloc.sim_id, args.key)
+        with _desktop_lease(alloc, "key", f"Send {args.key} key to {args.slug}", estimated_seconds=4):
+            _prepare_ios_interaction(args.slug, alloc.sim_id)
+            ios.key(alloc.sim_id, args.key)
     else:
         android.key(alloc.sim_id, args.key)
     print(f"Key '{args.key}' sent to '{args.slug}'.")
@@ -1090,8 +1159,9 @@ def cmd_long_press(args):
     state.touch(args.slug)
     x, y = _resolve_coords(args, alloc)
     if alloc.platform == "ios":
-        _prepare_ios_interaction(args.slug, alloc.sim_id)
-        ios.long_press(alloc.sim_id, x, y, duration=args.duration / 1000.0)
+        with _desktop_lease(alloc, "long-press", f"Long press {x},{y} on {args.slug}", estimated_seconds=6):
+            _prepare_ios_interaction(args.slug, alloc.sim_id)
+            ios.long_press(alloc.sim_id, x, y, duration=args.duration / 1000.0)
     else:
         android.long_press(alloc.sim_id, x, y, duration=args.duration)
     print(f"Long-pressed ({x},{y}) on '{args.slug}'.")
