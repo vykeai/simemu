@@ -304,7 +304,16 @@ def cmd_stabilize(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
+        presentation = _ios_presentation_status(args.slug, alloc.sim_id)
+        healed = False
+        if getattr(args, "heal", False) and presentation["layout_drifted"]:
+            ios.present(alloc.sim_id, layout=presentation["saved_layout"])
+            healed = True
         result = ios.stabilize(alloc.sim_id)
+        if healed:
+            presentation = _ios_presentation_status(args.slug, alloc.sim_id)
+        result.update(presentation)
+        result["healed"] = healed
     else:
         result = {
             "stable": True,
@@ -316,7 +325,15 @@ def cmd_stabilize(args):
     if args.json:
         _print_json(result)
     else:
-        print(f"'{args.slug}' is stable.")
+        suffix = ""
+        if alloc.platform == "ios" and result.get("has_saved_layout"):
+            if result.get("healed"):
+                suffix = " (healed to saved layout)"
+            elif result.get("layout_drifted"):
+                suffix = " (layout drifted from saved presentation)"
+            else:
+                suffix = " (layout matches saved presentation)"
+        print(f"'{args.slug}' is stable.{suffix}")
 
 
 def cmd_install(args):
@@ -694,6 +711,33 @@ def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
         return
     if _layout_differs(current_layout, saved_layout):
         ios.present(sim_id, layout=saved_layout)
+
+
+def _ios_presentation_status(slug: str, sim_id: str) -> dict:
+    saved_layout = state.get_presentation(slug)
+    if not saved_layout:
+        return {
+            "has_saved_layout": False,
+            "layout_matches_saved": None,
+            "layout_drifted": None,
+            "saved_layout": None,
+        }
+    try:
+        current_layout = ios.current_presentation_layout(sim_id)
+    except Exception:
+        return {
+            "has_saved_layout": True,
+            "layout_matches_saved": False,
+            "layout_drifted": True,
+            "saved_layout": saved_layout,
+        }
+    drifted = _layout_differs(current_layout, saved_layout)
+    return {
+        "has_saved_layout": True,
+        "layout_matches_saved": not drifted,
+        "layout_drifted": drifted,
+        "saved_layout": saved_layout,
+    }
 
 
 def cmd_tap(args):
@@ -1156,6 +1200,8 @@ def build_parser() -> argparse.ArgumentParser:
     # stabilize
     stabilize_p = sub.add_parser("stabilize", help="Preflight simulator readiness for interactive work")
     stabilize_p.add_argument("slug")
+    stabilize_p.add_argument("--heal", action="store_true",
+                             help="For iOS, restore the saved presentation layout before reporting readiness")
     stabilize_p.add_argument("--json", action="store_true", help="Output as JSON")
     stabilize_p.set_defaults(func=cmd_stabilize)
 
