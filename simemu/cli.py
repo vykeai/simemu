@@ -72,38 +72,63 @@ def _scouty_json(method: str, path: str, payload: dict | None = None, timeout: f
     return json.loads(raw.decode("utf-8")) if raw else {}
 
 
-@contextmanager
-def _desktop_lease(alloc: state.Allocation, action: str, reason: str, estimated_seconds: int = 5):
-    lease_id = None
-    countdown_seconds = int(os.environ.get("SIMEMU_DESKTOP_LEASE_COUNTDOWN", "3"))
-    try:
-        payload = {
-            "tool": "simemu",
-            "project": _project_name(alloc),
-            "slug": alloc.slug,
-            "platform": alloc.platform,
-            "action": action,
-            "reason": reason,
-            "estimated_seconds": estimated_seconds,
-            "countdown_seconds": countdown_seconds,
-        }
-        lease = _scouty_json("POST", "/desktop/lease/request", payload)
-        lease_id = lease.get("lease_id")
-        if lease_id:
-            remaining = lease.get("countdown_remaining_seconds")
-            delay = countdown_seconds if remaining is None else max(0.0, float(remaining))
-            if delay > 0:
-                time.sleep(delay)
-            _scouty_json("POST", "/desktop/lease/activate", {"lease_id": lease_id})
-        yield
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
-        yield
-    finally:
-        if lease_id:
+class _DesktopLease:
+    def __init__(self, alloc: state.Allocation, action: str, reason: str, estimated_seconds: int = 5):
+        self.alloc = alloc
+        self.action = action
+        self.reason = reason
+        self.estimated_seconds = estimated_seconds
+        self.lease_id: str | None = None
+        self.enabled = False
+        self.countdown_seconds = int(os.environ.get("SIMEMU_DESKTOP_LEASE_COUNTDOWN", "3"))
+
+    def __enter__(self):
+        try:
+            payload = {
+                "tool": "simemu",
+                "project": _project_name(self.alloc),
+                "slug": self.alloc.slug,
+                "platform": self.alloc.platform,
+                "action": self.action,
+                "reason": self.reason,
+                "estimated_seconds": self.estimated_seconds,
+                "countdown_seconds": self.countdown_seconds,
+                "stage": "Preparing desktop control",
+                "screen": self.alloc.device_name,
+            }
+            lease = _scouty_json("POST", "/desktop/lease/request", payload)
+            self.lease_id = lease.get("lease_id")
+            if self.lease_id:
+                self.enabled = True
+                remaining = lease.get("countdown_remaining_seconds")
+                delay = self.countdown_seconds if remaining is None else max(0.0, float(remaining))
+                if delay > 0:
+                    time.sleep(delay)
+                _scouty_json("POST", "/desktop/lease/activate", {"lease_id": self.lease_id})
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+            self.enabled = False
+            self.lease_id = None
+        return self
+
+    def update(self, **metadata):
+        if not self.lease_id:
+            return
+        try:
+            _scouty_json("POST", "/desktop/lease/update", {"lease_id": self.lease_id, "metadata": metadata})
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+            pass
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.lease_id:
             try:
-                _scouty_json("POST", "/desktop/lease/release", {"lease_id": lease_id})
+                _scouty_json("POST", "/desktop/lease/release", {"lease_id": self.lease_id})
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
                 pass
+        return False
+
+
+def _desktop_lease(alloc: state.Allocation, action: str, reason: str, estimated_seconds: int = 5):
+    return _DesktopLease(alloc, action, reason, estimated_seconds)
 
 
 def _autostart_disabled() -> bool:
@@ -321,8 +346,10 @@ def cmd_focus(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        with _desktop_lease(alloc, "focus", f"Bring {args.slug} to the foreground", estimated_seconds=4):
+        with _desktop_lease(alloc, "focus", f"Bring {args.slug} to the foreground", estimated_seconds=4) as lease:
+            lease.update(stage="Booting simulator if needed", screen="Simulator shell", scenario="Desktop focus")
             _prepare_ios_interaction(args.slug, alloc.sim_id)
+            lease.update(stage="Bringing simulator window to foreground", screen=alloc.device_name, scenario="Desktop focus")
             ios.focus(alloc.sim_id)
         print(f"Simulator window for '{args.slug}' brought to front.")
     else:
