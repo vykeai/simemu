@@ -432,6 +432,88 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("'fitkind-android' is ready.", stdout.getvalue())
 
+    def test_workspace_set_saves_current_anchor_for_agent(self) -> None:
+        stdout = io.StringIO()
+        workspace = {
+            "display_id": 2,
+            "origin_x": 1512.0,
+            "origin_y": 0.0,
+            "width": 1512.0,
+            "height": 982.0,
+            "frontmost_app": "Terminal",
+        }
+
+        with patch("simemu.cli._agent", return_value="fitkind"):
+            with patch("simemu.cli._current_workspace_anchor", return_value=workspace):
+                with patch("simemu.cli.state.set_workspace") as set_mock:
+                    with redirect_stdout(stdout):
+                        cli.cmd_workspace_set(SimpleNamespace(json=False))
+
+        set_mock.assert_called_once_with("fitkind", workspace)
+        self.assertIn("Saved workspace for 'fitkind' on display 2", stdout.getvalue())
+
+    def test_workspace_apply_places_agent_allocations(self) -> None:
+        ios_alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        android_alloc = Allocation(
+            slug="fitkind-android",
+            sim_id="EMU-001",
+            platform="android",
+            device_name="Pixel 9",
+            agent="fitkind",
+        )
+        workspace = {
+            "display_id": 2,
+            "origin_x": 1512.0,
+            "origin_y": 0.0,
+            "width": 1512.0,
+            "height": 982.0,
+            "frontmost_app": "Terminal",
+        }
+        stdout = io.StringIO()
+
+        with patch("simemu.cli._agent", return_value="fitkind"):
+            with patch("simemu.cli.state.get_workspace", return_value=workspace):
+                with patch("simemu.cli._agent_allocations", return_value=[ios_alloc, android_alloc]):
+                    with patch("simemu.cli.ios.current_presentation_layout", return_value={"width": 494.0, "height": 1054.0}):
+                        with patch("simemu.cli.ios.present") as ios_present_mock:
+                            with patch("simemu.cli.state.set_presentation") as save_mock:
+                                with patch("simemu.cli.android.current_window_frame", return_value={"width": 411.0, "height": 914.0}):
+                                    with patch("simemu.cli.android.set_window_frame", return_value=True) as android_set_mock:
+                                        with redirect_stdout(stdout):
+                                            cli.cmd_workspace_apply(SimpleNamespace(slugs=[], json=False))
+
+        ios_present_mock.assert_called_once()
+        save_mock.assert_called_once()
+        android_set_mock.assert_called_once()
+        self.assertIn("Applied workspace for 'fitkind' to 2 simulator(s).", stdout.getvalue())
+
+    def test_boot_applies_saved_workspace_after_boot(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.boot") as boot_mock:
+                    with patch("simemu.cli._maybe_apply_agent_workspace", return_value={"applied": True}) as workspace_mock:
+                        with redirect_stdout(stdout):
+                            cli.cmd_boot(SimpleNamespace(slug="fitkind-ios", window=False))
+
+        boot_mock.assert_called_once_with("SIM-001")
+        workspace_mock.assert_called_once_with("fitkind-ios")
+        self.assertIn("Placed 'fitkind-ios' in the 'fitkind' workspace.", stdout.getvalue())
+
     def test_present_ios_save_layout_persists_current_frame(self) -> None:
         alloc = Allocation(
             slug="fitkind-ios",

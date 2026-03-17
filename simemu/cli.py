@@ -133,8 +133,11 @@ def cmd_acquire(args):
             ios.boot(sim.sim_id)
         else:
             android.boot(sim.sim_id, headless=not args.window)
+        placement = _maybe_apply_agent_workspace(args.slug)
         if not args.json:
             print("Ready.")
+            if placement and placement.get("applied"):
+                print(f"Placed '{args.slug}' in the '{alloc.agent}' workspace.")
 
 
 def cmd_release(args):
@@ -207,7 +210,10 @@ def cmd_boot(args):
         ios.boot(alloc.sim_id)
     else:
         android.boot(alloc.sim_id, headless=not getattr(args, "window", False))
+    placement = _maybe_apply_agent_workspace(args.slug)
     print(f"'{args.slug}' is booted.")
+    if placement and placement.get("applied"):
+        print(f"Placed '{args.slug}' in the '{alloc.agent}' workspace.")
 
 
 def cmd_shutdown(args):
@@ -285,6 +291,9 @@ def cmd_present(args):
 
         layout = state.get_presentation(args.slug)
         result = ios.present(alloc.sim_id, layout=layout)
+        workspace_placement = _maybe_apply_agent_workspace(args.slug)
+        if workspace_placement and workspace_placement.get("applied"):
+            result["workspace_applied"] = True
         if args.json:
             _print_json(result)
         else:
@@ -368,6 +377,75 @@ def cmd_ready(args):
             elif result.get("layout_matches_saved") is True:
                 suffix = " (already aligned)"
         print(f"'{args.slug}' is ready.{suffix}")
+
+
+def cmd_workspace_set(args):
+    agent = _agent()
+    workspace = _current_workspace_anchor()
+    state.set_workspace(agent, workspace)
+    if args.json:
+        _print_json({"agent": agent, "workspace": workspace})
+    else:
+        source = workspace.get("frontmost_app") or "current desktop"
+        print(
+            f"Saved workspace for '{agent}' on display {workspace.get('display_id')} "
+            f"from {source}."
+        )
+
+
+def cmd_workspace_show(args):
+    agent = _agent()
+    workspace = state.get_workspace(agent)
+    if args.json:
+        _print_json({"agent": agent, "workspace": workspace})
+        return
+    if not workspace:
+        print(f"No workspace saved for '{agent}'.")
+        return
+    print(
+        f"Workspace for '{agent}': display {workspace.get('display_id')} "
+        f"({int(workspace.get('width', 0))}x{int(workspace.get('height', 0))} at "
+        f"{int(workspace.get('origin_x', 0))},{int(workspace.get('origin_y', 0))})"
+    )
+
+
+def cmd_workspace_clear(args):
+    agent = _agent()
+    cleared = state.clear_workspace(agent)
+    if args.json:
+        _print_json({"agent": agent, "cleared": cleared})
+    else:
+        if cleared:
+            print(f"Cleared workspace for '{agent}'.")
+        else:
+            print(f"No workspace saved for '{agent}'.")
+
+
+def cmd_workspace_apply(args):
+    agent = _agent()
+    workspace = state.get_workspace(agent)
+    if not workspace:
+        raise RuntimeError(
+            f"No workspace saved for '{agent}'. Run `simemu workspace set` from the desktop where you want "
+            f"this agent's simulator windows to live."
+        )
+    if args.slugs:
+        allocations = [state.require(slug) for slug in args.slugs]
+    else:
+        allocations = _agent_allocations(agent)
+    if not allocations:
+        raise RuntimeError(f"No simulators reserved for '{agent}'.")
+    placements = _apply_workspace_to_allocations(workspace, allocations)
+    if args.json:
+        _print_json({"agent": agent, "workspace": workspace, "placements": placements})
+        return
+    print(f"Applied workspace for '{agent}' to {len(placements)} simulator(s).")
+    for placement in placements:
+        suffix = "" if placement["applied"] else f" [{placement['note']}]"
+        print(
+            f"  {placement['slug']}: {int(placement['layout']['x'])},{int(placement['layout']['y'])} "
+            f"{int(placement['layout']['width'])}x{int(placement['layout']['height'])}{suffix}"
+        )
 
 
 def cmd_install(args):
@@ -738,6 +816,119 @@ def _layout_differs(current: dict, saved: dict, tolerance: float = 2.0) -> bool:
     ):
         return True
     return False
+
+
+def _agent_allocations(agent: str) -> list[state.Allocation]:
+    return sorted(
+        [alloc for alloc in state.get_all().values() if alloc.agent == agent],
+        key=lambda alloc: alloc.slug,
+    )
+
+
+def _current_workspace_anchor() -> dict:
+    anchor = ios.current_desktop_anchor()
+    display = anchor.get("display")
+    if not display:
+        raise RuntimeError("Could not determine the current display/desktop anchor.")
+    return {
+        "display_id": display.get("id"),
+        "origin_x": display.get("origin_x"),
+        "origin_y": display.get("origin_y"),
+        "width": display.get("width"),
+        "height": display.get("height"),
+        "frontmost_app": anchor.get("frontmost_app"),
+        "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+
+def _workspace_frame_for_slot(display: dict, slot: int, total: int, base_width: float, base_height: float) -> dict:
+    padding = 32.0
+    gap = 24.0
+    columns = 1 if total <= 1 else 2
+    rows = max(1, (total + columns - 1) // columns)
+    usable_width = max(display["width"] - (padding * 2) - (gap * (columns - 1)), base_width)
+    usable_height = max(display["height"] - (padding * 2) - (gap * (rows - 1)), base_height)
+    cell_width = usable_width / columns
+    cell_height = usable_height / rows
+    scale = min(cell_width / base_width, cell_height / base_height, 1.0)
+    width = max(320.0, round(base_width * scale))
+    height = max(640.0, round(base_height * scale))
+    column = slot % columns
+    row = slot // columns
+    x = display["origin_x"] + padding + (column * (cell_width + gap)) + max(0.0, (cell_width - width) / 2.0)
+    y = display["origin_y"] + padding + (row * (cell_height + gap)) + max(0.0, (cell_height - height) / 2.0)
+    return {
+        "x": round(x),
+        "y": round(y),
+        "width": width,
+        "height": height,
+        "display_id": display.get("display_id"),
+    }
+
+
+def _current_or_saved_window_size(alloc: state.Allocation) -> tuple[float, float]:
+    if alloc.platform == "ios":
+        try:
+            layout = ios.current_presentation_layout(alloc.sim_id)
+            return float(layout["width"]), float(layout["height"])
+        except Exception:
+            saved = state.get_presentation(alloc.slug)
+            if saved:
+                return float(saved["width"]), float(saved["height"])
+            return 494.0, 1054.0
+    frame = android.current_window_frame(alloc.sim_id)
+    if frame:
+        return float(frame["width"]), float(frame["height"])
+    return 411.0, 914.0
+
+
+def _apply_workspace_to_allocations(workspace: dict, allocations: list[state.Allocation]) -> list[dict]:
+    display = {
+        "display_id": workspace.get("display_id"),
+        "origin_x": float(workspace["origin_x"]),
+        "origin_y": float(workspace["origin_y"]),
+        "width": float(workspace["width"]),
+        "height": float(workspace["height"]),
+    }
+    placements = []
+    for idx, alloc in enumerate(allocations):
+        base_width, base_height = _current_or_saved_window_size(alloc)
+        layout = _workspace_frame_for_slot(display, idx, len(allocations), base_width, base_height)
+        applied = False
+        note = None
+        if alloc.platform == "ios":
+            ios.present(alloc.sim_id, layout=layout)
+            state.set_presentation(alloc.slug, layout)
+            applied = True
+        else:
+            applied = android.set_window_frame(
+                alloc.sim_id,
+                layout["x"],
+                layout["y"],
+                layout["width"],
+                layout["height"],
+            )
+            if not applied:
+                note = "Android emulator window not visible; launch with --window to place it in the workspace."
+        placements.append(
+            {
+                "slug": alloc.slug,
+                "platform": alloc.platform,
+                "layout": layout,
+                "applied": applied,
+                "note": note,
+            }
+        )
+    return placements
+
+
+def _maybe_apply_agent_workspace(slug: str) -> Optional[dict]:
+    alloc = state.require(slug)
+    workspace = state.get_workspace(alloc.agent)
+    if not workspace:
+        return None
+    placements = _apply_workspace_to_allocations(workspace, [alloc])
+    return placements[0] if placements else None
 
 
 def _ensure_ios_ready_or_heal(slug: str, sim_id: str) -> dict:
@@ -1279,6 +1470,27 @@ def build_parser() -> argparse.ArgumentParser:
     ready_p.add_argument("slug")
     ready_p.add_argument("--json", action="store_true", help="Output as JSON")
     ready_p.set_defaults(func=cmd_ready)
+
+    # workspace
+    workspace_p = sub.add_parser("workspace", help="Manage a per-agent simulator workspace/display target")
+    workspace_sub = workspace_p.add_subparsers(dest="workspace_command", required=True)
+
+    workspace_set_p = workspace_sub.add_parser("set", help="Save the current desktop/display as this agent's workspace")
+    workspace_set_p.add_argument("--json", action="store_true", help="Output as JSON")
+    workspace_set_p.set_defaults(func=cmd_workspace_set)
+
+    workspace_show_p = workspace_sub.add_parser("show", help="Show the saved workspace for this agent")
+    workspace_show_p.add_argument("--json", action="store_true", help="Output as JSON")
+    workspace_show_p.set_defaults(func=cmd_workspace_show)
+
+    workspace_clear_p = workspace_sub.add_parser("clear", help="Clear the saved workspace for this agent")
+    workspace_clear_p.add_argument("--json", action="store_true", help="Output as JSON")
+    workspace_clear_p.set_defaults(func=cmd_workspace_clear)
+
+    workspace_apply_p = workspace_sub.add_parser("apply", help="Move this agent's simulator windows into the saved workspace")
+    workspace_apply_p.add_argument("slugs", nargs="*", help="Optional subset of reserved slugs to place")
+    workspace_apply_p.add_argument("--json", action="store_true", help="Output as JSON")
+    workspace_apply_p.set_defaults(func=cmd_workspace_apply)
 
     # animations
     anim_p = sub.add_parser("animations",

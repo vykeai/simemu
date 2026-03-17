@@ -165,6 +165,7 @@ simemu release myapp-android
 | `simemu present <slug> [--json]` | Restore an iOS simulator window into a known visible state |
 | `simemu stabilize <slug> [--heal] [--json]` | Preflight simulator readiness for interactive work |
 | `simemu ready <slug> [--json]` | Run the recommended interactive preflight and heal saved iOS presentation drift |
+| `simemu workspace set/show/apply/clear` | Save and reuse a per-agent display/workspace target for simulator windows |
 | `simemu erase <slug> [--yes]` | Factory reset — wipes all data |
 | `simemu check <slug> [--bundle <id>]` | Verify simulator is booted; optionally check app is in foreground |
 | `simemu env <slug>` | Show device info (UDID, screen size, Maestro device ID) as JSON |
@@ -215,6 +216,15 @@ For best results, save a canonical layout once per slug:
 ```bash
 simemu present myapp-ios --save-layout
 ```
+
+For multi-project Macs, save a workspace from the terminal/desktop where you want that agent's simulator windows to live:
+
+```bash
+SIMEMU_AGENT=sitches simemu workspace set
+SIMEMU_AGENT=sitches simemu workspace apply
+```
+
+This stores the current display context for that agent and re-places its simulator windows there later. In practice that gives you "keep `sitches` windows with the `sitches` terminal, keep `fitkind` windows with the `fitkind` terminal" without depending on fragile macOS Space IDs.
 
 During focus-sensitive iOS interaction, `simemu` can also show:
 

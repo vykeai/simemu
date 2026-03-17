@@ -809,6 +809,66 @@ def _display_for_frame(x: float, y: float, width: float, height: float) -> Optio
     return None
 
 
+def _main_display() -> Optional[dict]:
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        display_id = Quartz.CGMainDisplayID()
+        bounds = Quartz.CGDisplayBounds(display_id)
+        return {
+            "id": int(display_id),
+            "origin_x": float(bounds.origin.x),
+            "origin_y": float(bounds.origin.y),
+            "width": float(bounds.size.width),
+            "height": float(bounds.size.height),
+            "is_main": True,
+        }
+    except Exception:
+        return None
+
+
+def current_desktop_anchor() -> dict:
+    """Return the current active desktop/display anchor, based on the frontmost app window when possible."""
+    frontmost = _frontmost_app_name()
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly,
+            Quartz.kCGNullWindowID,
+        )
+        for window in windows:
+            owner = window.get("kCGWindowOwnerName")
+            if not owner or owner != frontmost:
+                continue
+            bounds = window.get("kCGWindowBounds") or {}
+            width = float(bounds.get("Width", 0))
+            height = float(bounds.get("Height", 0))
+            if width <= 0 or height <= 0:
+                continue
+            x = float(bounds.get("X", 0))
+            y = float(bounds.get("Y", 0))
+            display = _display_for_frame(x, y, width, height) or _main_display()
+            return {
+                "frontmost_app": frontmost,
+                "window_frame": {
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                },
+                "display": display,
+            }
+    except Exception:
+        pass
+
+    return {
+        "frontmost_app": frontmost,
+        "window_frame": None,
+        "display": _main_display(),
+    }
+
+
 def _window_visibility_state(udid: str) -> Optional[dict]:
     try:
         import importlib as _il

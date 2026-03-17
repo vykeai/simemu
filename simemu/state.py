@@ -132,7 +132,7 @@ def _read_presentation_raw() -> dict:
             return json.loads(current_file.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return {"layouts": {}}
+    return {"layouts": {}, "workspaces": {}}
 
 
 def _write_presentation_raw(state: dict):
@@ -248,5 +248,26 @@ def clear_presentation(slug: str) -> bool:
         existed = slug in state["layouts"]
         if existed:
             del state["layouts"][slug]
+            save(state)
+        return existed
+
+
+def get_workspace(agent: str) -> Optional[dict]:
+    state = _read_presentation_raw()
+    return state.get("workspaces", {}).get(agent)
+
+
+def set_workspace(agent: str, workspace: dict) -> None:
+    with _locked_presentation() as (state, save):
+        state.setdefault("workspaces", {})[agent] = workspace
+        save(state)
+
+
+def clear_workspace(agent: str) -> bool:
+    with _locked_presentation() as (state, save):
+        workspaces = state.setdefault("workspaces", {})
+        existed = agent in workspaces
+        if existed:
+            del workspaces[agent]
             save(state)
         return existed

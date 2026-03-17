@@ -18,6 +18,81 @@ from .discover import get_android_serial
 SCREENRECORD_MAX_SECONDS = 180
 
 
+def _window_info(avd_name: str) -> Optional[dict]:
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionAll,
+            Quartz.kCGNullWindowID,
+        )
+    except Exception:
+        return None
+
+    avd_name_lower = avd_name.lower()
+    candidates = []
+    for window in windows:
+        owner = str(window.get("kCGWindowOwnerName") or "")
+        name = str(window.get("kCGWindowName") or "")
+        owner_lower = owner.lower()
+        name_lower = name.lower()
+        if avd_name_lower not in name_lower and avd_name_lower not in owner_lower:
+            if "android emulator" not in owner_lower and "qemu-system" not in owner_lower and "emulator" not in name_lower:
+                continue
+        bounds = window.get("kCGWindowBounds") or {}
+        width = float(bounds.get("Width", 0))
+        height = float(bounds.get("Height", 0))
+        if width <= 0 or height <= 0:
+            continue
+        candidates.append(
+            {
+                "owner": owner,
+                "name": name,
+                "bounds": {
+                    "x": float(bounds.get("X", 0)),
+                    "y": float(bounds.get("Y", 0)),
+                    "width": width,
+                    "height": height,
+                },
+                "onscreen": bool(window.get("kCGWindowIsOnscreen", 0)),
+                "layer": int(window.get("kCGWindowLayer", 0)),
+            }
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (not item["onscreen"], item["layer"], -(item["bounds"]["width"] * item["bounds"]["height"])))
+    return candidates[0]
+
+
+def current_window_frame(avd_name: str) -> Optional[dict]:
+    info = _window_info(avd_name)
+    if not info:
+        return None
+    return info["bounds"]
+
+
+def set_window_frame(avd_name: str, x: float, y: float, width: float, height: float) -> bool:
+    info = _window_info(avd_name)
+    if not info:
+        return False
+    owner = info["owner"].replace('"', '\\"')
+    name = info["name"].replace('"', '\\"')
+    if name:
+        window_ref = f'(first window whose name contains "{name}")'
+    else:
+        window_ref = "window 1"
+    script = f'''tell application "System Events"
+    tell process "{owner}"
+        set w to {window_ref}
+        set position of w to {{{int(x)}, {int(y)}}}
+        set size of w to {{{int(width)}, {int(height)}}}
+        perform action "AXRaise" of w
+    end tell
+end tell'''
+    subprocess.run(["osascript", "-e", script], capture_output=True, check=False)
+    return True
+
+
 def _sidecar_dir() -> Path:
     """
     Use a per-user writable temp directory for recording metadata.
