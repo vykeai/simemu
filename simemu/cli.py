@@ -1097,8 +1097,11 @@ def cmd_tap(args):
     state.touch(args.slug)
     x, y = _resolve_coords(args, alloc)
     if alloc.platform == "ios":
-        with _desktop_lease(alloc, "tap", f"Tap {x},{y} on {args.slug}", estimated_seconds=5):
+        lease = _desktop_lease(alloc, "tap", f"Tap {x},{y} on {args.slug}", estimated_seconds=5)
+        with lease:
+            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name, scenario="UI interaction")
             _prepare_ios_interaction(args.slug, alloc.sim_id)
+            lease.update(stage="Tapping interface", screen=f"{alloc.device_name} @ {x},{y}", scenario="UI interaction")
             ios.tap(alloc.sim_id, x, y)
     else:
         android.tap(alloc.sim_id, x, y)
@@ -1110,8 +1113,11 @@ def cmd_swipe(args):
     x1, y1 = _resolve_coords(args, alloc, "x1", "y1")
     x2, y2 = _resolve_coords(args, alloc, "x2", "y2")
     if alloc.platform == "ios":
-        with _desktop_lease(alloc, "swipe", f"Swipe {x1},{y1} to {x2},{y2} on {args.slug}", estimated_seconds=6):
+        lease = _desktop_lease(alloc, "swipe", f"Swipe {x1},{y1} to {x2},{y2} on {args.slug}", estimated_seconds=6)
+        with lease:
+            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name, scenario="Gesture")
             _prepare_ios_interaction(args.slug, alloc.sim_id)
+            lease.update(stage="Swiping interface", screen=f"{alloc.device_name} {x1},{y1}->{x2},{y2}", scenario="Gesture")
             ios.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration / 1000.0)
     else:
         android.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration)
@@ -1142,7 +1148,10 @@ def cmd_input(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        ios.input_text(alloc.sim_id, args.text)
+        lease = _desktop_lease(alloc, "input", f"Enter text on {args.slug}", estimated_seconds=4)
+        with lease:
+            lease.update(stage="Preparing text input", screen=alloc.device_name, scenario="Keyboard input")
+            ios.input_text(alloc.sim_id, args.text)
         print(f"Text copied to '{args.slug}' pasteboard (paste with Cmd+V or long-press).")
     else:
         android.input_text(alloc.sim_id, args.text)
@@ -1173,8 +1182,11 @@ def cmd_key(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     if alloc.platform == "ios":
-        with _desktop_lease(alloc, "key", f"Send {args.key} key to {args.slug}", estimated_seconds=4):
+        lease = _desktop_lease(alloc, "key", f"Send {args.key} key to {args.slug}", estimated_seconds=4)
+        with lease:
+            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name, scenario="Keyboard input")
             _prepare_ios_interaction(args.slug, alloc.sim_id)
+            lease.update(stage="Sending key event", screen=f"{alloc.device_name} · {args.key}", scenario="Keyboard input")
             ios.key(alloc.sim_id, args.key)
     else:
         android.key(alloc.sim_id, args.key)
@@ -1186,8 +1198,11 @@ def cmd_long_press(args):
     state.touch(args.slug)
     x, y = _resolve_coords(args, alloc)
     if alloc.platform == "ios":
-        with _desktop_lease(alloc, "long-press", f"Long press {x},{y} on {args.slug}", estimated_seconds=6):
+        lease = _desktop_lease(alloc, "long-press", f"Long press {x},{y} on {args.slug}", estimated_seconds=6)
+        with lease:
+            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name, scenario="Gesture")
             _prepare_ios_interaction(args.slug, alloc.sim_id)
+            lease.update(stage="Holding press", screen=f"{alloc.device_name} @ {x},{y}", scenario="Gesture")
             ios.long_press(alloc.sim_id, x, y, duration=args.duration / 1000.0)
     else:
         android.long_press(alloc.sim_id, x, y, duration=args.duration)
