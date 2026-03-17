@@ -2,6 +2,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -36,6 +37,10 @@ class IOSControlTests(unittest.TestCase):
         ios._check_interaction_control()
         thread.join()
         self.assertFalse(ios._PAUSE_REQUESTED)
+
+    def test_display_for_frame_returns_none_when_quartz_unavailable(self) -> None:
+        with patch("importlib.import_module", side_effect=RuntimeError("no quartz")):
+            self.assertIsNone(ios._display_for_frame(0, 0, 100, 100))
 
 
 if __name__ == "__main__":

@@ -779,6 +779,36 @@ end tell''',
     ], capture_output=True, check=False)
 
 
+def _display_for_frame(x: float, y: float, width: float, height: float) -> Optional[dict]:
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        display_count = Quartz.CGGetActiveDisplayList(32, None, None)[1]
+        active_displays = Quartz.CGGetActiveDisplayList(display_count, None, None)[0]
+    except Exception:
+        return None
+
+    center_x = x + (width / 2.0)
+    center_y = y + (height / 2.0)
+    for display_id in active_displays:
+        bounds = Quartz.CGDisplayBounds(display_id)
+        if (
+            center_x >= bounds.origin.x
+            and center_x <= bounds.origin.x + bounds.size.width
+            and center_y >= bounds.origin.y
+            and center_y <= bounds.origin.y + bounds.size.height
+        ):
+            return {
+                "id": int(display_id),
+                "origin_x": float(bounds.origin.x),
+                "origin_y": float(bounds.origin.y),
+                "width": float(bounds.size.width),
+                "height": float(bounds.size.height),
+                "is_main": bool(Quartz.CGDisplayIsMain(display_id)),
+            }
+    return None
+
+
 def _desktop_idle_seconds() -> float:
     try:
         import importlib as _il
@@ -833,6 +863,7 @@ def stabilize(udid: str) -> dict:
     idle_seconds = _wait_for_desktop_idle()
     device_name, bounds = _stabilized_bounds(udid)
     window_x, window_y, window_width, window_height = _get_window_frame(udid)
+    window_display = _display_for_frame(window_x, window_y, window_width, window_height)
     return {
         "stable": True,
         "udid": udid,
@@ -851,6 +882,7 @@ def stabilize(udid: str) -> dict:
             "width": window_width,
             "height": window_height,
         },
+        "window_display": window_display,
     }
 
 
@@ -873,12 +905,16 @@ def current_presentation_layout(udid: str) -> dict:
     _ensure_booted(udid)
     _open_sim_window(udid)
     x, y, width, height = _get_window_frame(udid)
-    return {
+    layout = {
         "x": x,
         "y": y,
         "width": width,
         "height": height,
     }
+    window_display = _display_for_frame(x, y, width, height)
+    if window_display:
+        layout["display_id"] = window_display["id"]
+    return layout
 
 
 def _logical_to_screen(

@@ -697,6 +697,12 @@ def _layout_differs(current: dict, saved: dict, tolerance: float = 2.0) -> bool:
     for key in ("x", "y", "width", "height"):
         if abs(float(current[key]) - float(saved[key])) > tolerance:
             return True
+    if (
+        current.get("display_id") is not None
+        and saved.get("display_id") is not None
+        and int(current["display_id"]) != int(saved["display_id"])
+    ):
+        return True
     return False
 
 
@@ -721,6 +727,8 @@ def _ios_presentation_status(slug: str, sim_id: str) -> dict:
             "layout_matches_saved": None,
             "layout_drifted": None,
             "saved_layout": None,
+            "display_matches_saved": None,
+            "display_drifted": None,
         }
     try:
         current_layout = ios.current_presentation_layout(sim_id)
@@ -730,13 +738,23 @@ def _ios_presentation_status(slug: str, sim_id: str) -> dict:
             "layout_matches_saved": False,
             "layout_drifted": True,
             "saved_layout": saved_layout,
+            "display_matches_saved": None,
+            "display_drifted": None,
         }
     drifted = _layout_differs(current_layout, saved_layout)
+    display_matches_saved = None
+    display_drifted = None
+    if saved_layout.get("display_id") is not None:
+        current_display_id = current_layout.get("display_id")
+        display_matches_saved = current_display_id == saved_layout["display_id"]
+        display_drifted = not display_matches_saved
     return {
         "has_saved_layout": True,
         "layout_matches_saved": not drifted,
         "layout_drifted": drifted,
         "saved_layout": saved_layout,
+        "display_matches_saved": display_matches_saved,
+        "display_drifted": display_drifted,
     }
 
 

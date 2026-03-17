@@ -286,12 +286,12 @@ class CliTests(unittest.TestCase):
         )
         stdout = io.StringIO()
         payload = {"stable": True, "device_name": "iPhone 16 Pro"}
-        layout = {"x": 10, "y": 20, "width": 300, "height": 600}
+        layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
 
         with patch("simemu.cli.state.require", return_value=alloc):
             with patch("simemu.cli.state.touch"):
                 with patch("simemu.cli.state.get_presentation", return_value=layout):
-                    with patch("simemu.cli.ios.current_presentation_layout", return_value={"x": 100, "y": 20, "width": 300, "height": 600}):
+                    with patch("simemu.cli.ios.current_presentation_layout", return_value={"x": 100, "y": 20, "width": 300, "height": 600, "display_id": 2}):
                         with patch("simemu.cli.ios.stabilize", return_value=payload):
                             with redirect_stdout(stdout):
                                 cli.cmd_stabilize(SimpleNamespace(slug="fitkind-ios", json=False, heal=False))
@@ -308,13 +308,13 @@ class CliTests(unittest.TestCase):
         )
         stdout = io.StringIO()
         payload = {"stable": True, "device_name": "iPhone 16 Pro"}
-        layout = {"x": 10, "y": 20, "width": 300, "height": 600}
+        layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
 
         with patch("simemu.cli.state.require", return_value=alloc):
             with patch("simemu.cli.state.touch"):
                 with patch("simemu.cli.state.get_presentation", return_value=layout):
                     with patch("simemu.cli.ios.current_presentation_layout", side_effect=[
-                        {"x": 100, "y": 20, "width": 300, "height": 600},
+                        {"x": 100, "y": 20, "width": 300, "height": 600, "display_id": 2},
                         layout,
                     ]):
                         with patch("simemu.cli.ios.present") as present_mock:
@@ -324,6 +324,29 @@ class CliTests(unittest.TestCase):
 
         present_mock.assert_called_once_with("SIM-001", layout=layout)
         self.assertIn("healed to saved layout", stdout.getvalue())
+
+    def test_stabilize_ios_json_reports_display_drift_fields(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        payload = {"stable": True, "device_name": "iPhone 16 Pro"}
+        layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=layout):
+                    with patch("simemu.cli.ios.current_presentation_layout", return_value={"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 2}):
+                        with patch("simemu.cli.ios.stabilize", return_value=payload):
+                            with redirect_stdout(stdout):
+                                cli.cmd_stabilize(SimpleNamespace(slug="fitkind-ios", json=True, heal=False))
+
+        self.assertIn('"display_drifted": true', stdout.getvalue())
+        self.assertIn('"display_matches_saved": false', stdout.getvalue())
 
     def test_present_ios_save_layout_persists_current_frame(self) -> None:
         alloc = Allocation(
