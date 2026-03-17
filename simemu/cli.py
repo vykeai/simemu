@@ -676,10 +676,24 @@ def _resolve_coords(args, alloc, x_attr="x", y_attr="y"):
     return x, y
 
 
+def _layout_differs(current: dict, saved: dict, tolerance: float = 2.0) -> bool:
+    for key in ("x", "y", "width", "height"):
+        if abs(float(current[key]) - float(saved[key])) > tolerance:
+            return True
+    return False
+
+
 def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
-    layout = state.get_presentation(slug)
-    if layout:
-        ios.present(sim_id, layout=layout)
+    saved_layout = state.get_presentation(slug)
+    if not saved_layout:
+        return
+    try:
+        current_layout = ios.current_presentation_layout(sim_id)
+    except Exception:
+        ios.present(sim_id, layout=saved_layout)
+        return
+    if _layout_differs(current_layout, saved_layout):
+        ios.present(sim_id, layout=saved_layout)
 
 
 def cmd_tap(args):
