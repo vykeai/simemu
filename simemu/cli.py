@@ -340,6 +340,47 @@ def cmd_stabilize(args):
         print(f"'{args.slug}' is stable.{suffix}{visibility_suffix}")
 
 
+def cmd_ready(args):
+    alloc = state.require(args.slug)
+    state.touch(args.slug)
+    if alloc.platform == "ios":
+        presentation = _ios_presentation_status(args.slug, alloc.sim_id)
+        healed = False
+        initial_stable = ios.stabilize(alloc.sim_id)
+        if initial_stable.get("window_visible_on_active_desktop") is False and presentation["saved_layout"] is None:
+            raise RuntimeError(
+                f"Simulator window for '{args.slug}' is not visible on the active desktop. "
+                f"Run `simemu present {args.slug}` or save a layout with `simemu present {args.slug} --save-layout`."
+            )
+        if presentation["layout_drifted"] or presentation["display_drifted"]:
+            if presentation["saved_layout"] is not None:
+                ios.present(alloc.sim_id, layout=presentation["saved_layout"])
+                healed = True
+        result = ios.stabilize(alloc.sim_id)
+        result.update(_ios_presentation_status(args.slug, alloc.sim_id))
+        result["healed"] = healed
+        result["ready"] = True
+    else:
+        result = {
+            "ready": True,
+            "stable": True,
+            "slug": args.slug,
+            "platform": alloc.platform,
+            "device_name": alloc.device_name,
+            "note": "Android presentation is already window-independent for most commands.",
+        }
+    if args.json:
+        _print_json(result)
+    else:
+        suffix = ""
+        if alloc.platform == "ios":
+            if result.get("healed"):
+                suffix = " (healed)"
+            elif result.get("layout_matches_saved") is True:
+                suffix = " (already aligned)"
+        print(f"'{args.slug}' is ready.{suffix}")
+
+
 def cmd_install(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
@@ -1238,6 +1279,12 @@ def build_parser() -> argparse.ArgumentParser:
                              help="For iOS, restore the saved presentation layout before reporting readiness")
     stabilize_p.add_argument("--json", action="store_true", help="Output as JSON")
     stabilize_p.set_defaults(func=cmd_stabilize)
+
+    # ready
+    ready_p = sub.add_parser("ready", help="Run the recommended interactive preflight for a reserved simulator")
+    ready_p.add_argument("slug")
+    ready_p.add_argument("--json", action="store_true", help="Output as JSON")
+    ready_p.set_defaults(func=cmd_ready)
 
     # animations
     anim_p = sub.add_parser("animations",

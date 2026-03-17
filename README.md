@@ -163,7 +163,8 @@ simemu release myapp-android
 | `simemu shutdown <slug>` | Shut down without releasing |
 | `simemu reboot <slug>` | Shut down and boot again (fastest fix for hung emulators) |
 | `simemu present <slug> [--json]` | Restore an iOS simulator window into a known visible state |
-| `simemu stabilize <slug> [--json]` | Preflight simulator readiness for interactive work |
+| `simemu stabilize <slug> [--heal] [--json]` | Preflight simulator readiness for interactive work |
+| `simemu ready <slug> [--json]` | Run the recommended interactive preflight and heal saved iOS presentation drift |
 | `simemu erase <slug> [--yes]` | Factory reset — wipes all data |
 | `simemu check <slug> [--bundle <id>]` | Verify simulator is booted; optionally check app is in foreground |
 | `simemu env <slug>` | Show device info (UDID, screen size, Maestro device ID) as JSON |
@@ -198,12 +199,22 @@ simemu long-press myapp-android 0.5 0.5 --pct       # dead centre
 On a Mac that a human is actively using, interactive iOS gestures should start with:
 
 ```bash
-simemu present myapp-ios
-simemu stabilize myapp-ios --json
+simemu ready myapp-ios
 simemu tap myapp-ios 0.5 0.92 --pct
 ```
 
-`simemu tap`, `swipe`, and `long-press` now wait briefly for desktop idle, restore the previous frontmost app afterwards, and avoid acting against stale simulator bounds.
+`simemu ready` wraps the safest preflight path:
+- checks whether the Simulator window is visible on the active desktop
+- heals to a saved presentation layout if one exists and drift is detected
+- fails clearly if the window is hidden and there is no saved layout to recover from
+
+`simemu tap`, `swipe`, `long-press`, `focus`, and `key` now wait briefly for desktop idle, restore the previous frontmost app afterwards, and avoid acting against stale simulator bounds.
+
+For best results, save a canonical layout once per slug:
+
+```bash
+simemu present myapp-ios --save-layout
+```
 
 During focus-sensitive iOS interaction, `simemu` can also show:
 

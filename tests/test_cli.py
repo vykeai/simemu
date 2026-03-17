@@ -372,6 +372,66 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("window not visible on active desktop", stdout.getvalue())
 
+    def test_ready_ios_heals_saved_layout_when_drifted(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
+        stable_payload = {"stable": True, "window_visible_on_active_desktop": True}
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=layout):
+                    with patch("simemu.cli.ios.current_presentation_layout", side_effect=[
+                        {"x": 100, "y": 20, "width": 300, "height": 600, "display_id": 2},
+                        layout,
+                    ]):
+                        with patch("simemu.cli.ios.present") as present_mock:
+                            with patch("simemu.cli.ios.stabilize", return_value=stable_payload):
+                                with redirect_stdout(stdout):
+                                    cli.cmd_ready(SimpleNamespace(slug="fitkind-ios", json=False))
+
+        present_mock.assert_called_once_with("SIM-001", layout=layout)
+        self.assertIn("is ready. (healed)", stdout.getvalue())
+
+    def test_ready_ios_fails_if_window_hidden_and_no_saved_layout(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=None):
+                    with patch("simemu.cli.ios.stabilize", return_value={"window_visible_on_active_desktop": False}):
+                        with self.assertRaisesRegex(RuntimeError, "not visible on the active desktop"):
+                            cli.cmd_ready(SimpleNamespace(slug="fitkind-ios", json=False))
+
+    def test_ready_android_reports_ready(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-android",
+            sim_id="EMU-001",
+            platform="android",
+            device_name="Pixel 9",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with redirect_stdout(stdout):
+                    cli.cmd_ready(SimpleNamespace(slug="fitkind-android", json=False))
+
+        self.assertIn("'fitkind-android' is ready.", stdout.getvalue())
+
     def test_present_ios_save_layout_persists_current_frame(self) -> None:
         alloc = Allocation(
             slug="fitkind-ios",
