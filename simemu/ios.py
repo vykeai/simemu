@@ -491,46 +491,81 @@ import tkinter as tk
 
 root = tk.Tk()
 root.withdraw()
-root.overrideredirect(True)
-root.attributes("-topmost", True)
-root.attributes("-alpha", 0.94)
-root.configure(bg="#0f0a14")
+windows = []
 
-frame = tk.Frame(root, bg="#201326", highlightthickness=1, highlightbackground="#6c3b62")
-frame.pack(fill="both", expand=True)
+def _displays():
+    try:
+        import Quartz
+        max_displays = 16
+        active, count = Quartz.CGGetActiveDisplayList(max_displays, None, None)
+        result = []
+        for display_id in active[:count]:
+            bounds = Quartz.CGDisplayBounds(display_id)
+            result.append((int(bounds.origin.x), int(bounds.origin.y), int(bounds.size.width), int(bounds.size.height)))
+        return result or [(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())]
+    except Exception:
+        return [(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())]
 
-title = tk.Label(
-    frame,
-    text="simemu using Simulator / Emulator",
-    bg="#201326",
-    fg="#f4e9f2",
-    font=("SF Pro Display", 14, "bold"),
-    padx=18,
-    pady=10,
-)
-title.pack()
+def _build_window(screen_x, screen_y, screen_w, _screen_h):
+    win = tk.Toplevel(root)
+    win.overrideredirect(True)
+    win.attributes("-topmost", True)
+    win.attributes("-alpha", 0.94)
+    win.configure(bg="#0f0a14")
 
-subtitle = tk.Label(
-    frame,
-    text="Give me a sec. Please pause keyboard and mouse input.",
-    bg="#201326",
-    fg="#c9b6c8",
-    font=("SF Pro Text", 11),
-    padx=18,
-    pady=(0, 12),
-)
-subtitle.pack()
+    frame = tk.Frame(win, bg="#201326", highlightthickness=1, highlightbackground="#6c3b62")
+    frame.pack(fill="both", expand=True)
 
-root.update_idletasks()
-width = 420
-height = 86
-screen_w = root.winfo_screenwidth()
-x = max(20, screen_w - width - 24)
-y = 26
-root.geometry(f"{width}x{height}+{x}+{y}")
-root.deiconify()
+    title = tk.Label(
+        frame,
+        text="simemu using Simulator / Emulator",
+        bg="#201326",
+        fg="#f4e9f2",
+        font=("SF Pro Display", 14, "bold"),
+        padx=18,
+        pady=(10, 4),
+    )
+    title.pack()
+
+    subtitle = tk.Label(
+        frame,
+        text="Give me a sec. Please pause keyboard and mouse input.",
+        bg="#201326",
+        fg="#c9b6c8",
+        font=("SF Pro Text", 11),
+        padx=18,
+        pady=(0, 4),
+    )
+    subtitle.pack()
+
+    shortcuts = tk.Label(
+        frame,
+        text="Stop: Cmd+.    Pause: Cmd+Shift+.",
+        bg="#201326",
+        fg="#9e889c",
+        font=("SF Pro Text", 10),
+        padx=18,
+        pady=(0, 10),
+    )
+    shortcuts.pack()
+
+    width = 420
+    height = 106
+    x = max(screen_x + 20, screen_x + screen_w - width - 24)
+    y = screen_y + 26
+    win.geometry(f"{width}x{height}+{x}+{y}")
+    win.deiconify()
+    windows.append(win)
+
+for display in _displays():
+    _build_window(*display)
 
 def _close(*_args):
+    for win in windows:
+        try:
+            win.destroy()
+        except Exception:
+            pass
     try:
         root.destroy()
     except Exception:
