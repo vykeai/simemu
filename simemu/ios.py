@@ -19,6 +19,9 @@ from typing import Optional
 
 _LAST_BUSY_NOTIFICATION_AT = 0.0
 _HUD_PROCESS: subprocess.Popen | None = None
+_CONTROL_HANDLERS_INSTALLED = False
+_PAUSE_REQUESTED = False
+_STOP_REQUESTED = False
 
 
 def _simctl(*args, capture: bool = False, check: bool = True) -> Optional[str]:
@@ -474,6 +477,38 @@ def _notify_shared_desktop_wait() -> None:
     )
 
 
+def _handle_pause_signal(_signum, _frame) -> None:
+    global _PAUSE_REQUESTED
+    _PAUSE_REQUESTED = not _PAUSE_REQUESTED
+
+
+def _handle_stop_signal(_signum, _frame) -> None:
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+
+
+def _install_control_signal_handlers() -> None:
+    global _CONTROL_HANDLERS_INSTALLED
+    if _CONTROL_HANDLERS_INSTALLED:
+        return
+    signal.signal(signal.SIGUSR1, _handle_pause_signal)
+    signal.signal(signal.SIGINT, _handle_stop_signal)
+    _CONTROL_HANDLERS_INSTALLED = True
+
+
+def _reset_interaction_control() -> None:
+    global _PAUSE_REQUESTED, _STOP_REQUESTED
+    _PAUSE_REQUESTED = False
+    _STOP_REQUESTED = False
+
+
+def _check_interaction_control() -> None:
+    while _PAUSE_REQUESTED and not _STOP_REQUESTED:
+        time.sleep(0.2)
+    if _STOP_REQUESTED:
+        raise RuntimeError("simemu interaction stopped by user")
+
+
 def _hud_enabled() -> bool:
     value = (os.environ.get("SIMEMU_HUD", "1")).strip().lower()
     return value not in {"0", "false", "no", "off"}
@@ -485,9 +520,14 @@ def _start_hud_overlay() -> None:
         return
     if _HUD_PROCESS and _HUD_PROCESS.poll() is None:
         return
-    script = r"""
+    parent_pid = os.getpid()
+    script = rf"""
+import os
 import signal
+import threading
 import tkinter as tk
+
+PARENT_PID = {parent_pid}
 
 root = tk.Tk()
 root.withdraw()
@@ -573,6 +613,49 @@ def _close(*_args):
 
 signal.signal(signal.SIGTERM, _close)
 signal.signal(signal.SIGINT, _close)
+
+def _send(sig):
+    try:
+        os.kill(PARENT_PID, sig)
+    except Exception:
+        pass
+
+def _install_shortcuts():
+    try:
+        import Quartz
+
+        state = {{"cmd": False, "shift": False}}
+
+        def callback(proxy, event_type, event, refcon):
+            keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+            flags = Quartz.CGEventGetFlags(event)
+            cmd = bool(flags & Quartz.kCGEventFlagMaskCommand)
+            shift = bool(flags & Quartz.kCGEventFlagMaskShift)
+            if event_type == Quartz.kCGEventKeyDown and keycode == 47 and cmd:
+                if shift:
+                    _send(signal.SIGUSR1)
+                else:
+                    _send(signal.SIGINT)
+            return event
+
+        mask = Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
+        tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            mask,
+            callback,
+            None,
+        )
+        if tap is None:
+            return
+        run_loop_source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+        Quartz.CFRunLoopAddSource(Quartz.CFRunLoopGetCurrent(), run_loop_source, Quartz.kCFRunLoopCommonModes)
+        Quartz.CGEventTapEnable(tap, True)
+    except Exception:
+        return
+
+threading.Thread(target=_install_shortcuts, daemon=True).start()
 root.mainloop()
 """
     try:
@@ -681,6 +764,7 @@ def _wait_for_desktop_idle(min_idle_seconds: float = 1.0, max_wait_seconds: floa
     idle = _desktop_idle_seconds()
     warned = False
     while idle < min_idle_seconds and time.time() < deadline:
+        _check_interaction_control()
         if not warned:
             _notify_shared_desktop_wait()
             warned = True
@@ -822,6 +906,8 @@ def tap(udid: str, x: int, y: int) -> None:
     Quartz = _il.import_module("Quartz")
     import time as _t
 
+    _install_control_signal_handlers()
+    _reset_interaction_control()
     with _interactive_overlay():
         _wait_for_desktop_idle()
         _ensure_booted(udid)
@@ -829,6 +915,7 @@ def tap(udid: str, x: int, y: int) -> None:
         device_w, device_h = _get_device_logical_size(device_name)
         cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
         with _restore_frontmost_app():
+            _check_interaction_control()
             _raise_sim_window(device_name)
             sim_pid = _get_simulator_pid()
 
@@ -838,10 +925,13 @@ def tap(udid: str, x: int, y: int) -> None:
                 e_mv = Q.CGEventCreateMouseEvent(src, Q.kCGEventMouseMoved,   pos, Q.kCGMouseButtonLeft)
                 e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
                 e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
+                _check_interaction_control()
                 Q.CGEventPostToPid(sim_pid, e_mv)
                 _t.sleep(0.03)
+                _check_interaction_control()
                 Q.CGEventPostToPid(sim_pid, e_dn)
                 _t.sleep(0.05)
+                _check_interaction_control()
                 Q.CGEventPostToPid(sim_pid, e_up)
 
             _post_mouse_hidden(_click)
@@ -857,6 +947,8 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
     Quartz = _il.import_module("Quartz")
     import time as _t
 
+    _install_control_signal_handlers()
+    _reset_interaction_control()
     with _interactive_overlay():
         _wait_for_desktop_idle()
         _ensure_booted(udid)
@@ -872,9 +964,11 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
             src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
             start = Q.CGPoint(x=sx1, y=sy1)
             e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, start, Q.kCGMouseButtonLeft)
+            _check_interaction_control()
             Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
             _t.sleep(step_delay)
             for i in range(1, steps + 1):
+                _check_interaction_control()
                 t = i / steps
                 pos = Q.CGPoint(x=int(sx1 + (sx2 - sx1) * t), y=int(sy1 + (sy2 - sy1) * t))
                 e_drag = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDragged, pos, Q.kCGMouseButtonLeft)
@@ -882,9 +976,11 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
                 _t.sleep(step_delay)
             end = Q.CGPoint(x=sx2, y=sy2)
             e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp, end, Q.kCGMouseButtonLeft)
+            _check_interaction_control()
             Q.CGEventPost(Q.kCGSessionEventTap, e_up)
 
         with _restore_frontmost_app():
+            _check_interaction_control()
             _raise_sim_window(device_name)
             _post_mouse_hidden(_drag)
 
@@ -898,6 +994,8 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
     Quartz = _il.import_module("Quartz")
     import time as _t
 
+    _install_control_signal_handlers()
+    _reset_interaction_control()
     with _interactive_overlay():
         _wait_for_desktop_idle()
         _ensure_booted(udid)
@@ -910,11 +1008,17 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
             pos = Q.CGPoint(x=cx, y=cy)
             e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
             e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
+            _check_interaction_control()
             Q.CGEventPost(Q.kCGSessionEventTap, e_dn)
-            _t.sleep(duration)
+            start = _t.time()
+            while _t.time() - start < duration:
+                _check_interaction_control()
+                _t.sleep(0.05)
+            _check_interaction_control()
             Q.CGEventPost(Q.kCGSessionEventTap, e_up)
 
         with _restore_frontmost_app():
+            _check_interaction_control()
             _raise_sim_window(device_name)
             _post_mouse_hidden(_press)
 
