@@ -42,6 +42,41 @@ class IOSControlTests(unittest.TestCase):
         with patch("importlib.import_module", side_effect=RuntimeError("no quartz")):
             self.assertIsNone(ios._display_for_frame(0, 0, 100, 100))
 
+    def test_window_visibility_state_returns_onscreen_metadata(self) -> None:
+        class FakeQuartz:
+            kCGWindowListOptionAll = 1
+            kCGNullWindowID = 0
+
+            @staticmethod
+            def CGWindowListCopyWindowInfo(_opt, _wid):
+                return [
+                    {
+                        "kCGWindowOwnerName": "Simulator",
+                        "kCGWindowName": "sitches iPhone 16 Pro Max",
+                        "kCGWindowIsOnscreen": 1,
+                        "kCGWindowLayer": 0,
+                        "kCGWindowAlpha": 1.0,
+                    }
+                ]
+
+        real_import_module = __import__("importlib").import_module
+
+        def fake_import_module(name):
+            if name == "Quartz":
+                return FakeQuartz
+            return real_import_module(name)
+
+        with patch("simemu.ios._get_device_name", return_value="sitches iPhone 16 Pro Max"):
+            with patch("importlib.import_module", side_effect=fake_import_module):
+                state = ios._window_visibility_state("SIM-001")
+
+        self.assertEqual(True, state["onscreen"])
+        self.assertEqual(0, state["layer"])
+
+    def test_window_visibility_state_returns_none_when_quartz_unavailable(self) -> None:
+        with patch("importlib.import_module", side_effect=RuntimeError("no quartz")):
+            self.assertIsNone(ios._window_visibility_state("SIM-001"))
+
 
 if __name__ == "__main__":
     unittest.main()

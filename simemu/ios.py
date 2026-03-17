@@ -809,6 +809,33 @@ def _display_for_frame(x: float, y: float, width: float, height: float) -> Optio
     return None
 
 
+def _window_visibility_state(udid: str) -> Optional[dict]:
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        device_name = _get_device_name(udid)
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionAll,
+            Quartz.kCGNullWindowID,
+        )
+    except Exception:
+        return None
+
+    for window in windows:
+        owner = window.get("kCGWindowOwnerName")
+        name = window.get("kCGWindowName") or ""
+        if owner != "Simulator":
+            continue
+        if device_name not in name:
+            continue
+        return {
+            "onscreen": bool(window.get("kCGWindowIsOnscreen", 0)),
+            "layer": int(window.get("kCGWindowLayer", 0)),
+            "alpha": float(window.get("kCGWindowAlpha", 1.0)),
+        }
+    return None
+
+
 def _desktop_idle_seconds() -> float:
     try:
         import importlib as _il
@@ -864,6 +891,7 @@ def stabilize(udid: str) -> dict:
     device_name, bounds = _stabilized_bounds(udid)
     window_x, window_y, window_width, window_height = _get_window_frame(udid)
     window_display = _display_for_frame(window_x, window_y, window_width, window_height)
+    window_visibility = _window_visibility_state(udid)
     return {
         "stable": True,
         "udid": udid,
@@ -883,6 +911,8 @@ def stabilize(udid: str) -> dict:
             "height": window_height,
         },
         "window_display": window_display,
+        "window_visibility": window_visibility,
+        "window_visible_on_active_desktop": None if window_visibility is None else window_visibility["onscreen"],
     }
 
 

@@ -333,7 +333,10 @@ def cmd_stabilize(args):
                 suffix = " (layout drifted from saved presentation)"
             else:
                 suffix = " (layout matches saved presentation)"
-        print(f"'{args.slug}' is stable.{suffix}")
+        visibility_suffix = ""
+        if alloc.platform == "ios" and result.get("window_visible_on_active_desktop") is False:
+            visibility_suffix = " [window not visible on active desktop]"
+        print(f"'{args.slug}' is stable.{suffix}{visibility_suffix}")
 
 
 def cmd_install(args):

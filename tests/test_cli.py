@@ -285,7 +285,7 @@ class CliTests(unittest.TestCase):
             agent="fitkind",
         )
         stdout = io.StringIO()
-        payload = {"stable": True, "device_name": "iPhone 16 Pro"}
+        payload = {"stable": True, "device_name": "iPhone 16 Pro", "window_visible_on_active_desktop": True}
         layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
 
         with patch("simemu.cli.state.require", return_value=alloc):
@@ -307,7 +307,7 @@ class CliTests(unittest.TestCase):
             agent="fitkind",
         )
         stdout = io.StringIO()
-        payload = {"stable": True, "device_name": "iPhone 16 Pro"}
+        payload = {"stable": True, "device_name": "iPhone 16 Pro", "window_visible_on_active_desktop": True}
         layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
 
         with patch("simemu.cli.state.require", return_value=alloc):
@@ -334,7 +334,7 @@ class CliTests(unittest.TestCase):
             agent="fitkind",
         )
         stdout = io.StringIO()
-        payload = {"stable": True, "device_name": "iPhone 16 Pro"}
+        payload = {"stable": True, "device_name": "iPhone 16 Pro", "window_visible_on_active_desktop": True}
         layout = {"x": 10, "y": 20, "width": 300, "height": 600, "display_id": 1}
 
         with patch("simemu.cli.state.require", return_value=alloc):
@@ -347,6 +347,30 @@ class CliTests(unittest.TestCase):
 
         self.assertIn('"display_drifted": true', stdout.getvalue())
         self.assertIn('"display_matches_saved": false', stdout.getvalue())
+
+    def test_stabilize_ios_reports_window_not_visible_on_active_desktop(self) -> None:
+        alloc = Allocation(
+            slug="fitkind-ios",
+            sim_id="SIM-001",
+            platform="ios",
+            device_name="iPhone 16 Pro",
+            agent="fitkind",
+        )
+        stdout = io.StringIO()
+        payload = {
+            "stable": True,
+            "device_name": "iPhone 16 Pro",
+            "window_visible_on_active_desktop": False,
+        }
+
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.state.get_presentation", return_value=None):
+                    with patch("simemu.cli.ios.stabilize", return_value=payload):
+                        with redirect_stdout(stdout):
+                            cli.cmd_stabilize(SimpleNamespace(slug="fitkind-ios", json=False, heal=False))
+
+        self.assertIn("window not visible on active desktop", stdout.getvalue())
 
     def test_present_ios_save_layout_persists_current_frame(self) -> None:
         alloc = Allocation(
