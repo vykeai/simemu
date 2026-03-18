@@ -1,0 +1,12 @@
+{
+  "spaces": [
+    {
+      "id": "space-core",
+      "name": "Core",
+      "description": "Core simemu functionality",
+      "icon": "⚡",
+      "platforms": ["cli"],
+      "createdAt": "2026-03-18T00:00:00Z"
+    }
+  ]
+}

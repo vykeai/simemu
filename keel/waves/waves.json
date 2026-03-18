@@ -1,0 +1,13 @@
+{
+  "waves": [
+    {
+      "id": "wave-1",
+      "name": "v2 Polish",
+      "goal": "Complete simemu v2 session API, add build wrapper, cross-platform naming",
+      "status": "active",
+      "target": null,
+      "gates": [],
+      "checkpoints": []
+    }
+  ]
+}

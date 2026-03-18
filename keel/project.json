@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "slug": "simemu",
+  "name": "simemu",
+  "stack": {
+    "platforms": ["cli"],
+    "languages": ["python"],
+    "frameworks": ["click"]
+  },
+  "integrations": {
+    "cloudy": false,
+    "sentinel": false,
+    "simemu": false,
+    "runecode": true
+  },
+  "createdAt": "2026-03-18T00:00:00Z",
+  "updatedAt": "2026-03-18T00:00:00Z"
+}
