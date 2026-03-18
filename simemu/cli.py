@@ -2157,6 +2157,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Estimated time until maintenance is done (default: 5)")
     maint_p.set_defaults(func=cmd_maintenance)
 
+    # menubar
+    mb_p = sub.add_parser("menubar", help="Launch the macOS menu bar status app")
+    mb_p.set_defaults(func=cmd_menubar)
+
     return p
 
 
@@ -2286,6 +2290,17 @@ def cmd_daemon(args):
             print("  Note: this is a live server process, not the launchd-managed daemon.")
 
 
+def cmd_menubar(args):
+    """Launch the macOS menu bar status app."""
+    try:
+        from .ui.menubar import main as menubar_main
+    except ImportError as e:
+        raise RuntimeError(
+            f"Menu bar requires rumps: pip install rumps\n({e})"
+        ) from None
+    menubar_main()
+
+
 def cmd_maintenance(args):
     """Enter or exit maintenance mode."""
     if args.action == "on":
@@ -2310,7 +2325,7 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_maintenance", "cmd_serve", "cmd_daemon"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
 
 def main():
