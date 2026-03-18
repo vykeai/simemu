@@ -22,9 +22,13 @@ from pathlib import Path
 
 from . import state, ios, android, device
 from .discover import (
-    list_ios, list_android, list_real_ios, list_real_android,
+    list_ios, list_android, list_watchos, list_tvos, list_visionos,
+    list_real_ios, list_real_android,
     find_simulator, NoSimulatorAvailable,
 )
+
+# Apple platforms all use xcrun simctl — same as iOS
+_APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
 
 
 def _agent() -> str:
@@ -1614,7 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # acquire
     acq = sub.add_parser("acquire", help="Reserve a simulator or real device")
-    acq.add_argument("platform", choices=["ios", "android"])
+    acq.add_argument("platform", choices=["ios", "android", "watchos", "tvos", "visionos"])
     acq.add_argument("slug", help="Slug name, e.g. fitkind-app")
     acq.add_argument("--device", help="Partial device name filter, e.g. 'iPhone 16 Pro'")
     acq.add_argument("--real", action="store_true",
@@ -1639,13 +1643,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # list
     ls = sub.add_parser("list", help="Show available (unreserved) simulators")
-    ls.add_argument("platform", nargs="?", choices=["ios", "android"])
+    ls.add_argument("platform", nargs="?", choices=["ios", "android", "watchos", "tvos", "visionos"])
     ls.add_argument("--json", action="store_true", help="Output as JSON")
     ls.set_defaults(func=cmd_list)
 
     # list-devices
     ld = sub.add_parser("list-devices", help="Show connected real devices (not simulators)")
-    ld.add_argument("platform", nargs="?", choices=["ios", "android"])
+    ld.add_argument("platform", nargs="?", choices=["ios", "android", "watchos", "tvos", "visionos"])
     ld.add_argument("--json", action="store_true", help="Output as JSON")
     ld.set_defaults(func=cmd_list_devices)
 

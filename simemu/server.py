@@ -283,6 +283,10 @@ def list_devices(platform: Optional[str] = None):
 @app.post("/acquire", summary="Reserve a simulator or real device by slug")
 def acquire(req: AcquireRequest):
     try:
+        state.check_maintenance()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    try:
         sim = find_simulator(req.platform, req.device, real_device=req.real)
     except NoSimulatorAvailable as e:
         raise HTTPException(status_code=409, detail=str(e))

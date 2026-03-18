@@ -113,6 +113,8 @@ def _serial(avd_name: str) -> str:
 
 def _ensure_booted(avd_name: str) -> None:
     """Auto-boot the emulator if it's not running."""
+    from . import state
+    state.check_maintenance()
     if get_android_serial(avd_name) is None:
         print(f"Emulator not running, booting...", flush=True)
         boot(avd_name)

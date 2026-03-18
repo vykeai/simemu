@@ -58,6 +58,8 @@ def boot(udid: str, minimize: bool = False) -> None:
     Simulator window does not save memory, so windows stay where they are.
     All simemu operations (screenshots, gestures) work without window focus.
     """
+    from . import state
+    state.check_maintenance()
     if _is_booted(udid):
         return
     _simctl("boot", udid)

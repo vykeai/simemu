@@ -22,8 +22,11 @@ class SimulatorInfo:
     genymotion: bool = False    # True for Genymotion VMs (preferred over standard AVDs)
 
 
-def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
-    """Return all available iOS simulators, excluding already-allocated ones."""
+def _list_apple_simulators(
+    platform_filter: str,
+    allocated_ids: set[str] | None = None,
+) -> list[SimulatorInfo]:
+    """Return available Apple simulators for a given platform (iOS, watchOS, tvOS, visionOS)."""
     try:
         out = subprocess.check_output(
             ["xcrun", "simctl", "list", "devices", "--json"],
@@ -37,10 +40,10 @@ def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
     results = []
 
     for runtime_key, devices in data["devices"].items():
-        if "iOS" not in runtime_key:
+        if platform_filter not in runtime_key:
             continue
         # runtime_key like "com.apple.CoreSimulator.SimRuntime.iOS-26-2"
-        runtime_label = runtime_key.split(".")[-1].replace("-", " ")  # "iOS 26 2" → clean up
+        runtime_label = runtime_key.split(".")[-1].replace("-", " ")
         parts = runtime_label.split()
         if len(parts) >= 3:
             runtime_label = f"{parts[0]} {parts[1]}.{parts[2]}"
@@ -53,15 +56,34 @@ def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
                 continue
             results.append(SimulatorInfo(
                 sim_id=udid,
-                platform="ios",
+                platform={"iOS": "ios", "watchOS": "watchos", "tvOS": "tvos", "xrOS": "visionos"}.get(platform_filter, platform_filter.lower()),
                 device_name=dev["name"],
                 booted=dev.get("state") == "Booted",
                 runtime=runtime_label,
             ))
 
-    # Prefer booted devices first, then alphabetical by name
     results.sort(key=lambda s: (not s.booted, s.device_name))
     return results
+
+
+def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
+    """Return all available iOS simulators, excluding already-allocated ones."""
+    return _list_apple_simulators("iOS", allocated_ids)
+
+
+def list_watchos(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
+    """Return all available watchOS simulators, excluding already-allocated ones."""
+    return _list_apple_simulators("watchOS", allocated_ids)
+
+
+def list_tvos(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
+    """Return all available tvOS simulators, excluding already-allocated ones."""
+    return _list_apple_simulators("tvOS", allocated_ids)
+
+
+def list_visionos(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
+    """Return all available visionOS simulators, excluding already-allocated ones."""
+    return _list_apple_simulators("xrOS", allocated_ids)
 
 
 def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
@@ -234,21 +256,29 @@ def find_simulator(
     """
     allocated_ids = {a.sim_id for a in state.get_all().values()}
 
+    _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
+    _LIST_FNS = {
+        "ios": list_ios,
+        "watchos": list_watchos,
+        "tvos": list_tvos,
+        "visionos": list_visionos,
+        "android": list_android,
+    }
+    _VALID = ", ".join(sorted(_LIST_FNS))
+
     if real_device:
         if platform == "ios":
             sims = list_real_ios(allocated_ids)
         elif platform == "android":
             sims = list_real_android(allocated_ids)
         else:
-            raise RuntimeError(f"Unknown platform '{platform}'. Use 'ios' or 'android'.")
+            raise RuntimeError(f"Real device discovery not supported for '{platform}'.")
         kind = "real devices"
     else:
-        if platform == "ios":
-            sims = list_ios(allocated_ids)
-        elif platform == "android":
-            sims = list_android(allocated_ids)
-        else:
-            raise RuntimeError(f"Unknown platform '{platform}'. Use 'ios' or 'android'.")
+        list_fn = _LIST_FNS.get(platform)
+        if not list_fn:
+            raise RuntimeError(f"Unknown platform '{platform}'. Use: {_VALID}")
+        sims = list_fn(allocated_ids)
         kind = "simulators"
 
     if not sims:
