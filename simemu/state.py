@@ -30,7 +30,7 @@ from typing import Optional
 
 
 def state_dir() -> Path:
-    return Path(os.environ.get("SIMEMU_STATE_DIR", "/tmp/simemu"))
+    return Path(os.environ.get("SIMEMU_STATE_DIR", Path.home() / ".simemu"))
 
 
 def config_dir() -> Path:

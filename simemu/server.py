@@ -105,6 +105,8 @@ async def lifespan(app: FastAPI):
         _fed_started = True
     except ImportError:
         print("[simemu] zeroconf not installed — skipping federation mDNS", flush=True)
+    except OSError as e:
+        print(f"[simemu] federation mDNS unavailable ({e}) — continuing without it", flush=True)
 
     yield
 
