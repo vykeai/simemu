@@ -39,10 +39,18 @@ final class SimEmuState {
     }
 
     func refresh() {
-        readStateFile()
-        readMaintenanceFile()
-        readProcessMemory()
-        checkDaemon()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let allocs = self._readStateFile()
+            let maint = self._readMaintenanceFile()
+            DispatchQueue.main.async {
+                self.allocations = allocs
+                self.maintenanceActive = maint.0
+                self.maintenanceMessage = maint.1
+                self.readProcessMemory()
+                self.checkDaemon()
+            }
+        }
     }
 
     // MARK: - Daemon auto-launch
@@ -111,7 +119,7 @@ final class SimEmuState {
 
     // MARK: - State file
 
-    private func readStateFile() {
+    private func _readStateFile() -> [AllocationInfo] {
         var result: [AllocationInfo] = []
 
         // Read v2 sessions (primary)
@@ -145,7 +153,6 @@ final class SimEmuState {
             let sessionSimIds = Set(result.map(\.simId))
             for (slug, raw) in allocs.sorted(by: { $0.key < $1.key }) {
                 let simId = raw["sim_id"] as? String ?? ""
-                // Skip if already tracked by a v2 session
                 if sessionSimIds.contains(simId) { continue }
                 let info = AllocationInfo(
                     slug: slug,
@@ -159,22 +166,19 @@ final class SimEmuState {
             }
         }
 
-        allocations = result
+        return result
     }
 
     // MARK: - Maintenance
 
-    private func readMaintenanceFile() {
+    private func _readMaintenanceFile() -> (Bool, String) {
         let file = stateDir.appendingPathComponent("maintenance.json")
         guard let data = try? Data(contentsOf: file),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            maintenanceActive = false
-            maintenanceMessage = ""
-            return
+            return (false, "")
         }
-        maintenanceActive = true
-        maintenanceMessage = json["message"] as? String ?? "Maintenance active"
+        return (true, json["message"] as? String ?? "Maintenance active")
     }
 
     // MARK: - Process memory via ps
