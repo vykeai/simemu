@@ -2,7 +2,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -77,27 +77,37 @@ class IOSControlTests(unittest.TestCase):
         with patch("importlib.import_module", side_effect=RuntimeError("no quartz")):
             self.assertIsNone(ios._window_visibility_state("SIM-001"))
 
-    def test_start_hud_overlay_builds_multidisplay_script(self) -> None:
+    def test_start_hud_overlay_launches_cute_hud_binary(self) -> None:
         captured = {}
 
         class FakeProc:
+            stdin = None
             def poll(self):
                 return None
 
         def fake_popen(args, **kwargs):
             captured["args"] = args
             captured["kwargs"] = kwargs
-            return FakeProc()
+            proc = FakeProc()
+            proc.stdin = Mock()
+            proc.stdin.write = Mock()
+            proc.stdin.flush = Mock()
+            return proc
 
         ios._HUD_PROCESS = None
         with patch("simemu.ios._hud_enabled", return_value=True):
-            with patch("simemu.ios.subprocess.Popen", side_effect=fake_popen):
-                ios._start_hud_overlay()
+            with patch("simemu.ios._find_cute_hud", return_value="/usr/local/bin/cute-hud"):
+                with patch("simemu.ios.subprocess.Popen", side_effect=fake_popen):
+                    ios._start_hud_overlay()
 
-        script = captured["args"][2]
-        self.assertIn("for display in _displays():", script)
-        self.assertIn("_build_window(*display)", script)
-        self.assertIn('win.geometry(f"{width}x{height}+{x}+{y}")', script)
+        self.assertEqual(["/usr/local/bin/cute-hud"], captured["args"])
+
+    def test_start_hud_overlay_skips_when_binary_not_found(self) -> None:
+        ios._HUD_PROCESS = None
+        with patch("simemu.ios._hud_enabled", return_value=True):
+            with patch("simemu.ios._find_cute_hud", return_value=None):
+                ios._start_hud_overlay()
+        self.assertIsNone(ios._HUD_PROCESS)
 
 
 if __name__ == "__main__":

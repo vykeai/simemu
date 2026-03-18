@@ -19,6 +19,10 @@ from typing import Optional
 
 _LAST_BUSY_NOTIFICATION_AT = 0.0
 _HUD_PROCESS: subprocess.Popen | None = None
+_CUTE_HUD_PATHS = [
+    "cute-hud",  # on PATH
+    str(Path.home() / "dev" / "cute-hud" / ".build" / "release" / "cute-hud"),
+]
 _CONTROL_HANDLERS_INSTALLED = False
 _PAUSE_REQUESTED = False
 _STOP_REQUESTED = False
@@ -514,161 +518,54 @@ def _hud_enabled() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _find_cute_hud() -> Optional[str]:
+    """Find the cute-hud binary on PATH or at known locations."""
+    for candidate in _CUTE_HUD_PATHS:
+        if "/" in candidate:
+            if Path(candidate).exists():
+                return candidate
+        else:
+            import shutil as _sh
+            found = _sh.which(candidate)
+            if found:
+                return found
+    return None
+
+
 def _start_hud_overlay() -> None:
     global _HUD_PROCESS
     if not _hud_enabled():
         return
     if _HUD_PROCESS and _HUD_PROCESS.poll() is None:
         return
-    parent_pid = os.getpid()
-    script = rf"""
-import os
-import signal
-import threading
-import tkinter as tk
-
-PARENT_PID = {parent_pid}
-
-root = tk.Tk()
-root.withdraw()
-windows = []
-
-def _displays():
-    try:
-        import Quartz
-        max_displays = 16
-        active, count = Quartz.CGGetActiveDisplayList(max_displays, None, None)
-        result = []
-        for display_id in active[:count]:
-            bounds = Quartz.CGDisplayBounds(display_id)
-            result.append((int(bounds.origin.x), int(bounds.origin.y), int(bounds.size.width), int(bounds.size.height)))
-        return result or [(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())]
-    except Exception:
-        return [(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())]
-
-def _build_window(screen_x, screen_y, screen_w, _screen_h):
-    win = tk.Toplevel(root)
-    win.overrideredirect(True)
-    win.attributes("-topmost", True)
-    win.attributes("-alpha", 0.94)
-    win.configure(bg="#0f0a14")
-
-    frame = tk.Frame(win, bg="#201326", highlightthickness=1, highlightbackground="#6c3b62")
-    frame.pack(fill="both", expand=True)
-
-    title = tk.Label(
-        frame,
-        text="simemu using Simulator / Emulator",
-        bg="#201326",
-        fg="#f4e9f2",
-        font=("SF Pro Display", 14, "bold"),
-        padx=18,
-        pady=(10, 4),
-    )
-    title.pack()
-
-    subtitle = tk.Label(
-        frame,
-        text="Give me a sec. Please pause keyboard and mouse input.",
-        bg="#201326",
-        fg="#c9b6c8",
-        font=("SF Pro Text", 11),
-        padx=18,
-        pady=(0, 4),
-    )
-    subtitle.pack()
-
-    shortcuts = tk.Label(
-        frame,
-        text="Stop: Cmd+.    Pause: Cmd+Shift+.",
-        bg="#201326",
-        fg="#9e889c",
-        font=("SF Pro Text", 10),
-        padx=18,
-        pady=(0, 10),
-    )
-    shortcuts.pack()
-
-    width = 420
-    height = 106
-    x = max(screen_x + 20, screen_x + screen_w - width - 24)
-    y = screen_y + 26
-    win.geometry(f"{{width}}x{{height}}+{{x}}+{{y}}")
-    win.deiconify()
-    windows.append(win)
-
-for display in _displays():
-    _build_window(*display)
-
-def _close(*_args):
-    for win in windows:
-        try:
-            win.destroy()
-        except Exception:
-            pass
-    try:
-        root.destroy()
-    except Exception:
-        pass
-
-signal.signal(signal.SIGTERM, _close)
-signal.signal(signal.SIGINT, _close)
-
-def _send(sig):
-    try:
-        os.kill(PARENT_PID, sig)
-    except Exception:
-        pass
-
-def _install_shortcuts():
-    try:
-        import Quartz
-
-        state = {{"cmd": False, "shift": False}}
-
-        def callback(proxy, event_type, event, refcon):
-            keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
-            flags = Quartz.CGEventGetFlags(event)
-            cmd = bool(flags & Quartz.kCGEventFlagMaskCommand)
-            shift = bool(flags & Quartz.kCGEventFlagMaskShift)
-            if event_type == Quartz.kCGEventKeyDown and keycode == 47 and cmd:
-                if shift:
-                    _send(signal.SIGUSR1)
-                else:
-                    _send(signal.SIGINT)
-            return event
-
-        mask = Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
-        tap = Quartz.CGEventTapCreate(
-            Quartz.kCGSessionEventTap,
-            Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionListenOnly,
-            mask,
-            callback,
-            None,
-        )
-        if tap is None:
-            return
-        run_loop_source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
-        Quartz.CFRunLoopAddSource(Quartz.CFRunLoopGetCurrent(), run_loop_source, Quartz.kCFRunLoopCommonModes)
-        Quartz.CGEventTapEnable(tap, True)
-    except Exception:
-        return
-
-threading.Thread(target=_install_shortcuts, daemon=True).start()
-root.mainloop()
-"""
+    binary = _find_cute_hud()
+    if not binary:
+        return  # cute-hud not installed — silently skip
     try:
         _HUD_PROCESS = subprocess.Popen(
-            [sys.executable, "-c", script],
+            [binary],
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
         )
+        # Send initial info state
+        _hud_send({"mode": "info", "title": "SIMEMU",
+                    "action": "Using Simulator — please pause input"})
     except Exception:
         _HUD_PROCESS = None
+
+
+def _hud_send(obj: dict) -> None:
+    """Send a JSON message to the running cute-hud process."""
+    import json as _json
+    proc = _HUD_PROCESS
+    if not proc or proc.poll() is not None or not proc.stdin:
+        return
+    try:
+        proc.stdin.write(_json.dumps(obj).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+    except (BrokenPipeError, OSError):
+        pass
 
 
 def _stop_hud_overlay() -> None:
@@ -680,6 +577,7 @@ def _stop_hud_overlay() -> None:
     if proc.poll() is not None:
         return
     try:
+        _hud_send({"mode": "idle"})
         proc.terminate()
     except Exception:
         return
