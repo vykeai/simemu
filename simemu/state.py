@@ -185,7 +185,11 @@ def _write_presentation_raw(state: dict):
 
 
 def acquire(slug: str, sim_id: str, platform: str, device_name: str, agent: str) -> "Allocation":
-    """Reserve sim_id under slug. Raises if already in use."""
+    """DISCONTINUED. Use simemu.session.claim() instead."""
+    raise RuntimeError(
+        "Legacy acquire is discontinued. Use the v2 session API: "
+        "simemu claim <platform>. See docs/AGENT_README.md"
+    )
     with _locked_state() as (state, save):
         allocations = state["allocations"]
 
@@ -219,31 +223,13 @@ def acquire(slug: str, sim_id: str, platform: str, device_name: str, agent: str)
 
 
 def release(slug: str, agent: Optional[str] = None) -> "Allocation":
-    """Release reservation for slug."""
-    with _locked_state() as (state, save):
-        allocations = state["allocations"]
-        if slug not in allocations:
-            raise RuntimeError(f"No reservation found for slug '{slug}'")
-        existing = Allocation(**allocations[slug])
-        if agent is not None and existing.agent != agent:
-            raise RuntimeError(
-                f"'{slug}' is reserved by agent '{existing.agent}', not '{agent}'.\n"
-                f"To release it, run with the correct identity:\n"
-                f"  SIMEMU_AGENT={existing.agent} simemu release {slug}\n"
-                f"If this was your slug but SIMEMU_AGENT wasn't set, use the agent shown above."
-            )
-        del allocations[slug]
-        save(state)
-        return existing
+    """DISCONTINUED."""
+    raise RuntimeError("Legacy release is discontinued. Use: simemu do <session> done")
 
 
 def touch(slug: str) -> None:
-    """Update heartbeat. Called automatically by every proxy command."""
-    with _locked_state() as (state, save):
-        allocations = state["allocations"]
-        if slug in allocations:
-            allocations[slug]["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
-            save(state)
+    """DISCONTINUED."""
+    raise RuntimeError("Legacy touch is discontinued. Use the v2 session API.")
 
 
 def set_recording(slug: str, pid: Optional[int], output: Optional[str]) -> None:
