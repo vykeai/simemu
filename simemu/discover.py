@@ -18,7 +18,8 @@ class SimulatorInfo:
     device_name: str
     booted: bool
     runtime: str      # e.g. "iOS 26.2" or "API 35"
-    real_device: bool = False  # True for physical devices, False for simulators/emulators
+    real_device: bool = False   # True for physical devices, False for simulators/emulators
+    genymotion: bool = False    # True for Genymotion VMs (preferred over standard AVDs)
 
 
 def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
@@ -95,7 +96,7 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
-    # Genymotion VMs (if Genymotion is installed)
+    # Genymotion VMs (if Genymotion is installed) — preferred over standard AVDs
     if genymotion.is_available():
         for vm in genymotion.list_vms():
             if vm["uuid"] in allocated_ids:
@@ -106,9 +107,11 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
                 device_name=vm["name"],
                 booted=vm["state"].lower() == "on",
                 runtime=genymotion.parse_runtime(vm["name"]),
+                genymotion=True,
             ))
 
-    results.sort(key=lambda s: (not s.booted, s.device_name))
+    # Sort: booted first, then Genymotion before standard AVDs, then by name
+    results.sort(key=lambda s: (not s.booted, not s.genymotion, s.device_name))
     return results
 
 
