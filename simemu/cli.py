@@ -1762,8 +1762,8 @@ def build_parser() -> argparse.ArgumentParser:
     do_p = sub.add_parser("do", help="Execute a command on a claimed session (v2 API)")
     do_p.add_argument("session", help="Session ID (e.g. s-a7f3b2)")
     do_p.add_argument("do_command",
-                      help="Command: install, launch, tap, swipe, screenshot, maestro, "
-                           "url, done, renew, terminate, uninstall, input, long-press, "
+                      help="Command: build, install, launch, tap, swipe, screenshot, maestro, "
+                           "url, done, renew, env, terminate, uninstall, input, long-press, "
                            "key, appearance, rotate, location, push, pull, add-media, "
                            "shake, status-bar")
     do_p.add_argument("extra", nargs=argparse.REMAINDER,

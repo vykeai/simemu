@@ -382,8 +382,15 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
 
     if command == "install":
         if not args:
-            raise RuntimeError("Usage: simemu do <session> install <path-to-app>")
-        app_path = args[0]
+            # Auto-install: use the last build artifact
+            app_path = _get_build_artifact(session.session_id)
+            if not app_path:
+                raise RuntimeError(
+                    "Usage: simemu do <session> install <path-to-app>\n"
+                    "Or run 'simemu do <session> build' first for auto-install."
+                )
+        else:
+            app_path = args[0]
         if is_real and platform == "ios":
             device.ios_install(sim_id, app_path)
         elif platform in ("ios", "watchos", "tvos", "visionos"):
@@ -656,13 +663,270 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
                                wifi=wifi, network=network)
         return {"status": "set"}
 
+    elif command == "build":
+        return _do_build(session, sim_id, platform, is_real, args)
+
+    elif command == "env":
+        result = {"session": session_id, "platform": platform, "form_factor": session.form_factor}
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            result["udid"] = sim_id
+        else:
+            serial = android.get_serial(sim_id) if not is_real else sim_id
+            result["serial"] = serial
+        result["device_name"] = session.device_name
+        result["os_version"] = session.resolved_os_version or session.os_version
+        return result
+
     else:
         raise RuntimeError(
             f"Unknown command '{command}'. Available: install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
-            f"shake, status-bar"
+            f"shake, status-bar, build, env"
         )
+
+
+def _do_build(session, sim_id: str, platform: str, is_real: bool, args: list[str]) -> dict:
+    """Build an app and store the artifact path in session state for auto-install."""
+    import json as _json
+    import subprocess
+    from pathlib import Path
+
+    # Parse flags
+    variant = None
+    clean = False
+    test = False
+    raw_cmd = None
+    verbose = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--variant" and i + 1 < len(args):
+            variant = args[i + 1]; i += 2
+        elif args[i] == "--clean":
+            clean = True; i += 1
+        elif args[i] == "--test":
+            test = True; i += 1
+        elif args[i] == "--raw" and i + 1 < len(args):
+            raw_cmd = args[i + 1]; i += 2
+        elif args[i] == "--verbose":
+            verbose = True; i += 1
+        else:
+            i += 1
+
+    # Raw mode — escape hatch
+    if raw_cmd:
+        result = subprocess.run(raw_cmd, shell=True, capture_output=not verbose, text=True)
+        if result.returncode != 0:
+            err = result.stderr[:2000] if result.stderr else ""
+            raise RuntimeError(f"Build failed (exit {result.returncode}):\n{raw_cmd}\n{err}")
+        return {"status": "built", "mode": "raw", "command": raw_cmd}
+
+    # Find execution.yaml in the project
+    cwd = Path.cwd()
+    exec_yaml = cwd / "keel" / "execution.yaml"
+    build_config = None
+
+    if exec_yaml.exists():
+        content = exec_yaml.read_text()
+        build_config = _parse_build_variants(content)
+
+    if not build_config:
+        raise RuntimeError(
+            "No buildVariants in keel/execution.yaml. Either:\n"
+            "  1. Add buildVariants config to keel/execution.yaml\n"
+            "  2. Use --raw \"xcodebuild -scheme MyApp build\" as escape hatch"
+        )
+
+    # Resolve variant — default to first one
+    variant_names = list(build_config.keys())
+    if not variant:
+        variant = variant_names[0]
+
+    if variant not in build_config:
+        raise RuntimeError(
+            f"Unknown variant '{variant}'. Available: {', '.join(variant_names)}"
+        )
+
+    variant_cfg = build_config[variant]
+
+    if platform in ("ios", "watchos", "tvos", "visionos"):
+        ios_cfg = variant_cfg.get("ios", {})
+        scheme = ios_cfg.get("scheme", variant)
+        project = ios_cfg.get("project")
+        workspace = ios_cfg.get("workspace")
+        configuration = ios_cfg.get("configuration", "Debug")
+
+        cmd_parts = ["xcodebuild"]
+        if workspace:
+            cmd_parts += ["-workspace", workspace]
+        elif project:
+            cmd_parts += ["-project", project]
+        cmd_parts += ["-scheme", scheme]
+        cmd_parts += ["-destination", f"id={sim_id}"]
+        cmd_parts += ["-configuration", configuration]
+        cmd_parts += ["CODE_SIGNING_ALLOWED=NO"]
+        if clean:
+            cmd_parts.append("clean")
+        cmd_parts.append("test" if test else "build")
+
+        print(f"[simemu] building iOS: {scheme} ({configuration}) → {sim_id[:8]}...")
+        result = subprocess.run(cmd_parts, capture_output=not verbose, text=True)
+        if result.returncode != 0:
+            err = result.stderr[:3000] if result.stderr else result.stdout[-3000:] if result.stdout else ""
+            raise RuntimeError(
+                f"iOS build failed (exit {result.returncode}):\n"
+                f"  {' '.join(cmd_parts)}\n{err}"
+            )
+
+        # Find the built .app
+        app_path = _find_ios_artifact(scheme, configuration)
+        if app_path:
+            _store_build_artifact(session.session_id, str(app_path))
+
+        return {
+            "status": "built",
+            "platform": "ios",
+            "variant": variant,
+            "scheme": scheme,
+            "configuration": configuration,
+            "app": str(app_path) if app_path else None,
+        }
+
+    else:
+        android_cfg = variant_cfg.get("android", {})
+        task = android_cfg.get("task", f"assemble{variant.capitalize()}")
+
+        cmd_parts = ["./gradlew"]
+        if clean:
+            cmd_parts.append("clean")
+        cmd_parts.append(task)
+
+        print(f"[simemu] building Android: {task}...")
+        result = subprocess.run(cmd_parts, capture_output=not verbose, text=True)
+        if result.returncode != 0:
+            err = result.stderr[:3000] if result.stderr else result.stdout[-3000:] if result.stdout else ""
+            raise RuntimeError(
+                f"Android build failed (exit {result.returncode}):\n"
+                f"  {' '.join(cmd_parts)}\n{err}"
+            )
+
+        # Find the built .apk
+        apk_path = _find_android_artifact(task)
+        if apk_path:
+            _store_build_artifact(session.session_id, str(apk_path))
+
+        return {
+            "status": "built",
+            "platform": "android",
+            "variant": variant,
+            "task": task,
+            "apk": str(apk_path) if apk_path else None,
+        }
+
+
+def _parse_build_variants(yaml_content: str) -> dict | None:
+    """Parse buildVariants from execution.yaml. Minimal YAML parser."""
+    lines = yaml_content.split("\n")
+    in_variants = False
+    current_variant = None
+    current_platform = None
+    variants: dict = {}
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # Top-level key
+        if not line.startswith(" ") and not line.startswith("\t"):
+            if stripped == "buildVariants:":
+                in_variants = True
+            else:
+                in_variants = False
+            continue
+
+        if not in_variants:
+            continue
+
+        indent = len(line) - len(line.lstrip())
+
+        # Variant name (indent 2)
+        if indent == 2 and stripped.endswith(":"):
+            current_variant = stripped[:-1].strip()
+            variants[current_variant] = {}
+            current_platform = None
+            continue
+
+        # Platform (indent 4)
+        if indent == 4 and stripped.endswith(":") and current_variant:
+            current_platform = stripped[:-1].strip()
+            variants[current_variant][current_platform] = {}
+            continue
+
+        # Key: value (indent 6)
+        if indent == 6 and ": " in stripped and current_variant and current_platform:
+            key, _, value = stripped.partition(": ")
+            variants[current_variant][current_platform][key.strip()] = value.strip()
+
+    return variants if variants else None
+
+
+def _find_ios_artifact(scheme: str, configuration: str):
+    """Find the most recently built .app in DerivedData."""
+    from pathlib import Path
+    import os
+
+    derived = Path.home() / "Library" / "Developer" / "Xcode" / "DerivedData"
+    if not derived.exists():
+        return None
+
+    candidates = []
+    config_dir = f"{configuration}-iphonesimulator"
+    for dd in derived.iterdir():
+        products = dd / "Build" / "Products" / config_dir
+        if products.exists():
+            for app in products.glob("*.app"):
+                candidates.append((app, os.path.getmtime(app)))
+
+    if not candidates:
+        return None
+
+    # Return most recently modified
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
+
+
+def _find_android_artifact(task: str):
+    """Find the built APK from gradle output."""
+    from pathlib import Path
+
+    # Common output locations
+    for pattern in [
+        "app/build/outputs/apk/**/*.apk",
+        "build/outputs/apk/**/*.apk",
+    ]:
+        apks = list(Path.cwd().glob(pattern))
+        if apks:
+            # Prefer debug APK matching the task
+            debug = [a for a in apks if "debug" in a.name.lower()]
+            return debug[0] if debug else apks[0]
+    return None
+
+
+def _store_build_artifact(session_id: str, artifact_path: str):
+    """Store the build artifact path in session state for auto-install."""
+    with _locked():
+        data = _read_sessions_raw()
+        if session_id in data.get("sessions", {}):
+            data["sessions"][session_id]["last_build_artifact"] = artifact_path
+            _write_sessions_raw(data)
+
+
+def _get_build_artifact(session_id: str) -> str | None:
+    """Get the stored build artifact path."""
+    data = _read_sessions_raw()
+    session_data = data.get("sessions", {}).get(session_id, {})
+    return session_data.get("last_build_artifact")
 
 
 # ── lifecycle management ─────────────────────────────────────────────────────
