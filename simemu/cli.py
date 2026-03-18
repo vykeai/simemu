@@ -27,6 +27,7 @@ from .discover import (
     find_simulator, NoSimulatorAvailable,
 )
 from . import session as session_module
+from . import window as window_mgr
 from .session import ClaimSpec, SessionError
 
 # Apple platforms all use xcrun simctl — same as iOS
@@ -233,6 +234,45 @@ def cmd_do(args):
     except SessionError as e:
         _print_json(e.to_json())
         sys.exit(1)
+
+
+def cmd_config(args):
+    """Configure simemu settings."""
+    if args.config_command == "window-mode":
+        if args.mode is None:
+            # Show current mode
+            mode = window_mgr.get_window_mode()
+            print(f"Current window mode: {mode}")
+            print()
+            print("Available modes:")
+            print("  hidden   — minimize all simulator windows on boot")
+            print("  space    — move to a dedicated macOS Space (requires yabai)")
+            print("  corner   — tile in a screen corner (--corner top-left|top-right|bottom-left|bottom-right)")
+            print("  display  — move to a specific display (--display N)")
+            print("  default  — leave windows wherever macOS puts them")
+        else:
+            config = window_mgr.set_window_mode(
+                args.mode,
+                display=getattr(args, "display", None),
+                corner=getattr(args, "corner", None),
+            )
+            print(f"Window mode set to: {args.mode}")
+            if args.mode == "corner":
+                print(f"  Corner: {config.get('window_corner', 'bottom-right')}")
+            elif args.mode == "display":
+                print(f"  Display: {config.get('window_display', 2)}")
+
+            # Apply to all currently booted simulators
+            count = window_mgr.apply_to_all()
+            if count:
+                print(f"  Applied to {count} running simulator(s)")
+
+    elif args.config_command == "show":
+        config = window_mgr._read_config()
+        if config:
+            _print_json(config)
+        else:
+            print("No config set (using defaults)")
 
 
 def cmd_sessions(args):
@@ -1770,6 +1810,21 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Arguments for the command")
     do_p.set_defaults(func=cmd_do)
 
+    # config
+    config_p = sub.add_parser("config", help="Configure simemu settings")
+    config_sub = config_p.add_subparsers(dest="config_command", required=True)
+
+    wm_p = config_sub.add_parser("window-mode", help="Set simulator window management mode")
+    wm_p.add_argument("mode", nargs="?", choices=["hidden", "space", "corner", "display", "default"],
+                       help="Window mode (omit to show current)")
+    wm_p.add_argument("--display", type=int, help="Display index for 'display' mode")
+    wm_p.add_argument("--corner", choices=["top-left", "top-right", "bottom-left", "bottom-right"],
+                       help="Corner for 'corner' mode")
+    wm_p.set_defaults(func=cmd_config)
+
+    config_show_p = config_sub.add_parser("show", help="Show all config")
+    config_show_p.set_defaults(func=cmd_config)
+
     # sessions
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
     sess_p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -2441,7 +2496,7 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_sessions", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
 
 def main():

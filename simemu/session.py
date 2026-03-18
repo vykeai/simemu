@@ -19,6 +19,7 @@ from typing import Optional
 
 from . import state, ios, android, device
 from .discover import find_best_device
+from . import window as window_mgr
 
 
 # ── timeouts (seconds) ───────────────────────────────────────────────────────
@@ -214,6 +215,13 @@ def claim(spec: ClaimSpec) -> Session:
             ios.boot(sim.sim_id)
         else:
             android.boot(sim.sim_id, headless=True)
+
+    # Apply window management (hide, move to space, corner, etc.)
+    if not sim.real_device:
+        try:
+            window_mgr.apply_window_mode(sim.sim_id, sim.platform, sim.device_name)
+        except Exception:
+            pass  # window management is best-effort
 
     # Create the session
     session = Session(

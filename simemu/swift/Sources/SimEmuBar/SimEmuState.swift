@@ -23,8 +23,7 @@ final class SimEmuState {
         } else {
             stateDir = home.appendingPathComponent(".simemu")
         }
-        // Don't startPolling() in init — defer to first refresh() call
-        // to avoid crashing before the run loop is active
+        // Don't poll in init — defer to avoid crashing SwiftUI scene setup
     }
 
     // MARK: - Polling
@@ -322,6 +321,12 @@ final class SimEmuState {
     // MARK: - Computed
 
     var bootedCount: Int { allocations.filter(\.isBooted).count }
+
+    var menuBarTitle: String {
+        if totalMemoryMB < 100 { return "idle" }
+        if totalMemoryMB >= 1024 { return String(format: "%.1f GB", totalMemoryMB / 1024) }
+        return String(format: "%.0f MB", totalMemoryMB)
+    }
 
     var memoryColor: Color {
         if totalMemoryMB < 4096 { return Design.dotGreen }
