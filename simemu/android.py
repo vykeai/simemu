@@ -111,6 +111,11 @@ def _serial(avd_name: str) -> str:
     return serial
 
 
+def get_serial(avd_name: str) -> str:
+    """Compatibility helper used by the newer session-based simemu flow."""
+    return _serial(avd_name)
+
+
 def _ensure_booted(avd_name: str) -> None:
     """Check emulator is running. Raises instead of auto-booting to prevent runaway spawns."""
     from . import state
@@ -320,11 +325,12 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
       - "com.example.app/.MainActivity"  → explicit activity
     """
     if "/" not in package_activity:
-        # Prefer the launcher-intent path, but fall back to the conventional
-        # MainActivity name used by our app templates when monkey is rejected.
+        # Use am start with launcher category — monkey logs noisy "Error type 3"
+        # on apps with non-standard launcher activities.
         try:
-            _adb(avd_name, "shell", "monkey", "-p", package_activity,
-                 "-c", "android.intent.category.LAUNCHER", "1")
+            _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.MAIN",
+                 "-c", "android.intent.category.LAUNCHER", package_activity)
+            return
         except subprocess.CalledProcessError:
             base_package = package_activity
             for suffix in (".dev", ".staging", ".prod", ".debug", ".release"):
