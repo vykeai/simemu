@@ -79,7 +79,7 @@ def _run(*args, check: bool = True, as_json: bool = False) -> str | dict:
 
 
 def list_vms() -> list[dict]:
-    """List Genymotion VMs. Returns dicts with: uuid, name, state, ip."""
+    """List Genymotion VMs. Returns dicts with: uuid, name, state, ip, adb_serial."""
     try:
         data = _run("admin", "list", check=False, as_json=True)
     except RuntimeError:
@@ -95,6 +95,7 @@ def list_vms() -> list[dict]:
             "name": inst.get("name", ""),
             "state": inst.get("state", ""),
             "ip": inst.get("ip", ""),
+            "adb_serial": inst.get("adb_serial", ""),
         })
     return result
 
@@ -145,15 +146,25 @@ def _ensure_adb_connected(serial: str) -> None:
 
 
 def get_adb_serial(vm_uuid: str) -> Optional[str]:
-    """Return the adb serial (e.g. '192.168.56.101:5555') for a running Genymotion VM.
+    """Return the adb serial for a running Genymotion VM.
 
-    Auto-connects adb if the VM is on but not yet in 'adb devices' (e.g. started via UI).
+    Modern Genymotion (3.x) reports adb_serial directly (e.g. '127.0.0.1:6562').
+    Falls back to '<ip>:5555' for older versions without the adb_serial field.
+    Auto-connects adb if the VM is on but not yet in 'adb devices'.
     """
     for vm in list_vms():
         if vm["uuid"] == vm_uuid:
-            ip = vm.get("ip", "")
             state = vm.get("state", "").lower()
-            if ip and state == "on":
+            if state != "on":
+                continue
+            # Prefer the explicit adb_serial from gmtool (Genymotion 3.x)
+            serial = vm.get("adb_serial", "")
+            if serial:
+                _ensure_adb_connected(serial)
+                return serial
+            # Fallback for older Genymotion: ip + :5555
+            ip = vm.get("ip", "")
+            if ip:
                 serial = f"{ip}:5555"
                 _ensure_adb_connected(serial)
                 return serial
