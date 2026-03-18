@@ -332,6 +332,31 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
                  "-c", "android.intent.category.LAUNCHER", package_activity)
             return
         except subprocess.CalledProcessError:
+            # Ask package manager for the real launcher component before falling
+            # back to hard-coded MainActivity guesses.
+            try:
+                resolved = _adb(
+                    avd_name,
+                    "shell",
+                    "cmd",
+                    "package",
+                    "resolve-activity",
+                    "--brief",
+                    package_activity,
+                    capture=True,
+                ) or ""
+                resolved_lines = [line.strip() for line in resolved.splitlines() if line.strip()]
+                for component in reversed(resolved_lines):
+                    if "/" not in component or component == "No activity found":
+                        continue
+                    try:
+                        _adb(avd_name, "shell", "am", "start", "-n", component)
+                        return
+                    except subprocess.CalledProcessError:
+                        pass
+            except subprocess.CalledProcessError:
+                pass
+
             base_package = package_activity
             for suffix in (".dev", ".staging", ".prod", ".debug", ".release"):
                 if base_package.endswith(suffix):

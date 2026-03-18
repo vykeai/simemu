@@ -295,6 +295,17 @@ def touch(session_id: str) -> Session:
 
     reboot_needed = session.status == "parked"
 
+    # Android session claims can occasionally outlive the underlying emulator
+    # process. If the session is still marked active/idle but the VM is gone,
+    # heal by booting it again before dispatching the next command.
+    if (
+        not reboot_needed
+        and not session.real_device
+        and session.platform == "android"
+        and android.get_android_serial(session.sim_id, retries=2, delay=0.5) is None
+    ):
+        reboot_needed = True
+
     # Re-boot if parked
     if reboot_needed:
         if not session.real_device:
