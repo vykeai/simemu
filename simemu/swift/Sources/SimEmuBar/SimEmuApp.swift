@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct SimEmuBarApp: App {
-    @State private var state = SimEmuState()
+    @StateObject private var state = SimEmuState()
 
     init() {
         let myPID = ProcessInfo.processInfo.processIdentifier
@@ -21,11 +21,12 @@ struct SimEmuBarApp: App {
         } label: {
             Label(state.menuBarTitle, systemImage: "iphone")
         }
+        .menuBarExtraStyle(.menu)
     }
 }
 
 struct SimEmuMenu: View {
-    let state: SimEmuState
+    @ObservedObject var state: SimEmuState
 
     var body: some View {
         Section("Sessions — \(state.allocations.count)") {
@@ -81,12 +82,13 @@ struct SimEmuMenu: View {
     }
 
     private func hideAllWindows() {
-        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        proc.arguments = ["-lc", "python3 -c \"from simemu.window import apply_to_all; apply_to_all()\""]
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        try? proc.run()
+        DispatchQueue.global(qos: .utility).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            proc.arguments = ["-lc", "python3 -c \"from simemu.window import apply_to_all; apply_to_all()\""]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+        }
     }
 }

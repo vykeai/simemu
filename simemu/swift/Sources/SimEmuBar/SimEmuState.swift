@@ -1,20 +1,20 @@
+import Combine
 import Foundation
-import Observation
 import SwiftUI
 
-@Observable
-final class SimEmuState {
-    var allocations: [AllocationInfo] = []
-    var totalMemoryMB: Double = 0
-    var maintenanceActive: Bool = false
-    var maintenanceMessage: String = ""
-    var lureFact: LureFact = LureFact.random()
-    var daemonRunning: Bool = false
+final class SimEmuState: ObservableObject {
+    @Published var allocations: [AllocationInfo] = []
+    @Published var totalMemoryMB: Double = 0
+    @Published var maintenanceActive: Bool = false
+    @Published var maintenanceMessage: String = ""
+    @Published var lureFact: LureFact = LureFact.random()
+    @Published var daemonRunning: Bool = false
 
     private var refreshTimer: Timer?
     private let stateDir: URL
     private let apiBase = "http://127.0.0.1:8765"
     private var daemonCheckDone = false
+    private let bgQueue = DispatchQueue(label: "simemu.state.bg", qos: .utility)
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -23,7 +23,7 @@ final class SimEmuState {
         } else {
             stateDir = home.appendingPathComponent(".simemu")
         }
-        // Start polling after a short delay to avoid crashing SwiftUI scene setup
+        // Start polling after a short delay to avoid blocking SwiftUI scene setup
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.startPolling()
         }
@@ -39,23 +39,27 @@ final class SimEmuState {
     }
 
     func refresh() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        bgQueue.async { [weak self] in
             guard let self else { return }
             let allocs = self._readStateFile()
             let maint = self._readMaintenanceFile()
+            let memoryResult = self._readProcessMemory(allocs: allocs)
+
             DispatchQueue.main.async {
-                self.allocations = allocs
+                self.allocations = memoryResult.allocations
                 self.maintenanceActive = maint.0
                 self.maintenanceMessage = maint.1
-                self.readProcessMemory()
-                self.checkDaemon()
+                self.totalMemoryMB = memoryResult.totalMemoryMB
             }
+
+            // Check daemon on background queue (uses URLSession which is async anyway)
+            self._checkDaemon()
         }
     }
 
     // MARK: - Daemon auto-launch
 
-    private func checkDaemon() {
+    private func _checkDaemon() {
         let url = URL(string: "\(apiBase)/health")!
         var request = URLRequest(url: url, timeoutInterval: 1.5)
         request.httpMethod = "GET"
@@ -70,16 +74,17 @@ final class SimEmuState {
                     self.daemonRunning = false
                     if !self.daemonCheckDone {
                         self.daemonCheckDone = true
-                        self.launchDaemon()
+                        self.bgQueue.async {
+                            self._launchDaemon()
+                        }
                     }
                 }
             }
         }.resume()
     }
 
-    private func launchDaemon() {
-        // Find simemu binary
-        guard let simemu = findSimemu() else { return }
+    private func _launchDaemon() {
+        guard let simemu = _findSimemu() else { return }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: simemu)
@@ -94,7 +99,7 @@ final class SimEmuState {
         }
     }
 
-    private func findSimemu() -> String? {
+    private func _findSimemu() -> String? {
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let candidates = [
             "\(home)/bin/simemu",
@@ -109,7 +114,7 @@ final class SimEmuState {
         }
 
         // Resolve via user's login shell to get full PATH
-        let output = runCommand("/bin/zsh", args: ["-lc", "which simemu"])
+        let output = _runCommand("/bin/zsh", args: ["-lc", "which simemu"])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !output.isEmpty && FileManager.default.isExecutableFile(atPath: output) {
             return output
@@ -117,7 +122,7 @@ final class SimEmuState {
         return nil
     }
 
-    // MARK: - State file
+    // MARK: - State file (called on bg queue)
 
     private func _readStateFile() -> [AllocationInfo] {
         var result: [AllocationInfo] = []
@@ -169,7 +174,7 @@ final class SimEmuState {
         return result
     }
 
-    // MARK: - Maintenance
+    // MARK: - Maintenance (called on bg queue)
 
     private func _readMaintenanceFile() -> (Bool, String) {
         let file = stateDir.appendingPathComponent("maintenance.json")
@@ -181,14 +186,20 @@ final class SimEmuState {
         return (true, json["message"] as? String ?? "Maintenance active")
     }
 
-    // MARK: - Process memory via ps
+    // MARK: - Process memory via ps (called on bg queue)
 
-    private func readProcessMemory() {
-        let qemuMem = processMemory(matching: "qemu-system")
-        let simMem = processMemory(matching: "Simulator")
+    struct MemoryResult {
+        var allocations: [AllocationInfo]
+        var totalMemoryMB: Double
+    }
+
+    private func _readProcessMemory(allocs: [AllocationInfo]) -> MemoryResult {
+        var allocations = allocs
+        let qemuMem = _processMemory(matching: "qemu-system")
+        let simMem = _processMemory(matching: "Simulator")
 
         // Map AVD names to qemu PIDs
-        let psOutput = runPS(args: ["-eo", "pid,args"])
+        let psOutput = _runPS(args: ["-eo", "pid,args"])
         var avdPids: [String: Int] = [:]
         for line in psOutput.components(separatedBy: "\n") {
             if line.contains("qemu-system"), let range = line.range(of: "-avd ") {
@@ -212,7 +223,7 @@ final class SimEmuState {
         for i in allocations.indices {
             let alloc = allocations[i]
             if ["ios", "watchos", "tvos", "visionos"].contains(alloc.platform) {
-                let booted = isIOSSimBooted(udid: alloc.simId)
+                let booted = _isIOSSimBooted(udid: alloc.simId)
                 allocations[i].isBooted = booted
                 if booted {
                     allocations[i].memoryMB = totalSimMem / Double(bootedIOSCount)
@@ -222,17 +233,18 @@ final class SimEmuState {
                     allocations[i].isBooted = true
                     allocations[i].memoryMB = mem
                 } else {
-                    allocations[i].isBooted = isAndroidBooted(simId: alloc.simId)
+                    allocations[i].isBooted = _isAndroidBooted(simId: alloc.simId)
                 }
             }
         }
 
-        totalMemoryMB = qemuMem.values.reduce(0, +) + totalSimMem
+        let totalMemoryMB = qemuMem.values.reduce(0, +) + totalSimMem
+        return MemoryResult(allocations: allocations, totalMemoryMB: totalMemoryMB)
     }
 
-    private func processMemory(matching filter: String) -> [Int: Double] {
+    private func _processMemory(matching filter: String) -> [Int: Double] {
         var result: [Int: Double] = [:]
-        let output = runPS(args: ["-eo", "pid,rss,comm"])
+        let output = _runPS(args: ["-eo", "pid,rss,comm"])
         for line in output.components(separatedBy: "\n") {
             guard line.contains(filter) else { continue }
             let parts = line.trimmingCharacters(in: .whitespaces)
@@ -247,8 +259,8 @@ final class SimEmuState {
         return result
     }
 
-    private func isIOSSimBooted(udid: String) -> Bool {
-        let output = runCommand("/usr/bin/xcrun", args: ["simctl", "list", "devices", "--json"])
+    private func _isIOSSimBooted(udid: String) -> Bool {
+        let output = _runCommand("/usr/bin/xcrun", args: ["simctl", "list", "devices", "--json"])
         guard let data = output.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let devices = json["devices"] as? [String: [[String: Any]]]
@@ -264,51 +276,57 @@ final class SimEmuState {
         return false
     }
 
-    private func isAndroidBooted(simId: String) -> Bool {
-        let output = runCommand("/usr/bin/env", args: ["adb", "devices", "-l"])
+    private func _isAndroidBooted(simId: String) -> Bool {
+        let output = _runCommand("/usr/bin/env", args: ["adb", "devices", "-l"])
         return output.contains(simId)
     }
 
     // MARK: - Actions
 
     func killAll() {
-        _ = runCommand("/usr/bin/pkill", args: ["-9", "-f", "qemu-system"])
-        _ = runCommand("/usr/bin/pkill", args: ["-9", "-f", "Genymotion.app"])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            self?.refresh()
+        bgQueue.async { [weak self] in
+            self?._runCommand("/usr/bin/pkill", args: ["-9", "-f", "qemu-system"])
+            self?._runCommand("/usr/bin/pkill", args: ["-9", "-f", "Genymotion.app"])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                self?.refresh()
+            }
         }
     }
 
     func toggleMaintenance() {
-        if maintenanceActive {
-            let file = stateDir.appendingPathComponent("maintenance.json")
-            try? FileManager.default.removeItem(at: file)
-        } else {
-            let file = stateDir.appendingPathComponent("maintenance.json")
-            let payload: [String: Any] = [
-                "message": "Maintenance enabled from menu bar",
-                "eta_minutes": 10,
-                "started_at": ISO8601DateFormatter().string(from: Date()),
-            ]
-            if let data = try? JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted) {
-                try? data.write(to: file)
+        bgQueue.async { [weak self] in
+            guard let self else { return }
+            let currentlyActive = DispatchQueue.main.sync { self.maintenanceActive }
+            if currentlyActive {
+                let file = self.stateDir.appendingPathComponent("maintenance.json")
+                try? FileManager.default.removeItem(at: file)
+            } else {
+                let file = self.stateDir.appendingPathComponent("maintenance.json")
+                let payload: [String: Any] = [
+                    "message": "Maintenance enabled from menu bar",
+                    "eta_minutes": 10,
+                    "started_at": ISO8601DateFormatter().string(from: Date()),
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted) {
+                    try? data.write(to: file)
+                }
             }
+            self.refresh()
         }
-        refresh()
     }
 
     func cycleLureFact() {
         lureFact = LureFact.random()
     }
 
-    // MARK: - Helpers
+    // MARK: - Helpers (called on bg queue)
 
-    private func runPS(args: [String]) -> String {
-        runCommand("/bin/ps", args: args)
+    private func _runPS(args: [String]) -> String {
+        _runCommand("/bin/ps", args: args)
     }
 
     @discardableResult
-    private func runCommand(_ path: String, args: [String]) -> String {
+    private func _runCommand(_ path: String, args: [String]) -> String {
         let proc = Process()
         let pipe = Pipe()
         proc.executableURL = URL(fileURLWithPath: path)
