@@ -384,6 +384,12 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         session = release(session_id)
         return {"session": session_id, "status": "released"}
 
+    if command == "boot":
+        # Explicitly wake a parked session — touch() already does this,
+        # but agents expect an explicit boot command
+        session = touch(session_id)
+        return session.to_agent_json()
+
     if command == "renew":
         hours = None
         if "--hours" in args:
@@ -698,7 +704,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
 
     else:
         raise RuntimeError(
-            f"Unknown command '{command}'. Available: install, launch, tap, swipe, "
+            f"Unknown command '{command}'. Available: boot, install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
             f"shake, status-bar, build, env"
