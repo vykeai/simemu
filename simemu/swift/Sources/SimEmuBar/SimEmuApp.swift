@@ -13,7 +13,7 @@ enum SimEmuBarApp {
     }
 }
 
-final class MenuBarController {
+final class MenuBarController: NSObject {
     private var statusItem: NSStatusItem
     private var popover: NSPopover
     private var state: SimEmuState?
@@ -21,9 +21,10 @@ final class MenuBarController {
     private var globalMonitor: Any?
     private var localMonitor: Any?
 
-    init() {
+    override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover = NSPopover()
+        super.init()
 
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "iphone", accessibilityDescription: "SimEmu")
