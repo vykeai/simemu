@@ -23,7 +23,10 @@ final class SimEmuState {
         } else {
             stateDir = home.appendingPathComponent(".simemu")
         }
-        // Don't poll in init — defer to avoid crashing SwiftUI scene setup
+        // Start polling after a short delay to avoid crashing SwiftUI scene setup
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.startPolling()
+        }
     }
 
     // MARK: - Polling
