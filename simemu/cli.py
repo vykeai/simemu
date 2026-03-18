@@ -949,6 +949,71 @@ def cmd_check(args):
             _print_json({"slug": args.slug, "ready": True, "platform": alloc.platform})
 
 
+@contextmanager
+def _maestro_hud(flow_name: str):
+    """Context manager that shows a blocking HUD overlay during Maestro flows."""
+    import subprocess as _sp
+    import shutil
+
+    _CUTE_HUD_PATHS = [
+        "cute-hud",  # on PATH
+        str(Path.home() / "dev" / "cute-hud" / ".build" / "release" / "cute-hud"),
+    ]
+
+    binary = None
+    for candidate in _CUTE_HUD_PATHS:
+        if "/" in candidate:
+            if Path(candidate).exists():
+                binary = candidate
+                break
+        else:
+            found = shutil.which(candidate)
+            if found:
+                binary = found
+                break
+
+    if not binary:
+        yield
+        return
+
+    proc = None
+    try:
+        proc = _sp.Popen(
+            [binary],
+            stdin=_sp.PIPE,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+        )
+        msg = json.dumps({
+            "mode": "critical",
+            "blocking": True,
+            "title": "SIMEMU",
+            "badge": "MAESTRO",
+            "action": flow_name,
+        })
+        if proc.stdin:
+            proc.stdin.write(msg.encode("utf-8") + b"\n")
+            proc.stdin.flush()
+    except Exception:
+        proc = None
+
+    try:
+        yield
+    finally:
+        if proc and proc.poll() is None:
+            try:
+                if proc.stdin:
+                    idle_msg = json.dumps({"mode": "idle"}).encode("utf-8") + b"\n"
+                    proc.stdin.write(idle_msg)
+                    proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+
 def cmd_maestro(args):
     """Run a Maestro flow against a reserved simulator, with the correct --device flag resolved automatically."""
     import subprocess as _sp
@@ -965,9 +1030,11 @@ def cmd_maestro(args):
                 f"Android emulator '{args.slug}' is not running. Boot it first: simemu boot {args.slug}"
             )
 
+    flow_display = " ".join(Path(f).name for f in args.flow)
     cmd = ["maestro", "--device", device_id, "test"] + args.flow + args.extra
     print(f"Running: {' '.join(cmd)}", flush=True)
-    result = _sp.run(cmd)
+    with _maestro_hud(flow_display):
+        result = _sp.run(cmd)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
 
