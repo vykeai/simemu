@@ -301,9 +301,19 @@ def cmd_sessions(args):
         print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {os_ver:<12} {label:<20} {idle_min}m")
 
 
-# ── legacy command handlers ──────────────────────────────────────────────────
+# ── legacy command handlers (DISCONTINUED) ──────────────────────────────────
+
+def _reject_legacy(args):
+    """Block all legacy slug-based commands."""
+    cmd = getattr(args, "command", "?")
+    print(f"Error: '{cmd}' is not a recognized command. Read the docs: docs/AGENT_README.md", file=sys.stderr)
+    print(f"\nUsage: simemu claim <platform>  |  simemu do <session> <command>  |  simemu sessions", file=sys.stderr)
+    sys.exit(1)
+
 
 def cmd_acquire(args):
+    _reject_legacy(args)
+    # Dead code below — kept for reference only
     wait = getattr(args, "wait", 0)
     real = getattr(args, "real", False)
     poll = 10  # seconds between retries
@@ -2498,6 +2508,14 @@ def cmd_maintenance(args):
 # Maintenance-exempt commands (can run during maintenance)
 _MAINTENANCE_EXEMPT = {"cmd_status", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
+# v2 + admin commands — everything else is legacy and rejected
+_V2_COMMANDS = {
+    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config",
+    "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
+    "cmd_create", "cmd_idle_shutdown",
+    "cmd_list", "cmd_list_devices",  # discovery is still useful
+}
+
 
 def main():
     parser = build_parser()
@@ -2507,8 +2525,11 @@ def main():
     if getattr(args.func, "__name__", "") not in {"cmd_serve", "cmd_daemon"}:
         _autostart_server_if_needed()
     try:
-        # Check maintenance mode for non-exempt commands
         func_name = getattr(args.func, "__name__", "")
+        # Reject legacy slug-based commands
+        if func_name not in _V2_COMMANDS and func_name not in _MAINTENANCE_EXEMPT:
+            _reject_legacy(args)
+        # Check maintenance mode for non-exempt commands
         if func_name not in _MAINTENANCE_EXEMPT:
             state.check_maintenance()
         args.func(args)

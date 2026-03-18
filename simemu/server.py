@@ -298,10 +298,17 @@ def list_devices(platform: Optional[str] = None):
     return [r.__dict__ for r in rows]
 
 
-# ── acquire & release ─────────────────────────────────────────────────────────
+# ── legacy endpoints (discontinued) ──────────────────────────────────────────
 
-@app.post("/acquire", summary="Reserve a simulator or real device by slug")
+_LEGACY_DETAIL = (
+    "This endpoint is discontinued. Use the v2 session API: "
+    "POST /v2/claim and POST /v2/do. See docs/AGENT_README.md"
+)
+
+@app.post("/acquire", summary="DISCONTINUED", deprecated=True)
 def acquire(req: AcquireRequest):
+    raise HTTPException(status_code=410, detail=_LEGACY_DETAIL)
+    # Dead code below — kept to avoid import errors
     try:
         state.check_maintenance()
     except RuntimeError as e:
