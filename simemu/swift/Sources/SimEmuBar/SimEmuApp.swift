@@ -34,17 +34,19 @@ final class MenuBarController: NSObject {
             button.target = self
         }
 
-        // Defer state + popover setup — SimEmuState init can crash on macOS 26
-        // if run before the run loop is active (LureFact/Observable issue)
+        popover.contentSize = NSSize(width: 320, height: 420)
+        popover.behavior = .transient
+
+        // Defer state + SwiftUI view setup — SimEmuState init crashes on macOS 26
+        // if run before the run loop is active (LureFact/@Observable issue)
         DispatchQueue.main.async { [self] in
             let s = SimEmuState()
             self.state = s
-            self.popover.contentSize = NSSize(width: 320, height: 420)
-            self.popover.behavior = .transient
             self.popover.contentViewController = NSHostingController(
                 rootView: MainView(state: s)
                     .frame(width: 320)
             )
+            s.startPolling()
         }
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in

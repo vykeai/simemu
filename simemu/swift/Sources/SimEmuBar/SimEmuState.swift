@@ -23,7 +23,8 @@ final class SimEmuState {
         } else {
             stateDir = home.appendingPathComponent(".simemu")
         }
-        startPolling()
+        // Don't startPolling() in init — defer to first refresh() call
+        // to avoid crashing before the run loop is active
     }
 
     // MARK: - Polling
