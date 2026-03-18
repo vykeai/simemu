@@ -231,6 +231,23 @@ def _adb(avd_name: str, *args, capture: bool = False, check: bool = True) -> Opt
         return None
 
 
+def _apk_application_id(apk_path: str) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["apkanalyzer", "manifest", "application-id", apk_path],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    package_name = result.stdout.strip()
+    return package_name or None
+
+
 def boot(avd_name: str, headless: bool = False) -> None:
     """Start the AVD if not already running. Waits until fully booted."""
     from . import state, genymotion
@@ -300,6 +317,28 @@ def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
     if result.returncode != 0 or "Failure" in result.stdout:
         detail = result.stdout.strip() or result.stderr.strip()
         raise RuntimeError(f"Install failed: {detail}")
+
+    package_name = _apk_application_id(str(path))
+    if not package_name:
+        return
+
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        pm_path = subprocess.run(
+            ["adb", "-s", serial, "shell", "pm", "path", package_name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if pm_path.returncode == 0 and "package:" in pm_path.stdout:
+            return
+        time.sleep(1)
+
+    raise RuntimeError(
+        f"Install reported success but package manager never exposed '{package_name}'. "
+        f"Try: simemu reboot <slug>"
+    )
 
 
 def list_apps(avd_name: str) -> list[dict]:
