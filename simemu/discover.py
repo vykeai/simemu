@@ -110,8 +110,9 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
                 genymotion=True,
             ))
 
-    # Sort: booted first, then Genymotion before standard AVDs, then by name
-    results.sort(key=lambda s: (not s.booted, not s.genymotion, s.device_name))
+    # Sort: booted first, then standard AVDs before Genymotion (lighter on Apple
+    # Silicon — native arm64 without the player overhead), then by name
+    results.sort(key=lambda s: (not s.booted, s.genymotion, s.device_name))
     return results
 
 
