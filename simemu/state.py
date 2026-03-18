@@ -45,8 +45,50 @@ def lock_file() -> Path:
     return state_dir() / "state.lock"
 
 
+def maintenance_file() -> Path:
+    return config_dir() / "maintenance.json"
+
+
 def presentation_file() -> Path:
     return config_dir() / "presentation.json"
+
+
+def enter_maintenance(message: str = "simemu is temporarily unavailable", eta_minutes: int = 5) -> None:
+    """Enable maintenance mode — all acquire/release/proxy commands will fail with message."""
+    import json
+    from datetime import datetime, timezone
+    config_dir().mkdir(parents=True, exist_ok=True)
+    data = {
+        "message": message,
+        "eta_minutes": eta_minutes,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    maintenance_file().write_text(json.dumps(data, indent=2))
+
+
+def exit_maintenance() -> None:
+    """Disable maintenance mode."""
+    mf = maintenance_file()
+    if mf.exists():
+        mf.unlink()
+
+
+def check_maintenance() -> None:
+    """Raise RuntimeError if maintenance mode is active."""
+    import json
+    mf = maintenance_file()
+    if not mf.exists():
+        return
+    try:
+        data = json.loads(mf.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+    msg = data.get("message", "simemu is temporarily unavailable")
+    eta = data.get("eta_minutes", 5)
+    raise RuntimeError(
+        f"{msg}.\n"
+        f"Estimated back in ~{eta} minutes. Check `simemu status` to see when it's ready."
+    )
 
 
 @dataclass

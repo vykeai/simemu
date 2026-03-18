@@ -2077,6 +2077,15 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Idle-shutdown timeout in minutes for 'install' (default: 20)")
     daemon_p.set_defaults(func=cmd_daemon)
 
+    # maintenance
+    maint_p = sub.add_parser("maintenance",
+                              help="Enter/exit maintenance mode (blocks acquire/release during migration)")
+    maint_p.add_argument("action", choices=["on", "off", "status"])
+    maint_p.add_argument("--message", "-m", help="Message shown to blocked callers")
+    maint_p.add_argument("--eta", type=int, metavar="MINUTES",
+                         help="Estimated time until maintenance is done (default: 5)")
+    maint_p.set_defaults(func=cmd_maintenance)
+
     return p
 
 
@@ -2206,6 +2215,33 @@ def cmd_daemon(args):
             print("  Note: this is a live server process, not the launchd-managed daemon.")
 
 
+def cmd_maintenance(args):
+    """Enter or exit maintenance mode."""
+    if args.action == "on":
+        msg = args.message or "simemu is temporarily unavailable — migrating emulators to Genymotion"
+        eta = args.eta or 5
+        state.enter_maintenance(msg, eta)
+        print(f"Maintenance mode ON: {msg} (~{eta} min)")
+    elif args.action == "off":
+        state.exit_maintenance()
+        print("Maintenance mode OFF — simemu is available again.")
+    elif args.action == "status":
+        mf = state.maintenance_file()
+        if mf.exists():
+            import json as _json
+            data = _json.loads(mf.read_text())
+            print(f"MAINTENANCE MODE ACTIVE")
+            print(f"  Message: {data.get('message', '')}")
+            print(f"  ETA: ~{data.get('eta_minutes', '?')} minutes")
+            print(f"  Since: {data.get('started_at', '?')}")
+        else:
+            print("Maintenance mode is OFF.")
+
+
+# Maintenance-exempt commands (can run during maintenance)
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_maintenance", "cmd_serve", "cmd_daemon"}
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -2214,6 +2250,10 @@ def main():
     if getattr(args.func, "__name__", "") not in {"cmd_serve", "cmd_daemon"}:
         _autostart_server_if_needed()
     try:
+        # Check maintenance mode for non-exempt commands
+        func_name = getattr(args.func, "__name__", "")
+        if func_name not in _MAINTENANCE_EXEMPT:
+            state.check_maintenance()
         args.func(args)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
