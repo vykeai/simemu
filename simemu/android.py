@@ -122,6 +122,99 @@ def _ensure_booted(avd_name: str) -> None:
         )
 
 
+def wait_until_ready(avd_name: str, timeout: int = 180) -> str:
+    """
+    Wait until adb is online and the package manager responds.
+
+    Genymotion-backed devices can briefly report a serial while still being
+    offline for installs and package queries. "ready" should mean adb commands
+    will actually work, not just that the VM exists.
+    """
+    _ensure_booted(avd_name)
+    deadline = time.time() + timeout
+    last_detail = "device did not become adb-ready"
+    while time.time() < deadline:
+        try:
+            serial = _serial(avd_name)
+        except RuntimeError as exc:
+            last_detail = str(exc)
+            time.sleep(2)
+            continue
+
+        try:
+            wait_result = subprocess.run(
+                ["adb", "-s", serial, "wait-for-device"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "adb wait-for-device timed out"
+            time.sleep(2)
+            continue
+        if wait_result.returncode != 0:
+            last_detail = wait_result.stderr.strip() or wait_result.stdout.strip() or "adb wait-for-device failed"
+            time.sleep(2)
+            continue
+
+        try:
+            state_result = subprocess.run(
+                ["adb", "-s", serial, "get-state"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "adb get-state timed out"
+            time.sleep(2)
+            continue
+        if state_result.stdout.strip() != "device":
+            last_detail = state_result.stderr.strip() or state_result.stdout.strip() or "adb device state unavailable"
+            time.sleep(2)
+            continue
+
+        try:
+            boot_result = subprocess.run(
+                ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "adb getprop sys.boot_completed timed out"
+            time.sleep(2)
+            continue
+        if boot_result.stdout.strip() != "1":
+            last_detail = boot_result.stderr.strip() or boot_result.stdout.strip() or "Android system not boot-complete"
+            time.sleep(2)
+            continue
+
+        try:
+            pm_result = subprocess.run(
+                ["adb", "-s", serial, "shell", "pm", "path", "android"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "adb shell pm path android timed out"
+            time.sleep(2)
+            continue
+        if pm_result.returncode == 0 and "package:" in pm_result.stdout:
+            return serial
+
+        last_detail = pm_result.stderr.strip() or pm_result.stdout.strip() or "package manager not ready"
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"Android emulator '{avd_name}' reported as booted but never became adb-ready within {timeout}s: {last_detail}"
+    )
+
+
 def _adb(avd_name: str, *args, capture: bool = False, check: bool = True) -> Optional[str]:
     serial = _serial(avd_name)
     cmd = ["adb", "-s", serial] + list(args)
@@ -185,13 +278,12 @@ def shutdown(avd_name: str) -> None:
 
 
 def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
-    _ensure_booted(avd_name)
+    serial = wait_until_ready(avd_name, timeout=max(timeout, 180))
     path = Path(apk_path)
     if not path.exists():
         raise RuntimeError(f"APK not found: {apk_path}")
     if path.suffix != ".apk":
         raise RuntimeError(f"Android requires a .apk file, got: {path.suffix}")
-    serial = _serial(avd_name)
     cmd = ["adb", "-s", serial, "install", "-r", str(path)]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -206,7 +298,7 @@ def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
 
 
 def list_apps(avd_name: str) -> list[dict]:
-    _ensure_booted(avd_name)
+    wait_until_ready(avd_name)
     """Return installed packages as a list of dicts with package name."""
     output = _adb(avd_name, "shell", "pm", "list", "packages", "-f", capture=True) or ""
     apps = []
@@ -221,7 +313,7 @@ def list_apps(avd_name: str) -> list[dict]:
 
 
 def launch(avd_name: str, package_activity: str, args: list[str] | None = None) -> None:
-    _ensure_booted(avd_name)
+    wait_until_ready(avd_name)
     """
     Launch an app. package_activity can be:
       - "com.example.app"           → resolves main launcher activity
@@ -259,12 +351,12 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
 
 
 def terminate(avd_name: str, package: str) -> None:
-    _ensure_booted(avd_name)
+    wait_until_ready(avd_name)
     _adb(avd_name, "shell", "am", "force-stop", package)
 
 
 def uninstall(avd_name: str, package: str) -> None:
-    _ensure_booted(avd_name)
+    wait_until_ready(avd_name)
     _adb(avd_name, "uninstall", package)
 
 
@@ -272,7 +364,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
     """Capture screenshot via screencap + adb pull.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
     """
-    _ensure_booted(avd_name)
+    wait_until_ready(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     remote = "/data/local/tmp/simemu_screenshot.png"
     _adb(avd_name, "shell", "screencap", "-p", remote)
@@ -284,13 +376,12 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
 
 
 def record_start(avd_name: str, output_path: str) -> int:
-    _ensure_booted(avd_name)
+    serial = wait_until_ready(avd_name)
     """
     Start screenrecord in background. Returns PID.
     Note: Android screenrecord has a hard 3-minute limit.
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    serial = _serial(avd_name)
     remote = "/sdcard/simemu_record.mp4"
     proc = subprocess.Popen(
         ["adb", "-s", serial, "shell", "screenrecord",

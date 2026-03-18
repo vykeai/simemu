@@ -587,13 +587,15 @@ def cmd_ready(args):
         result["healed"] = prep["healed"]
         result["ready"] = True
     else:
+        serial = android.wait_until_ready(alloc.sim_id)
         result = {
             "ready": True,
             "stable": True,
             "slug": args.slug,
             "platform": alloc.platform,
             "device_name": alloc.device_name,
-            "note": "Android presentation is already window-independent for most commands.",
+            "serial": serial,
+            "note": "Android adb transport and package manager are ready.",
         }
     if args.json:
         _print_json(result)
@@ -980,10 +982,10 @@ def cmd_check(args):
         if env.get("state") != "Booted":
             issues.append(f"Simulator is not booted (state: {env.get('state')}). Run: simemu boot {args.slug}")
     else:
-        from .discover import get_android_serial
-        serial = get_android_serial(alloc.sim_id)
-        if serial is None:
-            issues.append(f"Emulator is not running. Run: simemu boot {args.slug}")
+        try:
+            android.wait_until_ready(alloc.sim_id, timeout=45)
+        except Exception as exc:
+            issues.append(str(exc))
 
     if args.bundle and not issues:
         if alloc.platform == "ios":
