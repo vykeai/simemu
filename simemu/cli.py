@@ -20,12 +20,23 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import state, ios, android
-from .discover import list_ios, list_android, find_simulator, NoSimulatorAvailable
+from . import state, ios, android, device
+from .discover import (
+    list_ios, list_android, list_real_ios, list_real_android,
+    find_simulator, NoSimulatorAvailable,
+)
 
 
 def _agent() -> str:
     return os.environ.get("SIMEMU_AGENT") or f"pid-{os.getpid()}"
+
+
+def _is_real_device(alloc: state.Allocation) -> bool:
+    """Check if an allocation refers to a real device (not simulator/emulator).
+
+    Real devices have "(real)" in their device_name, set during acquire.
+    """
+    return "(real)" in alloc.device_name
 
 
 def _output_dir() -> Path:
@@ -176,20 +187,22 @@ def _autostart_server_if_needed() -> None:
 
 def cmd_acquire(args):
     wait = getattr(args, "wait", 0)
+    real = getattr(args, "real", False)
     poll = 10  # seconds between retries
     deadline = time.time() + wait
     attempt = 0
 
     while True:
         try:
-            sim = find_simulator(args.platform, args.device)
+            sim = find_simulator(args.platform, args.device, real_device=real)
             break
         except NoSimulatorAvailable as e:
             if time.time() >= deadline:
                 raise RuntimeError(str(e)) from None
             attempt += 1
             remaining = int(deadline - time.time())
-            print(f"No simulator available, retrying in {poll}s (up to {remaining}s remaining)...",
+            kind = "device" if real else "simulator"
+            print(f"No {kind} available, retrying in {poll}s (up to {remaining}s remaining)...",
                   flush=True)
             time.sleep(poll)
 
@@ -208,13 +221,21 @@ def cmd_acquire(args):
             "platform": sim.platform,
             "device_name": sim.device_name,
             "runtime": sim.runtime,
+            "real_device": sim.real_device,
             "agent": alloc.agent,
             "acquired_at": alloc.acquired_at,
         })
     else:
-        print(f"Reserved '{args.slug}' → {sim.device_name} ({sim.runtime})")
+        label = "real device" if sim.real_device else "simulator"
+        print(f"Reserved '{args.slug}' → {sim.device_name} ({sim.runtime}) [{label}]")
         print(f"  sim_id:  {sim.sim_id}")
         print(f"  agent:   {alloc.agent}")
+
+    # Real devices are already booted — skip boot step
+    if sim.real_device:
+        if not args.json:
+            print("Ready (real device — already connected).")
+        return
 
     if not args.no_boot:
         if not args.json:
@@ -266,6 +287,34 @@ def cmd_status(args):
         print(f"{slug:<22} {alloc.platform:<10} {alloc.device_name:<26} {alloc.agent:<22} {since:<20} {rec}")
 
 
+def cmd_list_devices(args):
+    """List connected real devices (not simulators/emulators)."""
+    allocated_ids = {a.sim_id for a in state.get_all().values()}
+    platform = getattr(args, "platform", None)
+
+    rows = []
+    if not platform or platform == "ios":
+        rows += list_real_ios(allocated_ids)
+    if not platform or platform == "android":
+        rows += list_real_android(allocated_ids)
+
+    if not rows:
+        if args.json:
+            _print_json([])
+        else:
+            print("No real devices connected.")
+        return
+
+    if args.json:
+        _print_json([r.__dict__ for r in rows])
+        return
+
+    print(f"{'PLATFORM':<10} {'STATE':<8} {'DEVICE':<30} {'RUNTIME':<16} {'ID'}")
+    print("─" * 96)
+    for s in rows:
+        print(f"{s.platform:<10} {'On' if s.booted else 'Off':<8} {s.device_name:<30} {s.runtime:<16} {s.sim_id}")
+
+
 def cmd_list(args):
     allocated_ids = {a.sim_id for a in state.get_all().values()}
     platform = getattr(args, "platform", None)
@@ -296,6 +345,9 @@ def cmd_list(args):
 def cmd_boot(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
+    if _is_real_device(alloc):
+        print(f"'{args.slug}' is a real device — already connected.")
+        return
     if alloc.platform == "ios":
         ios.boot(alloc.sim_id)
     else:
@@ -309,6 +361,11 @@ def cmd_boot(args):
 def cmd_shutdown(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
+    if _is_real_device(alloc):
+        raise RuntimeError(
+            f"'{args.slug}' is a real device — cannot shut down via simemu.\n"
+            f"Use 'simemu release {args.slug}' to release the reservation."
+        )
     if alloc.platform == "ios":
         ios.shutdown(alloc.sim_id)
     else:
@@ -546,9 +603,12 @@ def cmd_install(args):
     state.touch(args.slug)
     timeout = args.timeout
     print(f"Installing {args.app} on '{args.slug}' ({alloc.device_name})...")
-    if alloc.platform == "ios":
+    if _is_real_device(alloc) and alloc.platform == "ios":
+        device.ios_install(alloc.sim_id, args.app, timeout=timeout)
+    elif alloc.platform == "ios":
         ios.install(alloc.sim_id, args.app, timeout=timeout)
     else:
+        # adb install works the same for real Android devices and emulators
         android.install(alloc.sim_id, args.app, timeout=timeout)
     print("Done.")
 
@@ -585,7 +645,9 @@ def cmd_launch(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
     extra = args.extra or []
-    if alloc.platform == "ios":
+    if _is_real_device(alloc) and alloc.platform == "ios":
+        device.ios_launch(alloc.sim_id, args.bundle_or_package)
+    elif alloc.platform == "ios":
         ios.launch(alloc.sim_id, args.bundle_or_package, extra)
     else:
         android.launch(alloc.sim_id, args.bundle_or_package, extra)
@@ -626,7 +688,9 @@ def cmd_screenshot(args):
         if "SIMEMU_SCREENSHOT_MAX_SIZE" in os.environ else None
     )
 
-    if alloc.platform == "ios":
+    if _is_real_device(alloc) and alloc.platform == "ios":
+        device.ios_screenshot(alloc.sim_id, output, max_size=max_size)
+    elif alloc.platform == "ios":
         ios.screenshot(alloc.sim_id, output, fmt=args.format, max_size=max_size)
         if not max_size:
             print("Tip: iOS screenshots are ~2600px tall. Pass --max-size 1000 (or set "
@@ -635,6 +699,7 @@ def cmd_screenshot(args):
     else:
         if args.format and args.format not in ("png",):
             print(f"Warning: Android only supports PNG screenshots; ignoring --format.", file=sys.stderr)
+        # adb screencap works the same for real Android devices
         android.screenshot(alloc.sim_id, output, max_size=max_size)
 
     print(f"Screenshot saved: {output}")
@@ -808,17 +873,21 @@ def cmd_erase(args):
 def cmd_env(args):
     alloc = state.require(args.slug)
     state.touch(args.slug)
-    if alloc.platform == "ios":
+    if _is_real_device(alloc) and alloc.platform == "ios":
+        info = device.ios_get_env(alloc.sim_id)
+        info["maestro_device"] = alloc.sim_id
+    elif alloc.platform == "ios":
         info = ios.get_env(alloc.sim_id)
         info["maestro_device"] = alloc.sim_id  # UDID for maestro --device
     else:
         info = android.get_env(alloc.sim_id)
         from .discover import get_android_serial
         serial = get_android_serial(alloc.sim_id)
-        info["maestro_device"] = serial  # emulator-XXXX or ip:5555 for maestro --device
+        info["maestro_device"] = serial or alloc.sim_id  # real Android: serial is the sim_id
     info["slug"] = args.slug
     info["agent"] = alloc.agent
     info["acquired_at"] = alloc.acquired_at
+    info["real_device"] = _is_real_device(alloc)
     _print_json(info)
 
 
@@ -1514,10 +1583,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     # acquire
-    acq = sub.add_parser("acquire", help="Reserve a simulator")
+    acq = sub.add_parser("acquire", help="Reserve a simulator or real device")
     acq.add_argument("platform", choices=["ios", "android"])
     acq.add_argument("slug", help="Slug name, e.g. fitkind-app")
     acq.add_argument("--device", help="Partial device name filter, e.g. 'iPhone 16 Pro'")
+    acq.add_argument("--real", action="store_true",
+                     help="Acquire a connected real device instead of a simulator/emulator")
     acq.add_argument("--no-boot", action="store_true", help="Don't boot after acquiring")
     acq.add_argument("--window", action="store_true",
                      help="Android: show emulator window (default is headless/no-window)")
@@ -1541,6 +1612,12 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("platform", nargs="?", choices=["ios", "android"])
     ls.add_argument("--json", action="store_true", help="Output as JSON")
     ls.set_defaults(func=cmd_list)
+
+    # list-devices
+    ld = sub.add_parser("list-devices", help="Show connected real devices (not simulators)")
+    ld.add_argument("platform", nargs="?", choices=["ios", "android"])
+    ld.add_argument("--json", action="store_true", help="Output as JSON")
+    ld.set_defaults(func=cmd_list_devices)
 
     # boot
     boot_p = sub.add_parser("boot", help="Boot the reserved simulator")

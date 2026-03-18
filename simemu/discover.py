@@ -1,6 +1,6 @@
 """
-Simulator discovery — lists available iOS simulators and Android AVDs,
-filtering out any already allocated in simemu state.
+Simulator and device discovery — lists available iOS simulators, Android AVDs,
+and connected real devices, filtering out any already allocated in simemu state.
 """
 
 import json
@@ -13,11 +13,12 @@ from . import state
 
 @dataclass
 class SimulatorInfo:
-    sim_id: str       # UDID (iOS) or AVD name (Android)
+    sim_id: str       # UDID (iOS) or AVD name (Android) or device serial
     platform: str     # "ios" | "android"
     device_name: str
     booted: bool
     runtime: str      # e.g. "iOS 26.2" or "API 35"
+    real_device: bool = False  # True for physical devices, False for simulators/emulators
 
 
 def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
@@ -111,6 +112,44 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
     return results
 
 
+def list_real_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
+    """Return connected real iOS devices, excluding already-allocated ones."""
+    from . import device
+    allocated_ids = allocated_ids or set()
+    results = []
+    for dev in device.list_ios_devices():
+        if dev.device_id in allocated_ids:
+            continue
+        results.append(SimulatorInfo(
+            sim_id=dev.device_id,
+            platform="ios",
+            device_name=f"{dev.device_name} (real)",
+            booted=dev.connected,
+            runtime=f"iOS {dev.os_version}" if dev.os_version else "iOS",
+            real_device=True,
+        ))
+    return results
+
+
+def list_real_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
+    """Return connected real Android devices, excluding already-allocated ones."""
+    from . import device
+    allocated_ids = allocated_ids or set()
+    results = []
+    for dev in device.list_android_devices():
+        if dev.device_id in allocated_ids:
+            continue
+        results.append(SimulatorInfo(
+            sim_id=dev.device_id,
+            platform="android",
+            device_name=f"{dev.device_name} (real)",
+            booted=dev.connected,
+            runtime=f"Android {dev.os_version}" if dev.os_version else "Android",
+            real_device=True,
+        ))
+    return results
+
+
 def _get_booted_avds() -> set[str]:
     """Map running emulator serials back to their AVD names."""
     booted = set()
@@ -178,27 +217,52 @@ class NoSimulatorAvailable(RuntimeError):
     pass
 
 
-def find_simulator(platform: str, device_name: Optional[str] = None) -> SimulatorInfo:
+def find_simulator(
+    platform: str,
+    device_name: Optional[str] = None,
+    real_device: bool = False,
+) -> SimulatorInfo:
     """
-    Find an available (unallocated) simulator, optionally filtered by device_name.
+    Find an available (unallocated) simulator or real device, optionally filtered by device_name.
     Raises RuntimeError if none available.
+
+    real_device: if True, search only connected real devices instead of simulators.
     """
     allocated_ids = {a.sim_id for a in state.get_all().values()}
 
-    if platform == "ios":
-        sims = list_ios(allocated_ids)
-    elif platform == "android":
-        sims = list_android(allocated_ids)
+    if real_device:
+        if platform == "ios":
+            sims = list_real_ios(allocated_ids)
+        elif platform == "android":
+            sims = list_real_android(allocated_ids)
+        else:
+            raise RuntimeError(f"Unknown platform '{platform}'. Use 'ios' or 'android'.")
+        kind = "real devices"
     else:
-        raise RuntimeError(f"Unknown platform '{platform}'. Use 'ios' or 'android'.")
+        if platform == "ios":
+            sims = list_ios(allocated_ids)
+        elif platform == "android":
+            sims = list_android(allocated_ids)
+        else:
+            raise RuntimeError(f"Unknown platform '{platform}'. Use 'ios' or 'android'.")
+        kind = "simulators"
 
     if not sims:
         all_allocs = state.get_all()
         held_by = [f"  '{a.slug}' → {a.device_name} (agent: {a.agent})"
                    for a in all_allocs.values() if a.platform == platform]
         hint = "\n".join(held_by) if held_by else "  (none reserved)"
+
+        if real_device:
+            raise NoSimulatorAvailable(
+                f"No available {platform} {kind} — check USB connection and trust dialog.\n"
+                f"Currently reserved:\n{hint}\n\n"
+                f"Options:\n"
+                f"  simemu list-devices {platform}   # see connected devices\n"
+                f"  simemu acquire {platform} <slug> --real --wait 60  # wait for a device"
+            )
         raise NoSimulatorAvailable(
-            f"No available {platform} simulators — all are reserved:\n{hint}\n\n"
+            f"No available {platform} {kind} — all are reserved:\n{hint}\n\n"
             f"Options:\n"
             f"  simemu acquire {platform} <slug> --wait 120   # wait up to 2 min\n"
             f"  simemu create {'ios --device \"iPhone 16\" --os \"iOS 18\"' if platform == 'ios' else 'android --api 35'}  # create a new one"
@@ -209,7 +273,7 @@ def find_simulator(platform: str, device_name: Optional[str] = None) -> Simulato
         if not matches:
             available = ", ".join(s.device_name for s in sims)
             raise NoSimulatorAvailable(
-                f"No available {platform} simulator matching '{device_name}'.\n"
+                f"No available {platform} {kind} matching '{device_name}'.\n"
                 f"Available: {available}"
             )
         return matches[0]

@@ -33,8 +33,11 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from . import state, ios, android
-from .discover import list_ios, list_android, find_simulator, NoSimulatorAvailable
+from . import state, ios, android, device
+from .discover import (
+    list_ios, list_android, list_real_ios, list_real_android,
+    find_simulator, NoSimulatorAvailable,
+)
 from . import create as _create
 
 
@@ -136,6 +139,7 @@ class AcquireRequest(BaseModel):
     device: Optional[str] = None     # partial device name filter
     boot: bool = True
     headless: bool = True            # Android: headless by default; pass False for windowed
+    real: bool = False               # if True, acquire a connected real device instead
 
 class ReleaseRequest(BaseModel):
     agent: str
@@ -263,12 +267,23 @@ def list_simulators(platform: Optional[str] = None):
     return [r.__dict__ for r in rows]
 
 
+@app.get("/devices", summary="Connected real devices (not simulators)")
+def list_devices(platform: Optional[str] = None):
+    allocated_ids = {a.sim_id for a in state.get_all().values()}
+    rows = []
+    if not platform or platform == "ios":
+        rows += list_real_ios(allocated_ids)
+    if not platform or platform == "android":
+        rows += list_real_android(allocated_ids)
+    return [r.__dict__ for r in rows]
+
+
 # ── acquire & release ─────────────────────────────────────────────────────────
 
-@app.post("/acquire", summary="Reserve a simulator by slug")
+@app.post("/acquire", summary="Reserve a simulator or real device by slug")
 def acquire(req: AcquireRequest):
     try:
-        sim = find_simulator(req.platform, req.device)
+        sim = find_simulator(req.platform, req.device, real_device=req.real)
     except NoSimulatorAvailable as e:
         raise HTTPException(status_code=409, detail=str(e))
 
@@ -283,7 +298,7 @@ def acquire(req: AcquireRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
-    if req.boot:
+    if req.boot and not sim.real_device:
         try:
             if sim.platform == "ios":
                 ios.boot(sim.sim_id, minimize=req.headless)
@@ -293,7 +308,7 @@ def acquire(req: AcquireRequest):
             state.release(req.slug)
             raise HTTPException(status_code=500, detail=f"Boot failed: {e}")
 
-    return {**alloc.__dict__, "runtime": sim.runtime}
+    return {**alloc.__dict__, "runtime": sim.runtime, "real_device": sim.real_device}
 
 
 @app.delete("/release/{slug}", summary="Release a reservation")
