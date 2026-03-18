@@ -112,12 +112,14 @@ def _serial(avd_name: str) -> str:
 
 
 def _ensure_booted(avd_name: str) -> None:
-    """Auto-boot the emulator if it's not running."""
+    """Check emulator is running. Raises instead of auto-booting to prevent runaway spawns."""
     from . import state
     state.check_maintenance()
     if get_android_serial(avd_name) is None:
-        print(f"Emulator not running, booting...", flush=True)
-        boot(avd_name)
+        raise RuntimeError(
+            f"Android emulator '{avd_name}' is not running.\n"
+            f"Boot it explicitly first: simemu boot <slug>"
+        )
 
 
 def _adb(avd_name: str, *args, capture: bool = False, check: bool = True) -> Optional[str]:
