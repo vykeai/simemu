@@ -1,14 +1,12 @@
 """
 Simulator and device discovery — lists available iOS simulators, Android AVDs,
-and connected real devices, filtering out any already allocated in simemu state.
+and connected real devices, filtering out any already claimed in simemu sessions.
 """
 
 import json
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
-
-from . import state
 
 
 @dataclass
@@ -204,43 +202,152 @@ def _get_booted_avds() -> set[str]:
     return booted
 
 
-def get_android_serial(avd_name: str) -> Optional[str]:
+def get_android_serial(avd_name: str, retries: int = 1, delay: float = 0.5) -> Optional[str]:
     """Return the adb serial for a running AVD or Genymotion VM.
 
-    For Genymotion VMs (UUID sim_id) returns '<ip>:5555'.
+    For Genymotion VMs (UUID sim_id) returns '<ip>:5555' or '127.0.0.1:<port>'.
     For standard AVDs returns 'emulator-XXXX'.
+    Genymotion VMs can be identified by UUID or by name.
     """
     from . import genymotion
     if genymotion.is_genymotion_id(avd_name):
         return genymotion.get_adb_serial(avd_name)
 
-    try:
-        out = subprocess.check_output(
-            ["adb", "devices"],
-            stderr=subprocess.DEVNULL,
-        ).decode()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
+    # Check if avd_name matches a Genymotion VM by name (not UUID)
+    if genymotion.is_available():
+        for vm in genymotion.list_vms():
+            if vm["name"] == avd_name:
+                return genymotion.get_adb_serial(vm["uuid"])
 
-    for line in out.splitlines():
-        if not line.startswith("emulator-"):
-            continue
-        serial = line.split()[0]
+    attempts = max(1, retries)
+    for attempt in range(attempts):
         try:
-            name_out = subprocess.check_output(
-                ["adb", "-s", serial, "emu", "avd", "name"],
+            out = subprocess.check_output(
+                ["adb", "devices"],
                 stderr=subprocess.DEVNULL,
-            ).decode().splitlines()
-            if name_out and name_out[0].strip() == avd_name:
-                return serial
-        except subprocess.CalledProcessError:
-            pass
+            ).decode()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            out = ""
+
+        for line in out.splitlines():
+            if not line.startswith("emulator-"):
+                continue
+            serial = line.split()[0]
+            try:
+                name_out = subprocess.check_output(
+                    ["adb", "-s", serial, "emu", "avd", "name"],
+                    stderr=subprocess.DEVNULL,
+                ).decode().splitlines()
+                if name_out and name_out[0].strip() == avd_name:
+                    return serial
+            except subprocess.CalledProcessError:
+                pass
+
+        if attempt < attempts - 1:
+            import time as _time
+            _time.sleep(delay)
 
     return None
 
 
 class NoSimulatorAvailable(RuntimeError):
     pass
+
+
+def _get_claimed_sim_ids() -> set[str]:
+    """Return sim_ids of all active sessions (claimed devices)."""
+    from .session import get_active_sessions
+    return {s.sim_id for s in get_active_sessions().values()}
+
+
+def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
+    """Find the best available device matching a ClaimSpec.
+
+    Scoring: booted > shutdown, exact version match > close, less memory > more.
+    Maps form_factor to platform and device name filters.
+    """
+    from .session import ClaimSpec  # deferred to avoid circular import
+
+    allocated_ids = _get_claimed_sim_ids()
+
+    # Map form_factor to platform and device filter
+    _FORM_FACTOR_PLATFORM = {
+        "watch": "watchos",
+        "tv": "tvos",
+        "vision": "visionos",
+    }
+
+    platform = _FORM_FACTOR_PLATFORM.get(spec.form_factor, spec.platform)
+
+    # Device name hints for form factors
+    _FORM_FACTOR_HINTS: dict[str, list[str]] = {
+        "phone": ["iphone", "pixel", "galaxy", "phone"],
+        "tablet": ["ipad", "tablet"],
+        "watch": ["watch"],
+        "tv": ["tv", "apple tv"],
+        "vision": ["vision", "apple vision"],
+    }
+    hints = _FORM_FACTOR_HINTS.get(spec.form_factor, [])
+
+    if spec.real_device:
+        if platform == "ios":
+            candidates = list_real_ios(allocated_ids)
+        elif platform == "android":
+            candidates = list_real_android(allocated_ids)
+        else:
+            raise NoSimulatorAvailable(
+                f"Real device discovery not supported for platform '{platform}'."
+            )
+        kind = "real devices"
+    else:
+        _LIST_FNS = {
+            "ios": list_ios,
+            "watchos": list_watchos,
+            "tvos": list_tvos,
+            "visionos": list_visionos,
+            "android": list_android,
+        }
+        list_fn = _LIST_FNS.get(platform)
+        if not list_fn:
+            raise NoSimulatorAvailable(f"Unknown platform '{platform}'.")
+        candidates = list_fn(allocated_ids)
+        kind = "simulators"
+
+    if not candidates:
+        raise NoSimulatorAvailable(
+            f"No available {platform} {kind}. "
+            f"Re-try later or create a new one."
+        )
+
+    # Score candidates
+    def _score(sim: SimulatorInfo) -> tuple:
+        """Lower score = better match. Returns tuple for sorting."""
+        # Prefer booted devices (saves boot time)
+        booted_score = 0 if sim.booted else 1
+
+        # Prefer form factor match
+        form_score = 1
+        if hints:
+            name_lower = sim.device_name.lower()
+            if any(h in name_lower for h in hints):
+                form_score = 0
+
+        # Prefer version match
+        version_score = 0
+        if spec.os_version:
+            runtime_lower = sim.runtime.lower()
+            if spec.os_version in runtime_lower:
+                version_score = 0
+            else:
+                version_score = 1
+
+        # Prefer non-Genymotion (lighter on Apple Silicon)
+        geny_score = 1 if sim.genymotion else 0
+
+        return (form_score, version_score, booted_score, geny_score, sim.device_name)
+
+    candidates.sort(key=_score)
+    return candidates[0]
 
 
 def find_simulator(
@@ -254,7 +361,7 @@ def find_simulator(
 
     real_device: if True, search only connected real devices instead of simulators.
     """
-    allocated_ids = {a.sim_id for a in state.get_all().values()}
+    allocated_ids = _get_claimed_sim_ids()
 
     _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
     _LIST_FNS = {
@@ -282,23 +389,20 @@ def find_simulator(
         kind = "simulators"
 
     if not sims:
-        all_allocs = state.get_all()
-        held_by = [f"  '{a.slug}' → {a.device_name} (agent: {a.agent})"
-                   for a in all_allocs.values() if a.platform == platform]
-        hint = "\n".join(held_by) if held_by else "  (none reserved)"
+        from .session import get_active_sessions
+        active = get_active_sessions()
+        held_by = [f"  {sid} → {s.device_name} (agent: {s.agent})"
+                   for sid, s in active.items() if s.platform == platform]
+        hint = "\n".join(held_by) if held_by else "  (none claimed)"
 
         if real_device:
             raise NoSimulatorAvailable(
                 f"No available {platform} {kind} — check USB connection and trust dialog.\n"
-                f"Currently reserved:\n{hint}\n\n"
-                f"Options:\n"
-                f"  simemu list-devices {platform}   # see connected devices\n"
-                f"  simemu acquire {platform} <slug> --real --wait 60  # wait for a device"
+                f"Currently claimed:\n{hint}"
             )
         raise NoSimulatorAvailable(
-            f"No available {platform} {kind} — all are reserved:\n{hint}\n\n"
+            f"No available {platform} {kind} — all are claimed:\n{hint}\n\n"
             f"Options:\n"
-            f"  simemu acquire {platform} <slug> --wait 120   # wait up to 2 min\n"
             f"  simemu create {'ios --device \"iPhone 16\" --os \"iOS 18\"' if platform == 'ios' else 'android --api 35'}  # create a new one"
         )
 

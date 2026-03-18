@@ -26,6 +26,8 @@ from .discover import (
     list_real_ios, list_real_android,
     find_simulator, NoSimulatorAvailable,
 )
+from . import session as session_module
+from .session import ClaimSpec, SessionError
 
 # Apple platforms all use xcrun simctl — same as iOS
 _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
@@ -203,7 +205,63 @@ def _autostart_server_if_needed() -> None:
         time.sleep(0.1)
 
 
-# ── command handlers ──────────────────────────────────────────────────────────
+# ── v2 session-based command handlers ────────────────────────────────────────
+
+def cmd_claim(args):
+    """Claim a device session."""
+    spec = ClaimSpec(
+        platform=args.platform,
+        form_factor=getattr(args, "form_factor", None) or "phone",
+        os_version=getattr(args, "version", None),
+        real_device=getattr(args, "real", False),
+        label=getattr(args, "label", None) or "",
+    )
+    try:
+        session = session_module.claim(spec)
+        _print_json(session.to_agent_json())
+    except SessionError as e:
+        _print_json(e.to_json())
+        sys.exit(1)
+
+
+def cmd_do(args):
+    """Execute a command on a session."""
+    try:
+        result = session_module.do_command(args.session, args.do_command, args.extra or [])
+        if result is not None:
+            _print_json(result)
+    except SessionError as e:
+        _print_json(e.to_json())
+        sys.exit(1)
+
+
+def cmd_sessions(args):
+    """List all v2 sessions."""
+    sessions = session_module.get_active_sessions()
+    if not sessions:
+        if getattr(args, "json", False):
+            _print_json([])
+        else:
+            print("No active sessions.")
+        return
+
+    if getattr(args, "json", False):
+        _print_json([s.to_agent_json() for s in sessions.values()])
+        return
+
+    print(f"{'SESSION':<12} {'PLATFORM':<10} {'FORM':<8} {'STATUS':<8} {'OS':<12} {'LABEL':<20} {'IDLE'}")
+    print("─" * 90)
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for sid, s in sessions.items():
+        hb = datetime.fromisoformat(s.heartbeat_at)
+        idle_min = int((now - hb).total_seconds() / 60)
+        os_ver = s.resolved_os_version or s.os_version or "latest"
+        label = (s.label or "")[:20]
+        print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {os_ver:<12} {label:<20} {idle_min}m")
+
+
+# ── legacy command handlers ──────────────────────────────────────────────────
 
 def cmd_acquire(args):
     wait = getattr(args, "wait", 0)
@@ -990,6 +1048,8 @@ def _maestro_hud(flow_name: str):
             "title": "SIMEMU",
             "badge": "MAESTRO",
             "action": flow_name,
+            "detail": "Running Maestro flow — do not interact with the desktop",
+            "task": "simemu maestro",
         })
         if proc.stdin:
             proc.stdin.write(msg.encode("utf-8") + b"\n")
@@ -1683,6 +1743,38 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Do not auto-start the simemu API server for this invocation")
     sub = p.add_subparsers(dest="command", required=True)
 
+    # ── v2 session-based commands ────────────────────────────────────────────
+
+    # claim
+    claim_p = sub.add_parser("claim", help="Claim a device session (v2 API)")
+    claim_p.add_argument("platform", choices=["ios", "android"])
+    claim_p.add_argument("--version", help="OS version (e.g. 26, 18, 15)")
+    claim_p.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
+                         default="phone", help="Device form factor (default: phone)")
+    claim_p.add_argument("--real", action="store_true",
+                         help="Prefer real device over simulator")
+    claim_p.add_argument("--label", help="Human label for display (e.g. 'proof capture')")
+    claim_p.set_defaults(func=cmd_claim)
+
+    # do
+    do_p = sub.add_parser("do", help="Execute a command on a claimed session (v2 API)")
+    do_p.add_argument("session", help="Session ID (e.g. s-a7f3b2)")
+    do_p.add_argument("do_command",
+                      help="Command: install, launch, tap, swipe, screenshot, maestro, "
+                           "url, done, renew, terminate, uninstall, input, long-press, "
+                           "key, appearance, rotate, location, push, pull, add-media, "
+                           "shake, status-bar")
+    do_p.add_argument("extra", nargs=argparse.REMAINDER,
+                      help="Arguments for the command")
+    do_p.set_defaults(func=cmd_do)
+
+    # sessions
+    sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
+    sess_p.add_argument("--json", action="store_true", help="Output as JSON")
+    sess_p.set_defaults(func=cmd_sessions)
+
+    # ── legacy commands (backward compat) ────────────────────────────────────
+
     # acquire
     acq = sub.add_parser("acquire", help="Reserve a simulator or real device")
     acq.add_argument("platform", choices=["ios", "android", "watchos", "tvos", "visionos"])
@@ -2290,13 +2382,35 @@ def cmd_daemon(args):
             print("  Note: this is a live server process, not the launchd-managed daemon.")
 
 
+def _find_swift_menubar_app() -> Path | None:
+    """Find the SimEmuBar .app bundle or bare binary."""
+    swift_dir = Path(__file__).parent / "swift"
+    # Prefer .app bundle (required for menu bar rendering)
+    app_candidates = [
+        Path("/Applications/SimEmuBar.app"),
+        swift_dir / ".build" / "SimEmuBar.app",
+    ]
+    for p in app_candidates:
+        if p.exists() and (p / "Contents" / "MacOS" / "SimEmuBar").exists():
+            return p
+    return None
+
+
 def cmd_menubar(args):
-    """Launch the macOS menu bar status app."""
+    """Launch the macOS menu bar status app (SwiftUI or rumps fallback)."""
+    import subprocess as sp
+    app_bundle = _find_swift_menubar_app()
+    if app_bundle:
+        sp.run(["open", str(app_bundle)], check=False)
+        return
+
+    # Fallback to rumps-based menubar
     try:
         from .ui.menubar import main as menubar_main
     except ImportError as e:
         raise RuntimeError(
-            f"Menu bar requires rumps: pip install rumps\n({e})"
+            f"Menu bar requires either the Swift build (cd simemu/swift && swift build -c release) "
+            f"or rumps: pip install rumps\n({e})"
         ) from None
     menubar_main()
 
@@ -2325,7 +2439,7 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_sessions", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
 
 def main():

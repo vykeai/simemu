@@ -222,7 +222,7 @@ class DiscoverRealDeviceIntegrationTests(unittest.TestCase):
         )
 
         with patch("simemu.device.list_ios_devices", return_value=[fake_device]):
-            with patch("simemu.discover.state.get_all", return_value={}):
+            with patch("simemu.discover._get_claimed_sim_ids", return_value=set()):
                 sim = find_simulator("ios", real_device=True)
 
         self.assertEqual("UDID-001", sim.sim_id)
@@ -230,7 +230,7 @@ class DiscoverRealDeviceIntegrationTests(unittest.TestCase):
 
     def test_find_simulator_real_device_raises_when_none_connected(self) -> None:
         with patch("simemu.device.list_ios_devices", return_value=[]):
-            with patch("simemu.discover.state.get_all", return_value={}):
+            with patch("simemu.discover._get_claimed_sim_ids", return_value=set()):
                 with self.assertRaises(NoSimulatorAvailable) as ctx:
                     find_simulator("ios", real_device=True)
 
@@ -242,7 +242,7 @@ class DiscoverRealDeviceIntegrationTests(unittest.TestCase):
         dev2 = device.RealDevice("UDID-2", "ios", "iPad Pro", True, "18", "usb")
 
         with patch("simemu.device.list_ios_devices", return_value=[dev1, dev2]):
-            with patch("simemu.discover.state.get_all", return_value={}):
+            with patch("simemu.discover._get_claimed_sim_ids", return_value=set()):
                 sim = find_simulator("ios", device_name="iPad", real_device=True)
 
         self.assertEqual("UDID-2", sim.sim_id)

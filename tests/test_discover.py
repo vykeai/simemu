@@ -197,34 +197,33 @@ class TestGetAndroidSerial(unittest.TestCase):
 
 class TestFindSimulator(unittest.TestCase):
 
-    @patch("simemu.discover.state.get_all", return_value={})
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
     @patch("simemu.discover.subprocess.check_output")
-    def test_returns_first_available(self, mock_co: MagicMock, mock_state: MagicMock) -> None:
+    def test_returns_first_available(self, mock_co: MagicMock, mock_claimed: MagicMock) -> None:
         mock_co.return_value = SIMCTL_JSON.encode()
         sim = find_simulator("ios")
         # Booted device should come first
         self.assertEqual(sim.sim_id, "AAA-111")
         self.assertTrue(sim.booted)
 
-    @patch("simemu.discover.state.get_all", return_value={})
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
     @patch("simemu.discover.subprocess.check_output")
-    def test_filters_by_device_name(self, mock_co: MagicMock, mock_state: MagicMock) -> None:
+    def test_filters_by_device_name(self, mock_co: MagicMock, mock_claimed: MagicMock) -> None:
         mock_co.return_value = SIMCTL_JSON.encode()
         sim = find_simulator("ios", device_name="iPhone 16")
         # Both match "iPhone 16" substring — but booted "iPhone 16 Pro" sorts first
         self.assertIn("iPhone 16", sim.device_name)
 
-    @patch("simemu.discover.state.get_all", return_value={})
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
     @patch("simemu.discover.subprocess.check_output", side_effect=FileNotFoundError)
-    def test_raises_no_simulator_available(self, mock_co: MagicMock, mock_state: MagicMock) -> None:
+    def test_raises_no_simulator_available(self, mock_co: MagicMock, mock_claimed: MagicMock) -> None:
         with self.assertRaises(NoSimulatorAvailable) as ctx:
             find_simulator("ios")
         self.assertIn("No available ios simulators", str(ctx.exception))
-        self.assertIn("simemu acquire", str(ctx.exception))
 
-    @patch("simemu.discover.state.get_all", return_value={})
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
     @patch("simemu.discover.subprocess.check_output")
-    def test_raises_when_device_name_not_found(self, mock_co: MagicMock, mock_state: MagicMock) -> None:
+    def test_raises_when_device_name_not_found(self, mock_co: MagicMock, mock_claimed: MagicMock) -> None:
         mock_co.return_value = SIMCTL_JSON.encode()
         with self.assertRaises(NoSimulatorAvailable) as ctx:
             find_simulator("ios", device_name="Pixel 9")

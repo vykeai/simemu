@@ -35,8 +35,25 @@ _UUID_RE = re.compile(
 
 
 def is_genymotion_id(sim_id: str) -> bool:
-    """True if sim_id is a Genymotion VM UUID (vs an AVD name string)."""
-    return bool(_UUID_RE.match(str(sim_id)))
+    """True if sim_id is a Genymotion VM UUID or matches a Genymotion VM name."""
+    if _UUID_RE.match(str(sim_id)):
+        return True
+    # Also check by VM name — Genymotion VMs can be allocated by name
+    if is_available():
+        for vm in list_vms():
+            if vm["name"] == sim_id:
+                return True
+    return False
+
+
+def resolve_genymotion_uuid(sim_id: str) -> str | None:
+    """Return the UUID for a Genymotion VM, whether sim_id is a UUID or name."""
+    if _UUID_RE.match(str(sim_id)):
+        return sim_id
+    for vm in list_vms():
+        if vm["name"] == sim_id:
+            return vm["uuid"]
+    return None
 
 
 def gmtool_path() -> Optional[str]:
@@ -151,9 +168,11 @@ def get_adb_serial(vm_uuid: str) -> Optional[str]:
     Modern Genymotion (3.x) reports adb_serial directly (e.g. '127.0.0.1:6562').
     Falls back to '<ip>:5555' for older versions without the adb_serial field.
     Auto-connects adb if the VM is on but not yet in 'adb devices'.
+    Accepts UUID or VM name.
     """
+    resolved = resolve_genymotion_uuid(vm_uuid) or vm_uuid
     for vm in list_vms():
-        if vm["uuid"] == vm_uuid:
+        if vm["uuid"] == resolved:
             state = vm.get("state", "").lower()
             if state != "on":
                 continue
@@ -173,6 +192,7 @@ def get_adb_serial(vm_uuid: str) -> Optional[str]:
 
 def boot(vm_uuid: str) -> None:
     """Start a Genymotion VM and wait until it's adb-accessible and fully booted."""
+    vm_uuid = resolve_genymotion_uuid(vm_uuid) or vm_uuid
     _run("admin", "start", vm_uuid, check=False)
     print("Waiting for Genymotion VM to boot...", flush=True)
     deadline = time.time() + 180
@@ -192,11 +212,13 @@ def boot(vm_uuid: str) -> None:
 
 def shutdown(vm_uuid: str) -> None:
     """Stop a Genymotion VM."""
+    vm_uuid = resolve_genymotion_uuid(vm_uuid) or vm_uuid
     _run("admin", "stop", vm_uuid, check=False)
 
 
 def erase(vm_uuid: str) -> None:
     """Factory reset a Genymotion VM (must be stopped first)."""
+    vm_uuid = resolve_genymotion_uuid(vm_uuid) or vm_uuid
     _run("admin", "factoryreset", vm_uuid)
 
 

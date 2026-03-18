@@ -39,6 +39,8 @@ from .discover import (
     find_simulator, NoSimulatorAvailable,
 )
 from . import create as _create
+from . import session as session_module
+from .session import ClaimSpec, SessionError
 
 
 # ── idle-shutdown background task ─────────────────────────────────────────────
@@ -56,6 +58,17 @@ def _shutdown_idle_simulators(timeout_minutes: int) -> list[str]:
         last = datetime.fromisoformat(alloc.heartbeat_at)
         idle_min = (now - last).total_seconds() / 60
         if idle_min >= timeout_minutes:
+            # Re-read fresh state to avoid TOCTOU race: an agent may have
+            # sent a command (updating the heartbeat) between our initial
+            # snapshot and now.  Without this re-check the daemon could kill
+            # an emulator that a command is actively using.
+            fresh_alloc = state.get(slug)
+            if fresh_alloc and fresh_alloc.heartbeat_at:
+                fresh_last = datetime.fromisoformat(fresh_alloc.heartbeat_at)
+                fresh_idle = (datetime.now(timezone.utc) - fresh_last).total_seconds() / 60
+                if fresh_idle < timeout_minutes:
+                    continue  # heartbeat was refreshed — skip shutdown
+
             print(
                 f"[simemu-daemon] '{slug}' ({alloc.device_name}) "
                 f"idle {idle_min:.0f}m → shutting down",
@@ -83,6 +96,11 @@ async def _idle_shutdown_loop(timeout_minutes: int) -> None:
     while True:
         await asyncio.sleep(60)
         _shutdown_idle_simulators(timeout_minutes)
+        # v2 session lifecycle tick
+        try:
+            session_module.lifecycle_tick()
+        except Exception as e:
+            print(f"[simemu-daemon] session lifecycle_tick error: {e}", flush=True)
 
 
 @asynccontextmanager
@@ -666,6 +684,66 @@ def create_android(req: CreateAndroidRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"name": avd, "platform": "android"}
+
+
+# ── v2 session-based API ──────────────────────────────────────────────────────
+
+class V2ClaimRequest(BaseModel):
+    platform: str                            # "ios" | "android"
+    form_factor: str = "phone"               # "phone" | "tablet" | "watch" | "tv" | "vision"
+    os_version: Optional[str] = None
+    real_device: bool = False
+    label: str = ""
+
+
+class V2DoRequest(BaseModel):
+    session: str
+    command: str
+    args: list[str] = []
+
+
+@app.post("/v2/claim", summary="Claim a device session (v2 API)")
+def v2_claim(req: V2ClaimRequest):
+    try:
+        state.check_maintenance()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    spec = ClaimSpec(
+        platform=req.platform,
+        form_factor=req.form_factor,
+        os_version=req.os_version,
+        real_device=req.real_device,
+        label=req.label,
+    )
+    try:
+        session = session_module.claim(spec)
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=e.to_json())
+    except NoSimulatorAvailable as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return session.to_agent_json()
+
+
+@app.post("/v2/do", summary="Execute a command on a session (v2 API)")
+def v2_do(req: V2DoRequest):
+    try:
+        result = session_module.do_command(req.session, req.command, req.args)
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=e.to_json())
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result or {"status": "ok"}
+
+
+@app.get("/v2/sessions", summary="List all active v2 sessions")
+def v2_sessions():
+    sessions = session_module.get_active_sessions()
+    return [s.to_agent_json() for s in sessions.values()]
 
 
 # ── server entrypoint ─────────────────────────────────────────────────────────

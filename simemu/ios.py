@@ -26,6 +26,8 @@ _CUTE_HUD_PATHS = [
 _CONTROL_HANDLERS_INSTALLED = False
 _PAUSE_REQUESTED = False
 _STOP_REQUESTED = False
+_LAST_SIM_BOUNDS: dict[str, tuple[float, float, float, float]] = {}
+_LAST_WINDOW_FRAMES: dict[str, tuple[float, float, float, float]] = {}
 
 
 def _simctl(*args, capture: bool = False, check: bool = True) -> Optional[str]:
@@ -618,11 +620,16 @@ def _open_sim_window(udid: str) -> None:
 
 
 def _get_sim_bounds(udid: str) -> tuple[float, float, float, float]:
-    """Return (px, py, sw, sh) — screen origin and pixel size of the simulator content area."""
+    """Return (px, py, sw, sh) — screen origin and pixel size of the simulator content area.
+
+    Tries AXGroup first (the device screen content area), then falls back to the
+    full window bounds if AXGroup is not yet in the accessibility tree.
+    """
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
 
+    # Primary approach: find the AXGroup content area (excludes toolbar/chrome)
     r = _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
@@ -637,11 +644,48 @@ end tell''',
     ], capture_output=True, text=True, check=False)
 
     bounds_str = r.stdout.strip()
-    if not bounds_str or "," not in bounds_str:
-        raise RuntimeError(f"Could not get device content bounds for simulator {udid}")
+    if bounds_str and "," in bounds_str:
+        parts = [float(v.strip()) for v in bounds_str.split(",")]
+        bounds = (parts[0], parts[1], parts[2], parts[3])
+        _LAST_SIM_BOUNDS[udid] = bounds
+        return bounds
 
-    parts = [float(v.strip()) for v in bounds_str.split(",")]
-    return parts[0], parts[1], parts[2], parts[3]
+    # Fallback: use window position/size directly. The Simulator window may not
+    # have an AXGroup yet (e.g. just raised, accessibility tree still loading).
+    # The window content area starts below the title bar (~28pt on macOS).
+    r_win = _sp.run([
+        "osascript", "-e",
+        f'''tell application "System Events"
+    tell process "Simulator"
+        set w to first window whose name contains "{device_name}"
+        set p to position of w
+        set s to size of w
+        return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
+    end tell
+end tell''',
+    ], capture_output=True, text=True, check=False)
+
+    win_str = r_win.stdout.strip()
+    if win_str and "," in win_str:
+        parts = [float(v.strip()) for v in win_str.split(",")]
+        wx, wy, ww, wh = parts[0], parts[1], parts[2], parts[3]
+        # Offset past the macOS title bar (~28pt) to approximate content area
+        _TITLEBAR_HEIGHT = 28.0
+        bounds = (wx, wy + _TITLEBAR_HEIGHT, ww, wh - _TITLEBAR_HEIGHT)
+        _LAST_SIM_BOUNDS[udid] = bounds
+        return bounds
+
+    cached_bounds = _LAST_SIM_BOUNDS.get(udid)
+    if cached_bounds:
+        return cached_bounds
+
+    # Both approaches failed — include stderr for debugging
+    axgroup_err = r.stderr.strip() if r.stderr else "(no stderr)"
+    window_err = r_win.stderr.strip() if r_win.stderr else "(no stderr)"
+    raise RuntimeError(
+        f"Could not get device content bounds for simulator {udid}. "
+        f"AXGroup error: {axgroup_err}; Window error: {window_err}"
+    )
 
 
 def _get_window_frame(udid: str) -> tuple[float, float, float, float]:
@@ -660,10 +704,52 @@ def _get_window_frame(udid: str) -> tuple[float, float, float, float]:
 end tell''',
     ], capture_output=True, text=True, check=False)
     frame_str = r.stdout.strip()
-    if not frame_str or "," not in frame_str:
-        raise RuntimeError(f"Could not get simulator window frame for {udid}")
-    parts = [float(v.strip()) for v in frame_str.split(",")]
-    return parts[0], parts[1], parts[2], parts[3]
+    if frame_str and "," in frame_str:
+        parts = [float(v.strip()) for v in frame_str.split(",")]
+        frame = (parts[0], parts[1], parts[2], parts[3])
+        _LAST_WINDOW_FRAMES[udid] = frame
+        return frame
+
+    try:
+        import importlib as _il
+        Quartz = _il.import_module("Quartz")
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionAll,
+            Quartz.kCGNullWindowID,
+        )
+        for window in windows:
+            owner = str(window.get("kCGWindowOwnerName") or "")
+            name = str(window.get("kCGWindowName") or "")
+            if owner != "Simulator" or device_name not in name:
+                continue
+            bounds = window.get("kCGWindowBounds") or {}
+            width = float(bounds.get("Width", 0))
+            height = float(bounds.get("Height", 0))
+            if width <= 0 or height <= 0:
+                continue
+            frame = (
+                float(bounds.get("X", 0)),
+                float(bounds.get("Y", 0)),
+                width,
+                height,
+            )
+            _LAST_WINDOW_FRAMES[udid] = frame
+            return frame
+    except Exception:
+        pass
+
+    cached_frame = _LAST_WINDOW_FRAMES.get(udid)
+    if cached_frame:
+        return cached_frame
+
+    cached_bounds = _LAST_SIM_BOUNDS.get(udid)
+    if cached_bounds:
+        bx, by, bw, bh = cached_bounds
+        frame = (bx, max(0.0, by - 28.0), bw, bh + 28.0)
+        _LAST_WINDOW_FRAMES[udid] = frame
+        return frame
+
+    raise RuntimeError(f"Could not get simulator window frame for {udid}")
 
 
 def _set_window_frame(udid: str, x: float, y: float, width: float, height: float) -> None:
@@ -833,18 +919,29 @@ def _wait_for_desktop_idle(min_idle_seconds: float = 1.0, max_wait_seconds: floa
     return idle
 
 
-def _stabilized_bounds(udid: str, retries: int = 5, delay: float = 0.2) -> tuple[str, tuple[float, float, float, float]]:
+def _stabilized_bounds(udid: str, retries: int = 8, delay: float = 0.5) -> tuple[str, tuple[float, float, float, float]]:
     _ensure_booted(udid)
     _open_sim_window(udid)
     device_name = _get_device_name(udid)
+
+    # Give the Simulator window time to render its accessibility tree.
+    # The first attempt can fail if the window was just opened.
+    time.sleep(0.3)
+
     last_error: Exception | None = None
-    for _ in range(retries):
+    for attempt in range(retries):
         _raise_sim_window(device_name)
         try:
-            return device_name, _get_sim_bounds(udid)
+            bounds = _get_sim_bounds(udid)
+            _LAST_SIM_BOUNDS[udid] = bounds
+            return device_name, bounds
         except Exception as exc:
             last_error = exc
-            time.sleep(delay)
+            # Use increasing delays: 0.5, 0.5, 1.0, 1.0, 1.5, 1.5, 2.0, 2.0
+            time.sleep(delay + (attempt // 2) * 0.5)
+    cached_bounds = _LAST_SIM_BOUNDS.get(udid)
+    if cached_bounds:
+        return device_name, cached_bounds
     if last_error:
         raise last_error
     raise RuntimeError(f"Could not stabilize simulator window for {udid}")
@@ -936,6 +1033,7 @@ def _logical_to_screen(
 _VK_H = 4    # h
 _VK_L = 37   # l
 _VK_S = 1    # s
+_VK_RETURN = 36
 _VK_LEFT  = 123
 _VK_RIGHT = 124
 
@@ -970,6 +1068,19 @@ tell application "System Events"
         click at {{{x}, {y}}}
     end tell
 end tell''')
+
+
+def _get_simulator_pid() -> int:
+    result = subprocess.run(
+        ["pgrep", "-x", "Simulator"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError("Simulator.app process is not running")
+    first_pid = result.stdout.strip().splitlines()[0].strip()
+    return int(first_pid)
 
 
 def _pct_string(x: int, y: int, width: int, height: int) -> str:
@@ -1061,22 +1172,9 @@ def tap(udid: str, x: int, y: int) -> None:
         with _restore_frontmost_app():
             _check_interaction_control()
             _raise_sim_window(device_name)
-            sim_pid = _get_simulator_pid()
-
             def _click(Q):
-                src = Q.CGEventSourceCreate(Q.kCGEventSourceStateHIDSystemState)
-                pos = Q.CGPoint(x=cx, y=cy)
-                e_mv = Q.CGEventCreateMouseEvent(src, Q.kCGEventMouseMoved,   pos, Q.kCGMouseButtonLeft)
-                e_dn = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseDown, pos, Q.kCGMouseButtonLeft)
-                e_up = Q.CGEventCreateMouseEvent(src, Q.kCGEventLeftMouseUp,   pos, Q.kCGMouseButtonLeft)
                 _check_interaction_control()
-                Q.CGEventPostToPid(sim_pid, e_mv)
-                _t.sleep(0.03)
-                _check_interaction_control()
-                Q.CGEventPostToPid(sim_pid, e_dn)
-                _t.sleep(0.05)
-                _check_interaction_control()
-                Q.CGEventPostToPid(sim_pid, e_up)
+                _click_simulator_at(cx, cy)
 
             _post_mouse_hidden(_click)
 
@@ -1245,6 +1343,8 @@ _IOS_KEYS: dict[str, tuple[int, tuple[str, ...], str]] = {
     "lock":       (_VK_L, ("command down",), "Lock device (Cmd+L)"),
     "siri":       (_VK_H, ("command down",), "Invoke Siri (Cmd+H)"),
     "screenshot": (_VK_S, ("command down", "shift down"), "System screenshot (Cmd+Shift+S)"),
+    "enter":      (_VK_RETURN, (), "Press Return / default action"),
+    "return":     (_VK_RETURN, (), "Press Return / default action"),
     "paste":      (_VK_V, ("command down",), "Paste clipboard (Cmd+V)"),
 }
 
@@ -1252,7 +1352,7 @@ _IOS_KEYS: dict[str, tuple[int, tuple[str, ...], str]] = {
 def key(udid: str, key_name: str) -> None:
     """Press a named hardware key on the simulator.
 
-    Supported: home, lock, siri, screenshot
+    Supported: home, lock, siri, screenshot, enter
     May bring Simulator to the front while sending the shortcut.
     """
     _ensure_booted(udid)

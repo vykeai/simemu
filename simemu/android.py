@@ -102,7 +102,7 @@ def _sidecar_dir() -> Path:
 
 
 def _serial(avd_name: str) -> str:
-    serial = get_android_serial(avd_name)
+    serial = get_android_serial(avd_name, retries=6, delay=0.5)
     if serial is None:
         raise RuntimeError(
             f"Android emulator '{avd_name}' is not running. "
@@ -115,7 +115,7 @@ def _ensure_booted(avd_name: str) -> None:
     """Check emulator is running. Raises instead of auto-booting to prevent runaway spawns."""
     from . import state
     state.check_maintenance()
-    if get_android_serial(avd_name) is None:
+    if get_android_serial(avd_name, retries=6, delay=0.5) is None:
         raise RuntimeError(
             f"Android emulator '{avd_name}' is not running.\n"
             f"Boot it explicitly first: simemu boot <slug>"
@@ -274,7 +274,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
     """
     _ensure_booted(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    remote = "/sdcard/simemu_screenshot.png"
+    remote = "/data/local/tmp/simemu_screenshot.png"
     _adb(avd_name, "shell", "screencap", "-p", remote)
     _adb(avd_name, "pull", remote, output_path)
     _adb(avd_name, "shell", "rm", remote, check=False)
@@ -344,8 +344,7 @@ def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = 
 
 def open_url(avd_name: str, url: str) -> None:
     _ensure_booted(avd_name)
-    escaped_url = url.replace("&", r"\&")
-    _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", escaped_url)
+    _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url)
 
 
 def push(avd_name: str, local_path: str, remote_path: str) -> None:
@@ -508,6 +507,7 @@ def get_screen_size(avd_name: str) -> tuple[int, int]:
 
 def tap(avd_name: str, x: int, y: int) -> None:
     """Tap a coordinate on the emulator screen."""
+    _ensure_booted(avd_name)
     _adb(avd_name, "shell", "input", "tap", str(x), str(y))
 
 

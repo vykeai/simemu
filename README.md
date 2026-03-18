@@ -571,6 +571,83 @@ simemu battery    myapp-android --level 85
 
 ---
 
+## v2 Session-Based API
+
+simemu v2 introduces a session-based API that hides all device complexity from agents. Agents never see UDIDs, AVD names, or device lifecycle — just session IDs.
+
+### Architecture
+
+```
+Agent                         simemu                        Devices
+  │                              │                              │
+  ├── claim ios ────────────────►│── find best device ─────────►│
+  │                              │── boot if needed ───────────►│
+  │◄── session: s-a7f3b2 ───────│                              │
+  │                              │                              │
+  ├── do s-a7f3b2 install ──────►│── route to ios.install() ──►│
+  ├── do s-a7f3b2 tap 250 500 ─►│── route to ios.tap() ──────►│
+  ├── do s-a7f3b2 screenshot ──►│── route to ios.screenshot()─►│
+  │                              │                              │
+  ├── (idle 20min) ─────────────►│── status: idle               │
+  ├── (idle 60min) ─────────────►│── status: parked, shutdown ─►│
+  ├── do s-a7f3b2 tap ──────────►│── re-boot, back to active ─►│
+  │                              │                              │
+  ├── do s-a7f3b2 done ────────►│── release + cleanup ────────►│
+```
+
+### Session lifecycle
+
+```
+claim → ACTIVE (device booted, agent working)
+         │
+         ├── idle 20min → IDLE (device still booted, lower priority)
+         │                  │
+         │                  ├── agent does `do` → back to ACTIVE
+         │                  └── idle 40min more → PARKED (device shutdown, session preserved)
+         │                                          │
+         │                                          ├── agent does `do` → re-boot, back to ACTIVE
+         │                                          └── idle 2hr → EXPIRED (session gone)
+         │
+         └── `do done` → RELEASED (immediate)
+```
+
+### Memory budget
+
+simemu enforces a configurable memory ceiling (default: 16GB via `SIMEMU_MEMORY_BUDGET_MB`):
+- Before booting a new device, checks total estimated memory
+- If over budget: parks lowest-priority idle sessions to make room
+- If still over: returns error with queue info
+
+### State files
+
+- `~/.simemu/sessions.json` — v2 session state (separate from legacy `state.json`)
+- `~/.simemu/state.json` — v1 allocation state (sessions create legacy allocations for backward compat)
+
+### HTTP API
+
+```
+POST /v2/claim    → ClaimSpec body → Session JSON
+POST /v2/do       → {session, command, args} → result
+GET  /v2/sessions → list all active sessions
+```
+
+### CLI
+
+```bash
+simemu claim ios                                    # claim a phone
+simemu claim android --version 15 --form-factor tablet
+simemu do s-a7f3b2 install ./app.ipa
+simemu do s-a7f3b2 done
+simemu sessions                                     # list active sessions
+simemu sessions --json
+```
+
+### Agent-facing documentation
+
+See [docs/AGENT_README.md](docs/AGENT_README.md) for the minimal instructions to copy into project AGENTS.md files.
+
+---
+
 ## 🦤 Version history
 
 **0.1.0** — Initial release.
