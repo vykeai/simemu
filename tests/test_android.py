@@ -37,27 +37,22 @@ class TestSerial(unittest.TestCase):
 class TestInstall(unittest.TestCase):
 
     @patch("simemu.android.subprocess.run")
-    @patch("simemu.android._serial", side_effect=_mock_serial)
-    @patch("simemu.android._ensure_booted")
-    def test_validates_apk_extension(self, mock_boot: MagicMock, mock_serial: MagicMock,
-                                      mock_run: MagicMock) -> None:
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_validates_apk_extension(self, mock_ready: MagicMock, mock_run: MagicMock) -> None:
         with tempfile.NamedTemporaryFile(suffix=".zip") as f:
             with self.assertRaises(RuntimeError) as ctx:
                 android.install("MyAVD", f.name)
             self.assertIn(".apk", str(ctx.exception))
 
-    @patch("simemu.android._serial", side_effect=_mock_serial)
-    @patch("simemu.android._ensure_booted")
-    def test_raises_on_missing_file(self, mock_boot: MagicMock, mock_serial: MagicMock) -> None:
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_raises_on_missing_file(self, mock_ready: MagicMock) -> None:
         with self.assertRaises(RuntimeError) as ctx:
             android.install("MyAVD", "/nonexistent/app.apk")
         self.assertIn("APK not found", str(ctx.exception))
 
     @patch("simemu.android.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="adb", timeout=5))
-    @patch("simemu.android._serial", side_effect=_mock_serial)
-    @patch("simemu.android._ensure_booted")
-    def test_raises_on_timeout(self, mock_boot: MagicMock, mock_serial: MagicMock,
-                                mock_run: MagicMock) -> None:
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_raises_on_timeout(self, mock_ready: MagicMock, mock_run: MagicMock) -> None:
         with tempfile.NamedTemporaryFile(suffix=".apk") as f:
             with self.assertRaises(RuntimeError) as ctx:
                 android.install("MyAVD", f.name, timeout=5)
