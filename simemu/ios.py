@@ -67,10 +67,14 @@ def boot(udid: str, minimize: bool = False) -> None:
 
 
 def _ensure_booted(udid: str) -> None:
-    """Auto-boot if needed. Called transparently by all proxy commands."""
+    """Check simulator is running. Raises instead of auto-booting to prevent runaway spawns."""
+    from . import state
+    state.check_maintenance()
     if not _is_booted(udid):
-        print(f"Simulator not running, booting...", flush=True)
-        boot(udid)
+        raise RuntimeError(
+            f"iOS simulator '{udid}' is not booted.\n"
+            f"Boot it explicitly first: simemu boot <slug>"
+        )
 
 
 def shutdown(udid: str) -> None:

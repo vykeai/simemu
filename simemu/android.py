@@ -135,7 +135,8 @@ def _adb(avd_name: str, *args, capture: bool = False, check: bool = True) -> Opt
 
 def boot(avd_name: str, headless: bool = False) -> None:
     """Start the AVD if not already running. Waits until fully booted."""
-    from . import genymotion
+    from . import state, genymotion
+    state.check_maintenance()
     if genymotion.is_genymotion_id(avd_name):
         if get_android_serial(avd_name) is None:
             genymotion.boot(avd_name)
@@ -360,7 +361,8 @@ def pull(avd_name: str, remote_path: str, local_path: str) -> None:
 
 def erase(avd_name: str) -> None:
     """Wipe user data (factory reset). Stops emulator first if running."""
-    from . import genymotion
+    from . import state, genymotion
+    state.check_maintenance()
     if genymotion.is_genymotion_id(avd_name):
         if get_android_serial(avd_name) is not None:
             genymotion.shutdown(avd_name)

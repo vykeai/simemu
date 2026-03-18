@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
         _fed_started = True
     except ImportError:
         print("[simemu] zeroconf not installed — skipping federation mDNS", flush=True)
-    except OSError as e:
+    except Exception as e:
         print(f"[simemu] federation mDNS unavailable ({e}) — continuing without it", flush=True)
 
     yield
@@ -340,13 +340,20 @@ def release(slug: str, req: ReleaseRequest):
 
 @app.post("/simulators/{slug}/boot", summary="Boot the simulator")
 def boot(slug: str, agent: str):
+    try:
+        state.check_maintenance()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     alloc = _require(slug)
     _check_agent(alloc, agent)
     state.touch(slug)
-    if alloc.platform == "ios":
-        ios.boot(alloc.sim_id)
-    else:
-        android.boot(alloc.sim_id)
+    try:
+        if alloc.platform == "ios":
+            ios.boot(alloc.sim_id)
+        else:
+            android.boot(alloc.sim_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     return {"status": "booted", "slug": slug}
 
 
