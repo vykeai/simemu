@@ -85,9 +85,7 @@ def list_visionos(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
 
 
 def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
-    """Return all available Android AVDs and Genymotion VMs, excluding allocated ones."""
-    from . import genymotion
-
+    """Return all available Android AVDs, excluding allocated ones."""
     allocated_ids = allocated_ids or set()
     booted_avds = _get_booted_avds()
     results = []
@@ -116,23 +114,10 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
 
-    # Genymotion VMs (if Genymotion is installed) — preferred over standard AVDs
-    if genymotion.is_available():
-        for vm in genymotion.list_vms():
-            if vm["uuid"] in allocated_ids:
-                continue
-            results.append(SimulatorInfo(
-                sim_id=vm["uuid"],
-                platform="android",
-                device_name=vm["name"],
-                booted=vm["state"].lower() == "on",
-                runtime=genymotion.parse_runtime(vm["name"]),
-                genymotion=True,
-            ))
+    # Genymotion support disabled — VMs are unreliable (adbd crashes, offline loops)
+    # Standard AVDs on Apple Silicon are more stable and lighter.
 
-    # Sort: booted first, then standard AVDs before Genymotion (lighter on Apple
-    # Silicon — native arm64 without the player overhead), then by name
-    results.sort(key=lambda s: (not s.booted, s.genymotion, s.device_name))
+    results.sort(key=lambda s: (not s.booted, s.device_name))
     return results
 
 
@@ -203,22 +188,11 @@ def _get_booted_avds() -> set[str]:
 
 
 def get_android_serial(avd_name: str, retries: int = 1, delay: float = 0.5) -> Optional[str]:
-    """Return the adb serial for a running AVD or Genymotion VM.
+    """Return the adb serial for a running AVD.
 
-    For Genymotion VMs (UUID sim_id) returns '<ip>:5555' or '127.0.0.1:<port>'.
     For standard AVDs returns 'emulator-XXXX'.
-    Genymotion VMs can be identified by UUID or by name.
+    Genymotion support is disabled — VMs are unreliable.
     """
-    from . import genymotion
-    if genymotion.is_genymotion_id(avd_name):
-        return genymotion.get_adb_serial(avd_name)
-
-    # Check if avd_name matches a Genymotion VM by name (not UUID)
-    if genymotion.is_available():
-        for vm in genymotion.list_vms():
-            if vm["name"] == avd_name:
-                return genymotion.get_adb_serial(vm["uuid"])
-
     attempts = max(1, retries)
     for attempt in range(attempts):
         try:
