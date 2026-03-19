@@ -452,8 +452,13 @@ end tell'''
     platform = session.platform
     is_real = session.real_device
 
-    # Update HUD with rich context
-    if platform in ("ios", "watchos", "tvos", "visionos"):
+    # Update HUD — only for visible sessions (hidden = no overlay needed)
+    _is_visible = False
+    with _locked_sessions() as (data, save):
+        sess_data = data["sessions"].get(session_id, {})
+        _is_visible = sess_data.get("visible", False)
+
+    if _is_visible and platform in ("ios", "watchos", "tvos", "visionos"):
         ios._hud_send({
             "mode": "critical",
             "title": "SIMEMU",

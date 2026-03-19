@@ -300,11 +300,18 @@ final class MenuBarController: NSObject {
         let booted = sessions.filter { $0.status != "parked" }.count
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "iphone", accessibilityDescription: "SimEmu")
+            func templateIcon(_ name: String) -> NSImage? {
+                let img = NSImage(systemSymbolName: name, accessibilityDescription: "SimEmu")
+                img?.isTemplate = true
+                return img
+            }
+
+            button.image = templateIcon("iphone")
             button.imagePosition = .imageLeading
+            button.contentTintColor = nil  // reset — let system handle color
+
             if booted == 0 && !sessions.isEmpty {
-                // T-007: show moon icon instead of cryptic "pk"
-                button.image = NSImage(systemSymbolName: "moon.zzz", accessibilityDescription: "Parked")
+                button.image = templateIcon("moon.zzz")
                 button.title = ""
             } else if booted == 0 {
                 button.title = ""

@@ -594,22 +594,32 @@ def _stop_hud_overlay() -> None:
 @contextmanager
 def _interactive_overlay(action: str = "", device: str = "", session: str = "",
                          platform: str = "ios", detail: str = ""):
-    _start_hud_overlay()
-    if action:
-        _hud_send({
-            "mode": "critical",
-            "title": "SIMEMU",
-            "badge": action.upper(),
-            "action": f"{action} on {device}" if device else action,
-            "detail": detail or f"Session {session}" if session else "",
-            "task": f"simemu do {session} {action}" if session else f"simemu {action}",
-            "platform": platform,
-            "screen": device,
-        })
+    """Show HUD overlay only when window mode is not hidden (headless).
+
+    When running headless, tap/swipe still work (they auto-raise the window)
+    but the HUD overlay is unnecessary since the user isn't watching.
+    """
+    from . import window as _wmgr
+    is_headless = _wmgr.get_window_mode() == "hidden"
+
+    if not is_headless:
+        _start_hud_overlay()
+        if action:
+            _hud_send({
+                "mode": "critical",
+                "title": "SIMEMU",
+                "badge": action.upper(),
+                "action": f"{action} on {device}" if device else action,
+                "detail": detail or f"Session {session}" if session else "",
+                "task": f"simemu do {session} {action}" if session else f"simemu {action}",
+                "platform": platform,
+                "screen": device,
+            })
     try:
         yield
     finally:
-        _stop_hud_overlay()
+        if not is_headless:
+            _stop_hud_overlay()
 
 
 @contextmanager
