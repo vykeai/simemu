@@ -1,0 +1,36 @@
+{
+  "id": "T-007",
+  "title": "Fix menu bar pk label — show sleep icon when all parked",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "low",
+  "platform": null,
+  "assignee": null,
+  "depends_on": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "notes": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-19T07:37:25.682Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "run_status": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-19T07:37:25.682Z",
+  "updatedAt": "2026-03-19T07:37:25.682Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
