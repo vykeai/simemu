@@ -403,6 +403,40 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         session = touch(session_id)
         return session.to_agent_json()
 
+    if command == "visible":
+        session = touch(session_id)
+        if not session.real_device and session.platform in ("ios", "watchos", "tvos", "visionos"):
+            import subprocess
+            subprocess.run([
+                "osascript", "-e",
+                f'''tell application "Simulator" to activate
+tell application "System Events"
+    tell process "Simulator"
+        try
+            set w to first window whose name contains "{session.device_name}"
+            set miniaturized of w to false
+            perform action "AXRaise" of w
+        end try
+    end tell
+end tell'''
+            ], capture_output=True, check=False)
+        # Persist visibility state
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["visible"] = True
+                save(data)
+        return {"session": session_id, "status": "visible", "device": session.device_name}
+
+    if command == "invisible":
+        session = touch(session_id)
+        if not session.real_device:
+            window_mgr.apply_window_mode(session.sim_id, session.platform, session.device_name)
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["visible"] = False
+                save(data)
+        return {"session": session_id, "status": "invisible", "device": session.device_name}
+
     if command == "renew":
         hours = None
         if "--hours" in args:
@@ -731,7 +765,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
 
     else:
         raise RuntimeError(
-            f"Unknown command '{command}'. Available: boot, install, launch, tap, swipe, "
+            f"Unknown command '{command}'. Available: boot, visible, invisible, install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
             f"shake, status-bar, build, env"

@@ -59,6 +59,7 @@ struct SimSession: Identifiable {
     let osVersion: String
     let deviceName: String
     let simId: String
+    let isVisible: Bool  // from sessions.json "visible" field
 
     // T-005: Smart project name -- never show raw pid-XXXXX
     var project: String {
@@ -223,7 +224,8 @@ func loadSessions() -> [SimSession] {
             expiresAt: pd(raw["expires_at"]),
             osVersion: raw["resolved_os_version"] as? String ?? "",
             deviceName: raw["device_name"] as? String ?? "",
-            simId: raw["sim_id"] as? String ?? ""
+            simId: raw["sim_id"] as? String ?? "",
+            isVisible: raw["visible"] as? Bool ?? false
         ))
     }
     let headless = SimConfig.load().windowMode == "hidden"
@@ -901,11 +903,11 @@ struct SessionTile: View {
 
                 Spacer()
 
-                // Headless icon
-                if session.isHeadless && session.status != "parked" {
-                    Image(systemName: "eye.slash")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Sim.Color.textMuted)
+                // Visible/invisible icon
+                if session.status != "parked" {
+                    Image(systemName: session.isVisible ? "eye" : "eye.slash")
+                        .font(.system(size: 10))
+                        .foregroundStyle(session.isVisible ? Sim.Color.active.opacity(0.6) : Sim.Color.textMuted)
                 }
 
                 // Status pill/badge
