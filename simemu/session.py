@@ -867,14 +867,550 @@ end tell'''
         result["os_version"] = session.resolved_os_version or session.os_version
         return result
 
+    # ── high-impact commands ─────────────────────────────────────────────────
+
+    elif command == "auto-dismiss":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            # Grant common permissions preemptively + reset privacy warnings
+            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
+                     capture_output=True, check=False)
+            # Reset privacy warnings so they don't re-appear
+            _sp.run(["xcrun", "simctl", "privacy", sim_id, "reset", "all"],
+                     capture_output=True, check=False)
+            return {"status": "dismissed", "platform": "ios",
+                    "hint": "Accepted pending alert and reset privacy warnings"}
+        else:
+            serial = android.get_serial(sim_id)
+            # Disable window animation scale
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "window_animation_scale", "0"],
+                     capture_output=True, check=False)
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "transition_animation_scale", "0"],
+                     capture_output=True, check=False)
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "animator_duration_scale", "0"],
+                     capture_output=True, check=False)
+            # Disable package verifier
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "package_verifier_enable", "0"],
+                     capture_output=True, check=False)
+            return {"status": "dismissed", "platform": "android",
+                    "hint": "Disabled animations and package verifier"}
+
+    elif command == "wait-for-render":
+        import subprocess as _sp
+        import time as _time
+        seconds = 3
+        output = None
+        i = 0
+        while i < len(args):
+            if args[i] in ("-o", "--output") and i + 1 < len(args):
+                output = args[i + 1]
+                i += 2
+            else:
+                try:
+                    seconds = float(args[i])
+                except ValueError:
+                    pass
+                i += 1
+        _time.sleep(seconds)
+        # Take screenshot after waiting
+        if not output:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output = str(out_dir / f"{session_id}_{ts}.png")
+        if is_real and platform == "ios":
+            device.ios_screenshot(sim_id, output)
+        elif platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.screenshot(sim_id, output)
+        else:
+            android.screenshot(sim_id, output)
+        return {"status": "captured", "waited": seconds, "path": output}
+
+    elif command == "deeplink-proof":
+        import subprocess as _sp
+        import time as _time
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> deeplink-proof <url> [-o output]")
+        url = args[0]
+        output = None
+        if "-o" in args:
+            idx = args.index("-o")
+            if idx + 1 < len(args):
+                output = args[idx + 1]
+        # Open the URL
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.open_url(sim_id, url)
+        else:
+            android.open_url(sim_id, url)
+        # Wait for render
+        _time.sleep(3)
+        # Screenshot
+        if not output:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output = str(out_dir / f"{session_id}_{ts}.png")
+        if is_real and platform == "ios":
+            device.ios_screenshot(sim_id, output)
+        elif platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.screenshot(sim_id, output)
+        else:
+            android.screenshot(sim_id, output)
+        return {"status": "captured", "url": url, "path": output}
+
+    elif command == "reset-app":
+        if len(args) < 2:
+            raise RuntimeError("Usage: simemu do <session> reset-app <bundle-or-package> <app-path>")
+        bundle = args[0]
+        app_path = args[1]
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.terminate(sim_id, bundle)
+            ios.uninstall(sim_id, bundle)
+            ios.install(sim_id, app_path)
+            ios.launch(sim_id, bundle, [])
+        else:
+            android.terminate(sim_id, bundle)
+            android.uninstall(sim_id, bundle)
+            android.install(sim_id, app_path)
+            android.launch(sim_id, bundle, [])
+        return {"status": "reset", "app": bundle, "reinstalled_from": app_path}
+
+    elif command == "foreground-app":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            result = _sp.run(
+                ["xcrun", "simctl", "spawn", sim_id, "launchctl", "list"],
+                capture_output=True, text=True, check=False,
+            )
+            foreground = None
+            for line in result.stdout.splitlines():
+                if "UIKitApplication" in line:
+                    # Extract bundle ID from UIKitApplication:com.example.app[…]
+                    parts = line.split("UIKitApplication:")
+                    if len(parts) > 1:
+                        bid = parts[1].split("[")[0].strip()
+                        foreground = bid
+            return {"status": "ok", "foreground_app": foreground}
+        else:
+            serial = android.get_serial(sim_id)
+            result = _sp.run(
+                ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
+                capture_output=True, text=True, check=False,
+            )
+            foreground = None
+            for line in result.stdout.splitlines():
+                if "mResumedActivity" in line:
+                    # Extract package/activity from the line
+                    parts = line.split()
+                    for part in parts:
+                        if "/" in part and "." in part:
+                            foreground = part.split("/")[0]
+                            break
+                    break
+            return {"status": "ok", "foreground_app": foreground}
+
+    elif command == "is-running":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> is-running <bundle-or-package>")
+        bundle = args[0]
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            result = _sp.run(
+                ["xcrun", "simctl", "spawn", sim_id, "launchctl", "list"],
+                capture_output=True, text=True, check=False,
+            )
+            running = bundle in result.stdout
+            return {"status": "ok", "app": bundle, "running": running}
+        else:
+            serial = android.get_serial(sim_id)
+            result = _sp.run(
+                ["adb", "-s", serial, "shell", "pidof", bundle],
+                capture_output=True, text=True, check=False,
+            )
+            running = bool(result.stdout.strip())
+            pid = result.stdout.strip() if running else None
+            return {"status": "ok", "app": bundle, "running": running, "pid": pid}
+
+    # ── medium-impact commands ───────────────────────────────────────────────
+
+    elif command == "network":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> network <offline|slow|normal>")
+        mode = args[0]
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            return {"status": "unsupported", "platform": "ios",
+                    "hint": "iOS Simulator does not support network simulation via simctl. "
+                            "Use Network Link Conditioner in System Preferences or "
+                            "Apple Configurator profiles."}
+        else:
+            serial = android.get_serial(sim_id)
+            if mode == "offline":
+                _sp.run(["adb", "-s", serial, "shell", "svc", "wifi", "disable"],
+                         capture_output=True, check=False)
+                _sp.run(["adb", "-s", serial, "shell", "svc", "data", "disable"],
+                         capture_output=True, check=False)
+            elif mode == "slow":
+                # Re-enable networking but throttle via emulator console
+                _sp.run(["adb", "-s", serial, "shell", "svc", "wifi", "enable"],
+                         capture_output=True, check=False)
+                _sp.run(["adb", "-s", serial, "shell", "svc", "data", "enable"],
+                         capture_output=True, check=False)
+                return {"status": "partial", "network": mode,
+                        "hint": "WiFi/data re-enabled. For true throttling use "
+                                "emulator -netdelay or -netspeed flags at boot."}
+            elif mode == "normal":
+                _sp.run(["adb", "-s", serial, "shell", "svc", "wifi", "enable"],
+                         capture_output=True, check=False)
+                _sp.run(["adb", "-s", serial, "shell", "svc", "data", "enable"],
+                         capture_output=True, check=False)
+            else:
+                raise RuntimeError(f"Unknown network mode '{mode}'. Use: offline, slow, normal")
+            return {"status": "set", "network": mode}
+
+    elif command == "keychain-reset":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "keychain", sim_id, "reset"],
+                     capture_output=True, check=False)
+            return {"status": "reset", "platform": "ios"}
+        else:
+            return {"status": "unsupported", "platform": "android",
+                    "hint": "Android does not have a keychain equivalent. "
+                            "Use clear-data to reset app credentials."}
+
+    elif command == "icloud-sync":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "icloud_sync", sim_id],
+                     capture_output=True, check=False)
+            return {"status": "synced", "platform": "ios"}
+        else:
+            return {"status": "unsupported", "platform": "android",
+                    "hint": "iCloud sync is iOS only."}
+
+    elif command == "app-info":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> app-info <bundle-or-package>")
+        bundle = args[0]
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            result = _sp.run(
+                ["xcrun", "simctl", "appinfo", sim_id, bundle],
+                capture_output=True, text=True, check=False,
+            )
+            return {"status": "ok", "app": bundle, "info": result.stdout.strip()}
+        else:
+            serial = android.get_serial(sim_id)
+            result = _sp.run(
+                ["adb", "-s", serial, "shell", "dumpsys", "package", bundle],
+                capture_output=True, text=True, check=False,
+            )
+            # Truncate to first 200 lines to avoid massive output
+            lines = result.stdout.strip().splitlines()[:200]
+            return {"status": "ok", "app": bundle, "info": "\n".join(lines)}
+
+    elif command == "a11y-tree":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            return {"status": "unsupported", "platform": "ios",
+                    "hint": "iOS accessibility hierarchy is not available via simctl. "
+                            "Use XCUITest or Maestro for accessibility inspection."}
+        else:
+            serial = android.get_serial(sim_id)
+            result = _sp.run(
+                ["adb", "-s", serial, "shell", "uiautomator", "dump", "/dev/tty"],
+                capture_output=True, text=True, check=False,
+            )
+            return {"status": "ok", "tree": result.stdout.strip()}
+
+    elif command == "a11y-tap":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> a11y-tap <label-text>")
+        label_text = " ".join(args)
+        import subprocess as _sp
+        import tempfile as _tmp
+        # Use a single-step Maestro flow — works headless
+        flow_content = f"appId: \"\"\n---\n- tapOn: \"{label_text}\"\n"
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(flow_content)
+            flow_path = f.name
+        try:
+            if platform in ("ios", "watchos", "tvos", "visionos"):
+                device_id = sim_id
+            else:
+                from .discover import get_android_serial
+                device_id = get_android_serial(sim_id)
+                if not device_id:
+                    raise RuntimeError("Android emulator is not running.")
+            result = _sp.run(["maestro", "--device", device_id, "test", flow_path],
+                              capture_output=True, text=True, check=False)
+            success = result.returncode == 0
+            return {"status": "tapped" if success else "failed",
+                    "label": label_text, "exit_code": result.returncode}
+        finally:
+            Path(flow_path).unlink(missing_ok=True)
+
+    elif command == "type-submit":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> type-submit <text...>")
+        text = " ".join(args)
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            # Copy text to pasteboard, paste, then press Return
+            _sp.run(["xcrun", "simctl", "pbcopy", sim_id],
+                     input=text.encode(), capture_output=True, check=False)
+            # Paste via Cmd+V keypress
+            ios.input_text(sim_id, text)
+            _sp.run(["xcrun", "simctl", "io", sim_id, "sendkey", "return"],
+                     capture_output=True, check=False)
+        else:
+            serial = android.get_serial(sim_id)
+            android.input_text(sim_id, text)
+            _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_ENTER"],
+                     capture_output=True, check=False)
+        return {"status": "typed_and_submitted", "text": text}
+
+    elif command == "scroll":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> scroll <up|down|left|right>")
+        direction = args[0].lower()
+        import subprocess as _sp
+        # Define swipe coordinates for each direction (center-based, 1080x1920 logical)
+        swipe_map = {
+            "up":    (540, 1400, 540, 600),
+            "down":  (540, 600, 540, 1400),
+            "left":  (900, 960, 180, 960),
+            "right": (180, 960, 900, 960),
+        }
+        if direction not in swipe_map:
+            raise RuntimeError(f"Unknown scroll direction '{direction}'. Use: up, down, left, right")
+        x1, y1, x2, y2 = swipe_map[direction]
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.swipe(sim_id, x1, y1, x2, y2, duration=0.3)
+        else:
+            android.swipe(sim_id, x1, y1, x2, y2, duration=300)
+        return {"status": "scrolled", "direction": direction}
+
+    elif command == "back":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            # iOS: swipe from left edge to go back
+            ios.swipe(sim_id, 5, 400, 300, 400, duration=0.3)
+            return {"status": "back", "method": "edge_swipe"}
+        else:
+            serial = android.get_serial(sim_id)
+            _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_BACK"],
+                     capture_output=True, check=False)
+            return {"status": "back", "method": "keyevent"}
+
+    elif command == "home":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "io", sim_id, "sendkey", "home"],
+                     capture_output=True, check=False)
+        else:
+            serial = android.get_serial(sim_id)
+            _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_HOME"],
+                     capture_output=True, check=False)
+        return {"status": "home"}
+
+    elif command == "notifications-clear":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            return {"status": "unsupported", "platform": "ios",
+                    "hint": "iOS Simulator does not expose notification clearing via simctl."}
+        else:
+            serial = android.get_serial(sim_id)
+            _sp.run(["adb", "-s", serial, "shell", "service", "call",
+                      "notification", "1"],
+                     capture_output=True, check=False)
+            return {"status": "cleared", "platform": "android"}
+
+    elif command == "app-container":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> app-container <bundle-or-package>")
+        bundle = args[0]
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            result = _sp.run(
+                ["xcrun", "simctl", "get_app_container", sim_id, bundle, "data"],
+                capture_output=True, text=True, check=False,
+            )
+            container = result.stdout.strip() if result.returncode == 0 else None
+            return {"status": "ok", "app": bundle, "container": container}
+        else:
+            serial = android.get_serial(sim_id)
+            result = _sp.run(
+                ["adb", "-s", serial, "shell", "run-as", bundle, "pwd"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0:
+                return {"status": "ok", "app": bundle, "container": result.stdout.strip()}
+            else:
+                return {"status": "ok", "app": bundle, "container": None,
+                        "hint": "App may not be debuggable (run-as requires debuggable flag)"}
+
+    # ── low-impact commands ──────────────────────────────────────────────────
+
+    elif command == "clone":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            new_name = args[0] if args else f"{session.device_name}-clone"
+            result = _sp.run(
+                ["xcrun", "simctl", "clone", sim_id, new_name],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0:
+                new_udid = result.stdout.strip()
+                return {"status": "cloned", "new_udid": new_udid, "new_name": new_name}
+            else:
+                return {"status": "failed",
+                        "error": result.stderr.strip() or "Clone failed"}
+        else:
+            return {"status": "unsupported", "platform": "android",
+                    "hint": "Android emulator cloning is not supported."}
+
+    elif command == "siri":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> siri <query...>")
+        query = " ".join(args)
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            return {"status": "unsupported", "platform": "ios",
+                    "hint": f"Siri invocation is not reliably supported via simctl. "
+                            f"Query was: '{query}'. Consider using xcrun simctl spawn "
+                            f"with notifyutil or Shortcuts automation instead."}
+        else:
+            return {"status": "unsupported", "platform": "android",
+                    "hint": "Siri is iOS only. For Google Assistant use adb broadcast."}
+
+    elif command == "contacts-import":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> contacts-import <vcf-file>")
+        vcf_path = args[0]
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "addmedia", sim_id, vcf_path],
+                     capture_output=True, check=False)
+            return {"status": "imported", "file": vcf_path}
+        else:
+            serial = android.get_serial(sim_id)
+            remote_path = "/sdcard/import_contacts.vcf"
+            _sp.run(["adb", "-s", serial, "push", vcf_path, remote_path],
+                     capture_output=True, check=False)
+            _sp.run(["adb", "-s", serial, "shell", "am", "start",
+                      "-a", "android.intent.action.VIEW",
+                      "-d", f"file://{remote_path}",
+                      "-t", "text/x-vcard"],
+                     capture_output=True, check=False)
+            return {"status": "imported", "file": vcf_path,
+                    "hint": "VCF pushed and import intent launched"}
+
+    elif command == "font-size":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> font-size <small|default|large|xlarge>")
+        size = args[0].lower()
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            return {"status": "unsupported", "platform": "ios",
+                    "hint": "Font size cannot be changed via simctl. "
+                            "Use Accessibility settings in the Simulator UI "
+                            "or defaults write on the sim plist."}
+        else:
+            serial = android.get_serial(sim_id)
+            scale_map = {"small": "0.85", "default": "1.0", "large": "1.15", "xlarge": "1.3"}
+            scale = scale_map.get(size, "1.0")
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "system",
+                      "font_scale", scale],
+                     capture_output=True, check=False)
+            return {"status": "set", "font_size": size, "scale": scale}
+
+    elif command == "reduce-motion":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> reduce-motion <on|off>")
+        mode = args[0].lower()
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            return {"status": "unsupported", "platform": "ios",
+                    "hint": "Reduce motion cannot be toggled via simctl. "
+                            "Use Accessibility settings in the Simulator UI."}
+        else:
+            serial = android.get_serial(sim_id)
+            scale = "0" if mode == "on" else "1"
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "animator_duration_scale", scale],
+                     capture_output=True, check=False)
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "window_animation_scale", scale],
+                     capture_output=True, check=False)
+            _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
+                      "transition_animation_scale", scale],
+                     capture_output=True, check=False)
+            return {"status": "set", "reduce_motion": mode}
+
+    elif command == "log-crash":
+        bundle = args[0] if args else None
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            log = ios.crash_log(sim_id, bundle_id=bundle)
+        else:
+            log = android.crash_log(sim_id, package=bundle)
+        return {"status": "ok", "crash_log": log}
+
+    elif command == "video-start":
+        output = None
+        if "-o" in args:
+            idx = args.index("-o")
+            if idx + 1 < len(args):
+                output = args[idx + 1]
+        if not output:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output = str(out_dir / f"{session_id}_{ts}.mp4")
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            pid = ios.record_start(sim_id, output)
+        else:
+            pid = android.record_start(sim_id, output)
+        return {"status": "recording", "pid": pid, "path": output}
+
+    elif command == "video-stop":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> video-stop <pid>")
+        pid = int(args[0])
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.record_stop(pid)
+        else:
+            android.record_stop(pid)
+        return {"status": "stopped", "pid": pid}
+
+    elif command == "reboot":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.shutdown(sim_id)
+            ios.boot(sim_id)
+            return {"status": "rebooted", "platform": "ios"}
+        else:
+            serial = android.get_serial(sim_id)
+            _sp.run(["adb", "-s", serial, "reboot"],
+                     capture_output=True, check=False)
+            return {"status": "rebooted", "platform": "android"}
+
     else:
         raise RuntimeError(
             f"Unknown command '{command}'. Available: boot, show, hide, install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
             f"dismiss-alert, accept-alert, deny-alert, grant-all, clear-data, "
-            f"clipboard-set, clipboard-get, "
-            f"shake, status-bar, build, env"
+            f"clipboard-set, clipboard-get, shake, status-bar, build, env, "
+            f"auto-dismiss, wait-for-render, deeplink-proof, reset-app, "
+            f"foreground-app, is-running, network, keychain-reset, icloud-sync, "
+            f"app-info, a11y-tree, a11y-tap, type-submit, scroll, back, home, "
+            f"notifications-clear, app-container, clone, siri, contacts-import, "
+            f"font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
         )
 
 
