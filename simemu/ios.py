@@ -687,6 +687,17 @@ end tell''',
         _LAST_SIM_BOUNDS[udid] = bounds
         return bounds
 
+    # Final fallback: use Quartz window enumeration, which can still see the
+    # Simulator window when System Events is missing it from the AX tree.
+    try:
+        wx, wy, ww, wh = _get_window_frame(udid)
+        _TITLEBAR_HEIGHT = 28.0
+        bounds = (wx, wy + _TITLEBAR_HEIGHT, ww, max(0.0, wh - _TITLEBAR_HEIGHT))
+        _LAST_SIM_BOUNDS[udid] = bounds
+        return bounds
+    except Exception:
+        pass
+
     cached_bounds = _LAST_SIM_BOUNDS.get(udid)
     if cached_bounds:
         return cached_bounds
