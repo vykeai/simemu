@@ -60,7 +60,7 @@ struct SimSession: Identifiable {
     let deviceName: String
     let simId: String
 
-    // T-005: Smart project name — never show raw pid-XXXXX
+    // T-005: Smart project name -- never show raw pid-XXXXX
     var project: String {
         let a = agent
         if a.isEmpty || a.hasPrefix("pid-") {
@@ -91,6 +91,14 @@ struct SimSession: Identifiable {
         }
     }
 
+    var statusLabel: String {
+        switch status {
+        case "active": return "ACTIVE"
+        case "idle":   return "IDLE"
+        default:       return "PARKED"
+        }
+    }
+
     var borderWidth: CGFloat { status == "active" ? 1.2 : status == "idle" ? 0.8 : 0.5 }
     var glowRadius: CGFloat { status == "active" ? 6 : status == "idle" ? 3 : 0 }
     var glowColor: SwiftUI.Color {
@@ -98,6 +106,19 @@ struct SimSession: Identifiable {
         status == "idle" ? Sim.Color.idle.opacity(0.06) : .clear
     }
     var platformColor: SwiftUI.Color { platform == "android" ? Sim.Color.android : Sim.Color.ios }
+
+    var deviceIcon: String {
+        if platform == "android" { return "" } // handled with emoji
+        switch formFactor.lowercased() {
+        case "tablet", "ipad":   return "ipad"
+        case "watch":            return "applewatch"
+        case "tv":               return "appletv"
+        case "vision":           return "visionpro"
+        default:                 return "iphone"
+        }
+    }
+
+    var isAndroid: Bool { platform == "android" }
 
     var idleText: String {
         guard let hb = heartbeatAt else { return "" }
@@ -117,7 +138,19 @@ struct SimSession: Identifiable {
         return "\(m/60)h\(m%60)m"
     }
 
-    // T-003: headless — caller passes this in, don't load config per-session
+    // Sort priority within a platform group: phone=0, tablet=1, watch=2, tv=3, vision=4, other=5
+    var formFactorOrder: Int {
+        switch formFactor.lowercased() {
+        case "phone":                    return 0
+        case "tablet", "ipad":           return 1
+        case "watch":                    return 2
+        case "tv":                       return 3
+        case "vision":                   return 4
+        default:                         return 5
+        }
+    }
+
+    // T-003: headless -- caller passes this in, don't load config per-session
     var isHeadless: Bool = false
 }
 
@@ -243,12 +276,12 @@ final class MenuBarController: NSObject {
             updateLabel()
         }
 
-        popover.contentSize = NSSize(width: 620, height: 600)
+        popover.contentSize = NSSize(width: 640, height: 620)
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
 
         DispatchQueue.main.async { [self] in
-            let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 620))
+            let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 640))
             hc.view.layer?.backgroundColor = NSColor.clear.cgColor
             self.popover.contentViewController = hc
         }
@@ -289,7 +322,7 @@ final class MenuBarController: NSObject {
             if popover.isShown {
                 popover.performClose(nil)
             } else {
-                let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 620))
+                let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 640))
                 hc.view.layer?.backgroundColor = NSColor.clear.cgColor
                 popover.contentViewController = hc
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -319,24 +352,60 @@ struct SimEmuPanel: View {
     private var booted: Int { active.count + idle.count }
     private var memGB: Double { Double(booted) * 0.9 }
 
+    private var iosSessions: [SimSession] {
+        sessions.filter { $0.platform != "android" }
+            .sorted { a, b in
+                let oa = statusOrder(a.status)
+                let ob = statusOrder(b.status)
+                if oa != ob { return oa < ob }
+                if a.formFactorOrder != b.formFactorOrder { return a.formFactorOrder < b.formFactorOrder }
+                return (a.heartbeatAt ?? .distantPast) > (b.heartbeatAt ?? .distantPast)
+            }
+    }
+    private var androidSessions: [SimSession] {
+        sessions.filter { $0.platform == "android" }
+            .sorted { a, b in
+                let oa = statusOrder(a.status)
+                let ob = statusOrder(b.status)
+                if oa != ob { return oa < ob }
+                if a.formFactorOrder != b.formFactorOrder { return a.formFactorOrder < b.formFactorOrder }
+                return (a.heartbeatAt ?? .distantPast) > (b.heartbeatAt ?? .distantPast)
+            }
+    }
+
+    private func statusOrder(_ s: String) -> Int {
+        switch s { case "active": return 0; case "idle": return 1; default: return 2 }
+    }
+
+    private var allParked: Bool {
+        !sessions.isEmpty && sessions.allSatisfy { $0.status == "parked" }
+    }
+
     var body: some View {
         ZStack {
             Sim.Gradient.bg.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // ── Header (pinned) ──
+                // -- Header (pinned) --
                 header
                 Divider().overlay(Sim.Color.accent.opacity(0.12))
-                summary
+                summaryBar
                 Divider().overlay(Sim.Color.accent.opacity(0.06))
 
-                // ── Scrollable content ──
+                // -- Scrollable content --
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 0) {
                         if sessions.isEmpty {
                             emptyState
+                        } else if allParked {
+                            allParkedState
                         } else {
-                            grid
+                            groupedGrid
+                        }
+
+                        // Show parked section after active/idle when not all parked
+                        if !allParked && !parked.isEmpty {
+                            parkedSection
                         }
 
                         if showSettings {
@@ -346,12 +415,12 @@ struct SimEmuPanel: View {
                     }
                 }
 
-                // ── Footer (pinned) ──
+                // -- Footer (pinned) --
                 Divider().overlay(Sim.Color.accent.opacity(0.06))
                 footer
             }
         }
-        .frame(height: 600)
+        .frame(height: 620)
     }
 
     // MARK: Header
@@ -359,96 +428,253 @@ struct SimEmuPanel: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("\u{1F9A4}")
-                .font(.system(size: 16))
+                .font(.system(size: 18))
             Text("simemu")
-                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(Sim.Color.textPrimary)
 
             Spacer()
 
-            if active.count > 0 {
-                pill("\(active.count) active", color: Sim.Color.active)
+            // Memory estimate
+            HStack(spacing: 4) {
+                Image(systemName: "memorychip")
+                    .font(.system(size: 11))
+                Text("~\(String(format: "%.0f", memGB)) GB")
+                    .font(.system(size: 12, weight: .semibold))
             }
-            if idle.count > 0 {
-                pill("\(idle.count) idle", color: Sim.Color.idle)
-            }
-            if parked.count > 0 {
-                pill("\(parked.count) parked", color: Sim.Color.parked)
+            .foregroundStyle(Sim.Color.accent)
+
+            // Headless indicator
+            if config.windowMode == "hidden" {
+                HStack(spacing: 3) {
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: 10))
+                    Text("headless")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Sim.Color.accent.opacity(0.8))
             }
 
+            // Settings gear -- larger hit area
             Button { showSettings.toggle() } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12))
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 14))
                     .foregroundStyle(showSettings ? Sim.Color.accent : Sim.Color.textSecondary)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 28)
+                    .background(showSettings ? Sim.Color.accent.opacity(0.1) : .clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
     }
 
-    // MARK: Summary
+    // MARK: Summary Bar
 
-    private var summary: some View {
-        HStack(spacing: 6) {
-            Text("\(booted) of \(sessions.count) booted")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Sim.Color.textPrimary)
-            Text("\u{00B7}").foregroundStyle(Sim.Color.textMuted)
-            Text("~\(String(format: "%.1f", memGB)) GB")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Sim.Color.textSecondary)
-            Text("\u{00B7}").foregroundStyle(Sim.Color.textMuted)
-            // T-003: headless indicator
-            HStack(spacing: 3) {
-                Image(systemName: config.windowMode == "hidden" ? "eye.slash" : "eye")
-                    .font(.system(size: 9))
-                Text(config.windowMode == "hidden" ? "headless" : "visible")
-                    .font(.system(size: 10, weight: .medium))
+    private var summaryBar: some View {
+        HStack(spacing: 0) {
+            let parts: [String] = {
+                var p: [String] = []
+                p.append("\(booted) booted")
+                if !parked.isEmpty { p.append("\(parked.count) parked") }
+                p.append("~\(String(format: "%.0f", memGB)) GB")
+                if config.windowMode == "hidden" { p.append("headless") }
+                return p
+            }()
+
+            ForEach(Array(parts.enumerated()), id: \.offset) { i, part in
+                if i > 0 {
+                    Text(" \u{00B7} ")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Sim.Color.textMuted)
+                }
+                Text(part)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(i == 0 ? Sim.Color.textPrimary : Sim.Color.textSecondary)
             }
-            .foregroundStyle(config.windowMode == "hidden" ? Sim.Color.accent : Sim.Color.textSecondary)
 
             Spacer()
 
-            let ic = sessions.filter { $0.platform == "ios" }.count
-            let ac = sessions.filter { $0.platform == "android" }.count
-            if ic > 0 { pill("iOS \(ic)", color: Sim.Color.ios) }
-            if ac > 0 { pill("Android \(ac)", color: Sim.Color.android) }
+            if active.count > 0 {
+                statusPill("ACTIVE", color: Sim.Color.active, count: active.count)
+            }
+            if idle.count > 0 {
+                statusPill("IDLE", color: Sim.Color.idle, count: idle.count)
+                    .padding(.leading, 4)
+            }
+            if parked.count > 0 {
+                statusPill("PARKED", color: Sim.Color.parked, count: parked.count)
+                    .padding(.leading, 4)
+            }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
         .background(Sim.Color.surface.opacity(0.5))
     }
 
-    // MARK: Grid
+    // MARK: Grouped Grid
 
-    private var grid: some View {
+    private var groupedGrid: some View {
         let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
-        return LazyVGrid(columns: cols, spacing: 8) {
-            ForEach(sessions) { s in
-                SessionTile(session: s)
+        let iosActive = iosSessions.filter { $0.status != "parked" }
+        let androidActive = androidSessions.filter { $0.status != "parked" }
+
+        return VStack(spacing: 4) {
+            // iOS Section
+            if !iosActive.isEmpty {
+                sectionHeader(
+                    icon: "iphone",
+                    title: "iOS",
+                    count: iosActive.count,
+                    color: Sim.Color.ios,
+                    isSystemImage: true
+                )
+                LazyVGrid(columns: cols, spacing: 8) {
+                    ForEach(iosActive) { s in
+                        SessionTile(session: s)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
+
+            // Android Section
+            if !androidActive.isEmpty {
+                sectionHeader(
+                    icon: "\u{1F916}",
+                    title: "Android",
+                    count: androidActive.count,
+                    color: Sim.Color.android,
+                    isSystemImage: false
+                )
+                LazyVGrid(columns: cols, spacing: 8) {
+                    ForEach(androidActive) { s in
+                        SessionTile(session: s)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
             }
         }
-        .padding(10)
+        .padding(.top, 6)
     }
 
-    // MARK: Empty
+    // MARK: Parked Section (collapsed/compact)
+
+    private var parkedSection: some View {
+        let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+        let iosParked = iosSessions.filter { $0.status == "parked" }
+        let androidParked = androidSessions.filter { $0.status == "parked" }
+        let allParkedSessions = iosParked + androidParked
+
+        return VStack(spacing: 4) {
+            Divider().overlay(Sim.Color.accent.opacity(0.06)).padding(.horizontal, 10)
+
+            HStack(spacing: 6) {
+                Image(systemName: "moon.zzz")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Sim.Color.parked)
+                Text("Parked")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(Sim.Color.textSecondary)
+                Text("\(allParkedSessions.count)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Sim.Color.textMuted)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Sim.Color.surfaceHigh)
+                    .clipShape(Capsule())
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+
+            LazyVGrid(columns: cols, spacing: 8) {
+                ForEach(allParkedSessions) { s in
+                    SessionTile(session: s)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
+        }
+    }
+
+    // MARK: Section Header
+
+    private func sectionHeader(icon: String, title: String, count: Int, color: SwiftUI.Color, isSystemImage: Bool) -> some View {
+        HStack(spacing: 6) {
+            if isSystemImage {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(color)
+            } else {
+                Text(icon)
+                    .font(.system(size: 12))
+            }
+            Text(title)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+            Text("\(count)")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Sim.Color.textMuted)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Sim.Color.surfaceHigh)
+                .clipShape(Capsule())
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Image(systemName: "iphone.slash")
-                .font(.system(size: 24))
+                .font(.system(size: 32))
                 .foregroundStyle(Sim.Color.textMuted)
             Text("No sessions")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Sim.Color.textPrimary)
-            Text("simemu claim ios")
-                .font(.system(size: 10, design: .monospaced))
+            Text("Start one with:")
+                .font(.system(size: 12))
                 .foregroundStyle(Sim.Color.textSecondary)
+            Text("simemu claim ios")
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(Sim.Color.accent)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Sim.Color.surfaceHigh)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .padding(30)
+        .padding(40)
+    }
+
+    // MARK: All Parked State
+
+    private var allParkedState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "moon.zzz.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(Sim.Color.parked)
+            Text("All sessions parked")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Sim.Color.textPrimary)
+            Text("They'll wake automatically on next command")
+                .font(.system(size: 12))
+                .foregroundStyle(Sim.Color.textSecondary)
+            Text("simemu do <session> boot")
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(Sim.Color.accent)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Sim.Color.surfaceHigh)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(40)
     }
 
     // MARK: Settings
@@ -456,13 +682,13 @@ struct SimEmuPanel: View {
     private var settings: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("SETTINGS")
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: 10, weight: .bold))
                 .kerning(1)
                 .foregroundStyle(Sim.Color.textMuted)
 
             HStack {
                 Text("Window Mode")
-                    .font(.system(size: 11)).foregroundStyle(Sim.Color.textSecondary)
+                    .font(.system(size: 12)).foregroundStyle(Sim.Color.textSecondary)
                 Spacer()
                 picker(["hidden", "corner", "display", "default"], selected: config.windowMode) { m in
                     config.windowMode = m; config.save()
@@ -470,7 +696,7 @@ struct SimEmuPanel: View {
             }
             HStack {
                 Text("Memory Budget")
-                    .font(.system(size: 11)).foregroundStyle(Sim.Color.textSecondary)
+                    .font(.system(size: 12)).foregroundStyle(Sim.Color.textSecondary)
                 Spacer()
                 picker(["8 GB", "16 GB", "24 GB", "32 GB"], selected: "\(config.memoryBudgetGB) GB") { l in
                     config.memoryBudgetMB = (Int(l.replacingOccurrences(of: " GB", with: "")) ?? 16) * 1024
@@ -488,12 +714,12 @@ struct SimEmuPanel: View {
         HStack(spacing: 8) {
             // Refresh
             Button { sessions = loadSessions(); config = SimConfig.load() } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 9))
-                    Text("Refresh").font(.system(size: 10, weight: .medium))
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11))
+                    Text("Refresh").font(.system(size: 11, weight: .medium))
                 }
                 .foregroundStyle(Sim.Color.textSecondary)
-                .padding(.horizontal, 8).padding(.vertical, 4)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(Sim.Color.surfaceHigh)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
@@ -501,38 +727,51 @@ struct SimEmuPanel: View {
 
             // T-008: Hide All
             Button { hideAllSimulators() } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "eye.slash").font(.system(size: 9))
-                    Text("Hide All").font(.system(size: 10, weight: .medium))
+                HStack(spacing: 4) {
+                    Image(systemName: "eye.slash").font(.system(size: 11))
+                    Text("Hide All").font(.system(size: 11, weight: .medium))
                 }
-                .foregroundStyle(Sim.Color.accent.opacity(0.7))
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Sim.Color.accent.opacity(0.06))
+                .foregroundStyle(Sim.Color.accent.opacity(0.8))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Sim.Color.accent.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+
+            // Show All
+            Button { showAllSimulators() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "eye").font(.system(size: 11))
+                    Text("Show All").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Sim.Color.accent.opacity(0.8))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Sim.Color.accent.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
 
             Spacer()
 
-            Text("v0.2.0").font(.system(size: 9)).foregroundStyle(Sim.Color.textMuted)
-
-            Spacer()
+            Text("v0.3.0")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Sim.Color.textMuted)
 
             // Quit
             Button { NSApp.terminate(nil) } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "xmark.circle").font(.system(size: 9))
-                    Text("Quit").font(.system(size: 10, weight: .medium))
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark.circle").font(.system(size: 11))
+                    Text("Quit").font(.system(size: 11, weight: .medium))
                 }
                 .foregroundStyle(Sim.Color.danger.opacity(0.7))
-                .padding(.horizontal, 8).padding(.vertical, 4)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(Sim.Color.danger.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
     }
 
     // MARK: Helpers
@@ -554,13 +793,30 @@ struct SimEmuPanel: View {
         }
     }
 
-    private func pill(_ text: String, color: SwiftUI.Color) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .bold))
+    private func showAllSimulators() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let script = """
+            tell application "System Events"
+                if exists process "Simulator" then
+                    tell process "Simulator"
+                        set miniaturized of every window to false
+                    end tell
+                end if
+            end tell
+            tell application "Simulator" to activate
+            """
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
+        }
+    }
+
+    private func statusPill(_ text: String, color: SwiftUI.Color, count: Int) -> some View {
+        Text("\(count) \(text)")
+            .font(.system(size: 10, weight: .bold))
             .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.1))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.12))
             .clipShape(Capsule())
     }
 
@@ -573,10 +829,10 @@ struct SimEmuPanel: View {
             }
         } label: {
             HStack(spacing: 3) {
-                Text(selected).font(.system(size: 10, weight: .medium)).foregroundStyle(Sim.Color.accent)
-                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold)).foregroundStyle(Sim.Color.textMuted)
+                Text(selected).font(.system(size: 11, weight: .medium)).foregroundStyle(Sim.Color.accent)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Sim.Color.textMuted)
             }
-            .padding(.horizontal, 7).padding(.vertical, 3)
+            .padding(.horizontal, 8).padding(.vertical, 4)
             .background(Sim.Color.surfaceHigh)
             .clipShape(RoundedRectangle(cornerRadius: 5))
         }
@@ -625,79 +881,93 @@ struct SessionTile: View {
     }
 
     private var tileContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Row 1: Project + status dot + headless icon
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
+            // Row 1: Device icon + project name + status badge
+            HStack(spacing: 6) {
+                // Device icon
+                if session.isAndroid {
+                    Text("\u{1F916}")
+                        .font(.system(size: 14))
+                } else {
+                    Image(systemName: session.deviceIcon)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Sim.Color.ios)
+                }
+
                 Text(session.project)
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(Sim.Color.textPrimary)
                     .lineLimit(1)
+
                 Spacer()
+
+                // Headless icon
                 if session.isHeadless && session.status != "parked" {
                     Image(systemName: "eye.slash")
                         .font(.system(size: 9))
                         .foregroundStyle(Sim.Color.textMuted)
                 }
-                Circle()
-                    .fill(session.statusColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: session.statusColor.opacity(0.5), radius: 3)
+
+                // Status pill/badge
+                statusBadge
             }
 
-            // Row 2: Platform + form factor badges + session ID
-            HStack(spacing: 4) {
-                badge(session.platform == "android" ? "Android" : "iOS", color: session.platformColor)
-                badge(session.formFactor, color: Sim.Color.accent)
-                Spacer()
-                Text(session.id)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(Sim.Color.textMuted)
-            }
-
-            // Row 3: Device name
+            // Row 2: Device name
             if !session.deviceName.isEmpty {
                 Text(session.deviceName)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Sim.Color.textPrimary.opacity(0.8))
-                    .lineLimit(2)
+                    .lineLimit(1)
             }
 
-            // Row 4: OS + status
+            // Row 3: OS version + idle/expiry info
             HStack(spacing: 0) {
                 Text(session.osLabel)
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .foregroundStyle(Sim.Color.textSecondary)
 
                 if session.status == "parked" {
-                    Text("  \u{00B7}  parked \u{00B7} boots on do")
-                        .font(.system(size: 10, weight: .medium))
+                    Text("  \u{00B7}  boots on do")
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Sim.Color.parked)
                 } else {
-                    let idle = session.idleText
-                    let exp = session.expiresText
-                    if !idle.isEmpty {
-                        Text("  \u{00B7}  idle \(idle)")
-                            .font(.system(size: 10, weight: .medium))
+                    let idleStr = session.idleText
+                    let expStr = session.expiresText
+                    if !idleStr.isEmpty {
+                        Text("  \u{00B7}  idle \(idleStr)")
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(session.statusColor.opacity(0.8))
                     }
-                    if !exp.isEmpty {
-                        Text("  \u{00B7}  exp \(exp)")
-                            .font(.system(size: 10, weight: .medium))
+                    if !expStr.isEmpty {
+                        Text("  \u{00B7}  expires \(expStr)")
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(session.statusColor.opacity(0.6))
                     }
                 }
             }
 
-            // Row 5: Label
+            // Row 4: Label with pin
             if !session.label.isEmpty {
-                Text(session.label)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Sim.Color.textSecondary.opacity(0.8))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 4) {
+                    Text("\u{1F4CC}")
+                        .font(.system(size: 9))
+                    Text(session.label)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Sim.Color.textSecondary.opacity(0.75))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            // Row 5: Session ID -- bottom right, very small and muted
+            HStack {
+                Spacer()
+                Text(session.id)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Sim.Color.textPrimary.opacity(0.30))
             }
         }
-        .padding(11)
+        .padding(12)
         .background(Sim.Color.surfaceHigh)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
@@ -708,13 +978,15 @@ struct SessionTile: View {
         .shadow(color: session.glowColor, radius: session.glowRadius)
     }
 
-    private func badge(_ text: String, color: SwiftUI.Color) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.12))
+    // MARK: Status Badge
+
+    private var statusBadge: some View {
+        Text(session.statusLabel)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(session.statusColor)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(session.statusColor.opacity(0.15))
             .clipShape(Capsule())
     }
 
