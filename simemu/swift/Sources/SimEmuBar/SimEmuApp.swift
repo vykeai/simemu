@@ -285,15 +285,18 @@ final class MenuBarController: NSObject {
             updateMenuBarLabel()
         }
 
-        popover.contentSize = NSSize(width: 500, height: 800)
+        popover.contentSize = NSSize(width: 580, height: 620)
         popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .darkAqua)
 
         // Defer SwiftUI view setup to after run loop starts
         DispatchQueue.main.async { [self] in
-            self.popover.contentViewController = NSHostingController(
+            let hostingController = NSHostingController(
                 rootView: SimEmuPanel()
-                    .frame(width: 500)
+                    .frame(width: 580, height: 620)
             )
+            hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+            self.popover.contentViewController = hostingController
         }
 
         // Periodic label update
@@ -325,10 +328,12 @@ final class MenuBarController: NSObject {
                 popover.performClose(nil)
             } else {
                 // Refresh the view with latest data
-                popover.contentViewController = NSHostingController(
+                let hostingController = NSHostingController(
                     rootView: SimEmuPanel()
-                        .frame(width: 500)
+                        .frame(width: 580, height: 620)
                 )
+                hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+                popover.contentViewController = hostingController
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
                 updateMenuBarLabel()
             }
@@ -386,7 +391,6 @@ struct SimEmuPanel: View {
                 footerBar
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Header Bar
@@ -686,7 +690,7 @@ struct SessionCard: View {
                 Text(session.deviceName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Sim.Color.textPrimary.opacity(0.8))
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
 
             // Row 4: OS version
@@ -707,10 +711,10 @@ struct SessionCard: View {
                 HStack(spacing: 3) {
                     Text("\u{1F4CD}")
                         .font(.system(size: 9))
-                    Text(session.truncatedLabel)
+                    Text(session.label)
                         .font(.system(size: 10))
                         .foregroundStyle(Sim.Color.textSecondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
             }
         }
