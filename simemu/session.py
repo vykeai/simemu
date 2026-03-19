@@ -403,7 +403,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         session = touch(session_id)
         return session.to_agent_json()
 
-    if command == "visible":
+    if command in ("visible", "show"):
         session = touch(session_id)
         if not session.real_device and session.platform in ("ios", "watchos", "tvos", "visionos"):
             import subprocess
@@ -427,7 +427,7 @@ end tell'''
                 save(data)
         return {"session": session_id, "status": "visible", "device": session.device_name}
 
-    if command == "invisible":
+    if command in ("invisible", "hide"):
         session = touch(session_id)
         if not session.real_device:
             window_mgr.apply_window_mode(session.sim_id, session.platform, session.device_name)

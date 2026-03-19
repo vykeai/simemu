@@ -1820,8 +1820,8 @@ def build_parser() -> argparse.ArgumentParser:
                          default="phone", help="Device form factor (default: phone)")
     claim_p.add_argument("--real", action="store_true",
                          help="Prefer real device over simulator")
-    claim_p.add_argument("--visible", action="store_true",
-                         help="Keep simulator window visible (default: headless/hidden)")
+    claim_p.add_argument("--show", action="store_true", dest="visible",
+                         help="Keep simulator window visible (default: hidden)")
     claim_p.add_argument("--label", help="Human label for display (e.g. 'proof capture')")
     claim_p.set_defaults(func=cmd_claim)
 
