@@ -197,7 +197,12 @@ func loadSessions() -> [SimSession] {
     for i in result.indices { result[i].isHeadless = headless }
 
     let order: [String: Int] = ["active": 0, "idle": 1, "parked": 2]
-    result.sort { (order[$0.status] ?? 9, $1.heartbeatAt ?? .distantPast) < (order[$1.status] ?? 9, $0.heartbeatAt ?? .distantPast) }
+    result.sort { a, b in
+        let oa = order[a.status] ?? 9
+        let ob = order[b.status] ?? 9
+        if oa != ob { return oa < ob }
+        return (a.heartbeatAt ?? .distantPast) > (b.heartbeatAt ?? .distantPast)
+    }
     return result
 }
 
@@ -238,12 +243,12 @@ final class MenuBarController: NSObject {
             updateLabel()
         }
 
-        popover.contentSize = NSSize(width: 580, height: 580)
+        popover.contentSize = NSSize(width: 620, height: 600)
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
 
         DispatchQueue.main.async { [self] in
-            let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 580))
+            let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 620))
             hc.view.layer?.backgroundColor = NSColor.clear.cgColor
             self.popover.contentViewController = hc
         }
@@ -284,7 +289,7 @@ final class MenuBarController: NSObject {
             if popover.isShown {
                 popover.performClose(nil)
             } else {
-                let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 580))
+                let hc = NSHostingController(rootView: SimEmuPanel().frame(width: 620))
                 hc.view.layer?.backgroundColor = NSColor.clear.cgColor
                 popover.contentViewController = hc
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -346,7 +351,7 @@ struct SimEmuPanel: View {
                 footer
             }
         }
-        .frame(height: 580)
+        .frame(height: 600)
     }
 
     // MARK: Header
@@ -620,68 +625,64 @@ struct SessionTile: View {
     }
 
     private var tileContent: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             // Row 1: Project + status dot + headless icon
             HStack(spacing: 4) {
-                // T-006: Project name is the bold header, not session ID
                 Text(session.project)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
                     .foregroundStyle(Sim.Color.textPrimary)
                     .lineLimit(1)
                 Spacer()
-                // T-003: Headless indicator
                 if session.isHeadless && session.status != "parked" {
                     Image(systemName: "eye.slash")
-                        .font(.system(size: 8))
+                        .font(.system(size: 9))
                         .foregroundStyle(Sim.Color.textMuted)
                 }
                 Circle()
                     .fill(session.statusColor)
-                    .frame(width: 7, height: 7)
-                    .shadow(color: session.statusColor.opacity(0.5), radius: 2)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: session.statusColor.opacity(0.5), radius: 3)
             }
 
-            // Row 2: Platform + form factor badges
+            // Row 2: Platform + form factor badges + session ID
             HStack(spacing: 4) {
                 badge(session.platform == "android" ? "Android" : "iOS", color: session.platformColor)
-                if session.formFactor != "phone" {
-                    badge(session.formFactor, color: Sim.Color.accent)
-                }
-                // T-006: Session ID small and muted
+                badge(session.formFactor, color: Sim.Color.accent)
+                Spacer()
                 Text(session.id)
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(Sim.Color.textMuted)
             }
 
             // Row 3: Device name
             if !session.deviceName.isEmpty {
                 Text(session.deviceName)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Sim.Color.textPrimary.opacity(0.75))
-                    .lineLimit(1)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Sim.Color.textPrimary.opacity(0.8))
+                    .lineLimit(2)
             }
 
             // Row 4: OS + status
             HStack(spacing: 0) {
                 Text(session.osLabel)
-                    .font(.system(size: 9))
+                    .font(.system(size: 11))
                     .foregroundStyle(Sim.Color.textSecondary)
 
                 if session.status == "parked" {
                     Text("  \u{00B7}  parked")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Sim.Color.parked)
                 } else {
                     let idle = session.idleText
                     let exp = session.expiresText
                     if !idle.isEmpty {
                         Text("  \u{00B7}  \(idle)")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(session.statusColor.opacity(0.8))
                     }
                     if !exp.isEmpty {
                         Text("  \u{00B7}  \(exp)")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(session.statusColor.opacity(0.6))
                     }
                 }
@@ -690,16 +691,17 @@ struct SessionTile: View {
             // Row 5: Label
             if !session.label.isEmpty {
                 Text(session.label)
-                    .font(.system(size: 9))
+                    .font(.system(size: 11))
                     .foregroundStyle(Sim.Color.textSecondary.opacity(0.8))
                     .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(9)
+        .padding(11)
         .background(Sim.Color.surfaceHigh)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(session.statusColor.opacity(session.status == "parked" ? 0.15 : 0.4),
                               lineWidth: session.borderWidth)
         )
@@ -708,10 +710,10 @@ struct SessionTile: View {
 
     private func badge(_ text: String, color: SwiftUI.Color) -> some View {
         Text(text)
-            .font(.system(size: 8, weight: .bold))
+            .font(.system(size: 9, weight: .bold))
             .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
             .background(color.opacity(0.12))
             .clipShape(Capsule())
     }
