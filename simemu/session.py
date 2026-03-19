@@ -754,6 +754,105 @@ end tell'''
                                wifi=wifi, network=network)
         return {"status": "set"}
 
+    elif command == "dismiss-alert":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            # Try simctl ui alert dismiss, fall back to Maestro
+            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
+                     capture_output=True, check=False)
+        else:
+            # Android: press Enter key to dismiss
+            _sp.run(["adb", "-s", android.get_serial(sim_id),
+                      "shell", "input", "keyevent", "KEYCODE_ENTER"],
+                     capture_output=True, check=False)
+        return {"status": "dismissed"}
+
+    elif command == "accept-alert":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
+                     capture_output=True, check=False)
+        else:
+            _sp.run(["adb", "-s", android.get_serial(sim_id),
+                      "shell", "input", "keyevent", "KEYCODE_ENTER"],
+                     capture_output=True, check=False)
+        return {"status": "accepted"}
+
+    elif command == "deny-alert":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "deny"],
+                     capture_output=True, check=False)
+        else:
+            _sp.run(["adb", "-s", android.get_serial(sim_id),
+                      "shell", "input", "keyevent", "KEYCODE_BACK"],
+                     capture_output=True, check=False)
+        return {"status": "denied"}
+
+    elif command == "grant-all":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> grant-all <bundle-or-package>")
+        bundle = args[0]
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            services = ["all"]
+            for svc in services:
+                _sp.run(["xcrun", "simctl", "privacy", sim_id, "grant", svc, bundle],
+                         capture_output=True, check=False)
+        else:
+            serial = android.get_serial(sim_id)
+            permissions = [
+                "android.permission.CAMERA",
+                "android.permission.RECORD_AUDIO",
+                "android.permission.ACCESS_FINE_LOCATION",
+                "android.permission.ACCESS_COARSE_LOCATION",
+                "android.permission.READ_CONTACTS",
+                "android.permission.WRITE_CONTACTS",
+                "android.permission.READ_EXTERNAL_STORAGE",
+                "android.permission.WRITE_EXTERNAL_STORAGE",
+                "android.permission.READ_MEDIA_IMAGES",
+                "android.permission.READ_MEDIA_VIDEO",
+                "android.permission.POST_NOTIFICATIONS",
+            ]
+            for perm in permissions:
+                _sp.run(["adb", "-s", serial, "shell", "pm", "grant", bundle, perm],
+                         capture_output=True, check=False)
+        return {"status": "granted", "app": bundle}
+
+    elif command == "clear-data":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> clear-data <bundle-or-package>")
+        bundle = args[0]
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            # iOS: terminate + uninstall + reinstall is the only reliable way
+            ios.terminate(sim_id, bundle)
+            # Can't easily clear data on iOS sim without uninstall
+            return {"status": "terminated", "hint": "iOS: uninstall and reinstall to clear data"}
+        else:
+            android.clear_data(sim_id, bundle)
+        return {"status": "cleared", "app": bundle}
+
+    elif command == "clipboard-set":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> clipboard-set <text>")
+        text = " ".join(args)
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _sp.run(["xcrun", "simctl", "pbcopy", sim_id],
+                     input=text.encode(), capture_output=True, check=False)
+        else:
+            android.input_text(sim_id, text)
+        return {"status": "set", "text": text}
+
+    elif command == "clipboard-get":
+        import subprocess as _sp
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            result = _sp.run(["xcrun", "simctl", "pbpaste", sim_id],
+                              capture_output=True, text=True, check=False)
+            return {"status": "ok", "text": result.stdout.strip()}
+        else:
+            return {"status": "unsupported", "hint": "Android clipboard-get not supported"}
+
     elif command == "build":
         return _do_build(session, sim_id, platform, is_real, args)
 
@@ -770,9 +869,11 @@ end tell'''
 
     else:
         raise RuntimeError(
-            f"Unknown command '{command}'. Available: boot, visible, invisible, install, launch, tap, swipe, "
+            f"Unknown command '{command}'. Available: boot, show, hide, install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
+            f"dismiss-alert, accept-alert, deny-alert, grant-all, clear-data, "
+            f"clipboard-set, clipboard-get, "
             f"shake, status-bar, build, env"
         )
 
