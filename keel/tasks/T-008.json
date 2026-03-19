@@ -1,0 +1,36 @@
+{
+  "id": "T-008",
+  "title": "Add Hide All / Show All buttons to panel footer",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": null,
+  "assignee": null,
+  "depends_on": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "notes": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-19T07:37:25.830Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "run_status": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-19T07:37:25.829Z",
+  "updatedAt": "2026-03-19T07:37:25.829Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
