@@ -73,8 +73,8 @@ def apply_window_mode(sim_id: str, platform: str, device_name: str) -> None:
     if mode == "default":
         return
 
-    # Give the window a moment to appear
-    time.sleep(1.0)
+    # Give the window time to appear — Simulator.app can take 2-3s after boot
+    time.sleep(3.0)
 
     if mode == "hidden":
         _hide_window(sim_id, platform, device_name)
@@ -110,19 +110,25 @@ def apply_to_all(platform_filter: str | None = None) -> int:
 # ── mode implementations ─────────────────────────────────────────────────────
 
 def _hide_window(sim_id: str, platform: str, device_name: str) -> None:
-    """Minimize/hide the simulator window."""
+    """Minimize/hide the simulator window. Retries once if window isn't found."""
     if platform in ("ios", "watchos", "tvos", "visionos"):
-        # Minimize the Simulator window
-        subprocess.run([
-            "osascript", "-e",
-            f'''tell application "System Events"
+        for attempt in range(2):
+            result = subprocess.run([
+                "osascript", "-e",
+                f'''tell application "System Events"
     tell process "Simulator"
         try
             set miniaturized of (first window whose name contains "{device_name}") to true
+            return "ok"
         end try
+        return "not found"
     end tell
 end tell'''
-        ], capture_output=True, check=False)
+            ], capture_output=True, text=True, check=False)
+            if "ok" in result.stdout:
+                return
+            if attempt == 0:
+                time.sleep(2.0)  # Window might not exist yet
     else:
         # Android emulators booted headless already have no window
         # For Genymotion/windowed, try to minimize

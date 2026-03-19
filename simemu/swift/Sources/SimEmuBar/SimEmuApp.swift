@@ -669,20 +669,20 @@ struct SessionTile: View {
                     .foregroundStyle(Sim.Color.textSecondary)
 
                 if session.status == "parked" {
-                    Text("  \u{00B7}  parked")
-                        .font(.system(size: 11, weight: .medium))
+                    Text("  \u{00B7}  parked \u{00B7} boots on do")
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(Sim.Color.parked)
                 } else {
                     let idle = session.idleText
                     let exp = session.expiresText
                     if !idle.isEmpty {
-                        Text("  \u{00B7}  \(idle)")
-                            .font(.system(size: 11, weight: .medium))
+                        Text("  \u{00B7}  idle \(idle)")
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(session.statusColor.opacity(0.8))
                     }
                     if !exp.isEmpty {
-                        Text("  \u{00B7}  \(exp)")
-                            .font(.system(size: 11, weight: .medium))
+                        Text("  \u{00B7}  exp \(exp)")
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(session.statusColor.opacity(0.6))
                     }
                 }

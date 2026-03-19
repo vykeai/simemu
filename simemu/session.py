@@ -246,8 +246,18 @@ def claim(spec: ClaimSpec) -> Session:
     )
     session.expires_at = _compute_expires_at("active", now)
 
-    # Persist session
+    # Persist session — check for duplicate sim_id under lock
     with _locked_sessions() as (data, save):
+        # Reject if another active session already has this device
+        for existing_id, existing in data["sessions"].items():
+            if (existing.get("sim_id") == sim.sim_id
+                    and existing.get("status") in ("active", "idle", "parked")):
+                raise SessionError(
+                    error="device_already_claimed",
+                    session=existing_id,
+                    hint=f"Device '{sim.device_name}' is already claimed by session {existing_id}. "
+                         f"Release it first: simemu do {existing_id} done",
+                )
         data["sessions"][session_id] = asdict(session)
         save(data)
 
