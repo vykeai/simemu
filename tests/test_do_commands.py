@@ -202,7 +202,7 @@ class TestDoScreenshot(DoCommandBase):
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_screenshot(self, mock_serial, mock_screenshot) -> None:
         result = do_command("s-test01", "screenshot", ["-o", "/tmp/test.png"])
-        mock_screenshot.assert_called_once_with("AAA-111", "/tmp/test.png", fmt=None)
+        mock_screenshot.assert_called_once_with("AAA-111", "/tmp/test.png", fmt=None, max_size=None)
         self.assertEqual(result["status"], "captured")
         self.assertEqual(result["path"], "/tmp/test.png")
 

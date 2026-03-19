@@ -10,6 +10,7 @@ State file: ~/.simemu/sessions.json (separate from legacy state.json)
 import fcntl
 import json
 import os
+import platform as _platform_mod
 import secrets
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -35,6 +36,7 @@ DEFAULT_MEMORY_BUDGET_MB = 16 * 1024  # 16GB
 _DEVICE_MEMORY_MB = {
     "ios": 2048,
     "android": 3072,
+    "macos": 0,  # native — no VM overhead
 }
 
 
@@ -42,7 +44,7 @@ _DEVICE_MEMORY_MB = {
 
 @dataclass
 class ClaimSpec:
-    platform: str                        # "ios" | "android"
+    platform: str                        # "ios" | "android" | "macos"
     form_factor: str = "phone"           # "phone" | "tablet" | "watch" | "tv" | "vision"
     os_version: str | None = None        # requested version or None (any)
     real_device: bool = False
@@ -68,7 +70,7 @@ class ClaimSpec:
 @dataclass
 class Session:
     session_id: str                      # "s-" + 6 hex chars
-    platform: str                        # "ios" | "android"
+    platform: str                        # "ios" | "android" | "macos"
     form_factor: str                     # "phone" | "tablet" | "watch" | "tv" | "vision"
     os_version: str | None               # requested version or None
     real_device: bool
@@ -203,21 +205,62 @@ def claim(spec: ClaimSpec) -> Session:
     agent = os.environ.get("SIMEMU_AGENT") or f"pid-{os.getpid()}"
     now = _now_iso()
 
+    # T-31: Rate limiting
+    _check_rate_limit(agent)
+
+    # T-26: Progress feedback
+    import sys as _sys
+    print(f"Claiming {spec.platform} {spec.form_factor}...", file=_sys.stderr, flush=True)
+
+    # Generate session ID
+    session_id = _gen_session_id()
+
+    if spec.platform == "macos":
+        # macOS apps run natively — no simulator/emulator needed
+        mac_ver = _platform_mod.mac_ver()[0] or "unknown"
+        session = Session(
+            session_id=session_id,
+            platform="macos",
+            form_factor="desktop",
+            os_version=spec.os_version,
+            real_device=True,
+            label=spec.label,
+            status="active",
+            sim_id="macos-native",
+            device_name=mac_ver,
+            agent=agent,
+            created_at=now,
+            heartbeat_at=now,
+            resolved_os_version=mac_ver,
+            claim_platform="macos",
+            claim_form_factor="desktop",
+            claim_os_version=spec.os_version,
+            claim_real_device=True,
+            claim_label=spec.label,
+        )
+        session.expires_at = _compute_expires_at("active", now)
+
+        with _locked_sessions() as (data, save):
+            # Allow multiple macOS sessions (different apps on same machine)
+            data["sessions"][session_id] = asdict(session)
+            save(data)
+
+        return session
+
     # Check memory budget before claiming
     _enforce_memory_budget_if_needed(spec.platform)
 
     # Find best matching device
     sim = find_best_device(spec)
 
-    # Generate session ID
-    session_id = _gen_session_id()
-
     # Boot the device if not already booted and not a real device
     if not sim.real_device and not sim.booted:
+        print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
         if sim.platform in ("ios", "watchos", "tvos", "visionos"):
             ios.boot(sim.sim_id)
         else:
             android.boot(sim.sim_id, headless=True)
+        print(f"Ready.", file=_sys.stderr, flush=True)
 
     # Apply window management — headless by default unless --visible
     if not sim.real_device and not spec.visible:
@@ -308,6 +351,10 @@ def touch(session_id: str) -> Session:
 
     reboot_needed = session.status == "parked"
 
+    # macOS sessions are native — never need rebooting
+    if session.platform == "macos":
+        reboot_needed = False
+
     # Android session claims can occasionally outlive the underlying emulator
     # process. If the session is still marked active/idle but the VM is gone,
     # heal by booting it again before dispatching the next command.
@@ -391,8 +438,235 @@ def get_active_sessions() -> dict[str, Session]:
 
 # ── do command dispatch ──────────────────────────────────────────────────────
 
+_COMMAND_HELP: dict[str, str] = {
+    # Session lifecycle
+    "boot":             "Wake a parked session and re-boot the device",
+    "show":             "Make the simulator window visible",
+    "hide":             "Hide the simulator window (headless)",
+    "renew":            "Extend session before it expires",
+    "done":             "Release the session and free the device",
+    "reboot":           "Restart the simulator",
+    # App management
+    "install":          "Install .app/.ipa (iOS) or .apk (Android)",
+    "launch":           "Launch app by bundle ID or package name",
+    "terminate":        "Force-stop a running app",
+    "uninstall":        "Remove an installed app",
+    "reset-app":        "Terminate + uninstall + reinstall + launch",
+    "clear-data":       "Clear app data (Android) or hint to reinstall (iOS)",
+    "grant-all":        "Grant ALL permissions preemptively",
+    "app-info":         "Show app version, data size, container path",
+    "app-container":    "Get the app's data container path",
+    "is-running":       "Check if an app is running (returns bool + pid)",
+    "foreground-app":   "Return which app is currently in foreground",
+    # UI interaction
+    "a11y-tap":         "Tap element by accessibility label — HEADLESS via Maestro",
+    "tap":              "Tap at x y coordinates (needs visible window on iOS)",
+    "swipe":            "Swipe from x1 y1 to x2 y2",
+    "long-press":       "Long-press at x y coordinates",
+    "scroll":           "Scroll up/down/left/right",
+    "back":             "Go back (edge swipe iOS, back button Android)",
+    "home":             "Go to home screen",
+    "key":              "Press a hardware key (home, lock, volume, etc.)",
+    "input":            "Type text into focused field",
+    "type-submit":      "Type text and press Enter",
+    "shake":            "Shake gesture (opens React Native dev menu)",
+    # Capture & proof
+    "screenshot":       "Take a screenshot (-o path, --max-size px)",
+    "deeplink-proof":   "Open URL + wait 3s + screenshot in one command",
+    "wait-for-render":  "Wait N seconds then screenshot",
+    "video-start":      "Start screen recording (-o path)",
+    "video-stop":       "Stop screen recording (pass pid from video-start)",
+    "log-crash":        "Get recent crash logs",
+    # Navigation
+    "url":              "Open a URL or deep link",
+    "maestro":          "Run a Maestro flow YAML",
+    # Alerts & permissions
+    "dismiss-alert":    "Dismiss any visible system alert",
+    "accept-alert":     "Tap Allow/OK on a system alert",
+    "deny-alert":       "Tap Don't Allow/Cancel on a system alert",
+    "auto-dismiss":     "Accept pending alerts + disable animation + reset privacy",
+    # Device state
+    "appearance":       "Set light or dark mode",
+    "rotate":           "Set orientation (portrait, landscape, left, right)",
+    "location":         "Set GPS coordinates (lat lng)",
+    "status-bar":       "Override status bar (--time, --battery, --wifi, --clear)",
+    "biometrics":       "Simulate Face ID / fingerprint (match or fail)",
+    "network":          "Set network mode: offline/slow/normal (Android)",
+    # Clipboard
+    "clipboard-set":    "Copy text to device clipboard",
+    "clipboard-get":    "Read device clipboard (iOS only)",
+    # Files
+    "push":             "Push file to Android emulator",
+    "pull":             "Pull file from Android emulator",
+    "add-media":        "Add photo/video to device library",
+    "contacts-import":  "Import contacts from VCF file",
+    # System
+    "keychain-reset":   "Clear iOS keychain",
+    "icloud-sync":      "Trigger iCloud sync (iOS only)",
+    "clone":            "Clone an iOS simulator",
+    "font-size":        "Set accessibility font size (Android)",
+    "reduce-motion":    "Toggle reduce motion / animations (Android)",
+    "notifications-clear": "Clear notification center (Android)",
+    "a11y-tree":        "Dump accessibility hierarchy (Android)",
+    # Info
+    "env":              "Show device info (UDID, serial, OS version)",
+    "help":             "Show this help",
+}
+
+
+# ── macOS native command dispatch ────────────────────────────────────────────
+
+def _do_macos_command(session: Session, command: str, args: list[str]) -> dict:
+    """Handle commands for macOS native sessions (no simulator)."""
+    import subprocess as _sp
+
+    if command == "install":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> install <path-to-.app>")
+        app_path = args[0]
+        # Copy .app bundle to staging area, or open it directly
+        if app_path.endswith(".app"):
+            staging = Path("/tmp/simemu-apps")
+            staging.mkdir(parents=True, exist_ok=True)
+            _sp.run(["cp", "-R", app_path, str(staging)], check=True)
+            return {"status": "installed", "app": app_path, "location": str(staging / Path(app_path).name)}
+        else:
+            _sp.run(["open", app_path], check=True)
+            return {"status": "installed", "app": app_path}
+
+    elif command == "launch":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> launch <bundle-id>")
+        bundle_id = args[0]
+        _sp.run(["open", "-b", bundle_id], check=True)
+        return {"status": "launched", "app": bundle_id}
+
+    elif command == "screenshot":
+        output = None
+        i = 0
+        while i < len(args):
+            if args[i] in ("-o", "--output") and i + 1 < len(args):
+                output = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not output:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output = str(out_dir / f"{session.session_id}_{ts}.png")
+
+        # Try to capture a specific window by bundle ID, fall back to full screen
+        if args and not args[0].startswith("-"):
+            bundle_id = args[0]
+            # Get window ID via osascript
+            result = _sp.run([
+                "osascript", "-e",
+                f'tell application "System Events" to tell process (name of first application process '
+                f'whose bundle identifier is "{bundle_id}") to set wid to id of first window\n'
+                f'return wid',
+            ], capture_output=True, text=True, check=False)
+            window_id = result.stdout.strip()
+            if window_id and window_id.isdigit():
+                _sp.run(["screencapture", "-l", window_id, output], check=True)
+                return {"status": "captured", "path": output, "window_id": int(window_id)}
+
+        # Fallback: capture entire screen
+        _sp.run(["screencapture", "-x", output], check=True)
+        return {"status": "captured", "path": output}
+
+    elif command == "terminate":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> terminate <bundle-id>")
+        bundle_id = args[0]
+        # Graceful quit via osascript, fall back to pkill
+        result = _sp.run([
+            "osascript", "-e",
+            f'tell application id "{bundle_id}" to quit',
+        ], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            _sp.run(["pkill", "-f", bundle_id], capture_output=True, check=False)
+        return {"status": "terminated", "app": bundle_id}
+
+    elif command == "url":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> url <url>")
+        url = args[0]
+        _sp.run(["open", url], check=True)
+        return {"status": "opened", "url": url}
+
+    elif command == "tap":
+        if len(args) < 2:
+            raise RuntimeError("Usage: simemu do <session> tap <x> <y>")
+        x, y = float(args[0]), float(args[1])
+        try:
+            from Quartz import (  # type: ignore[import-untyped]
+                CGEventCreateMouseEvent, CGEventPost,
+                kCGEventMouseMoved, kCGEventLeftMouseDown, kCGEventLeftMouseUp,
+                kCGHIDEventTap,
+            )
+            from Quartz import CGPointMake  # type: ignore[import-untyped]
+
+            point = CGPointMake(x, y)
+            move = CGEventCreateMouseEvent(None, kCGEventMouseMoved, point, 0)
+            CGEventPost(kCGHIDEventTap, move)
+            down = CGEventCreateMouseEvent(None, kCGEventLeftMouseDown, point, 0)
+            CGEventPost(kCGHIDEventTap, down)
+            up = CGEventCreateMouseEvent(None, kCGEventLeftMouseUp, point, 0)
+            CGEventPost(kCGHIDEventTap, up)
+            return {"status": "tapped", "x": x, "y": y}
+        except ImportError:
+            return {"status": "unsupported", "platform": "macos",
+                    "hint": "Tap requires pyobjc-framework-Quartz: pip install pyobjc-framework-Quartz"}
+
+    elif command == "a11y-tap":
+        return {"status": "unsupported", "platform": "macos",
+                "hint": "Maestro does not support macOS. Use 'tap' with coordinates, "
+                        "or AppleScript: 'tell application \"System Events\" to click button \"Name\" ...'."}
+
+    elif command in ("boot", "show", "hide", "renew", "done"):
+        # These are handled by the main do_command dispatcher before reaching here.
+        # If we get here somehow, they are no-ops for macOS.
+        return {"status": "ok", "platform": "macos", "command": command}
+
+    else:
+        _MACOS_SUPPORTED = {"install", "launch", "screenshot", "terminate", "url", "tap"}
+        return {
+            "status": "unsupported",
+            "platform": "macos",
+            "command": command,
+            "hint": f"'{command}' is not available for macOS native sessions. "
+                    f"Supported commands: {', '.join(sorted(_MACOS_SUPPORTED))}. "
+                    f"macOS apps run natively — most simulator/emulator commands do not apply.",
+        }
+
+
 def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
     """Execute a command on a session. Auto-extends heartbeat."""
+
+    # T-12: Help command
+    if command == "help":
+        categories = {
+            "Session": ["boot", "show", "hide", "renew", "done", "reboot"],
+            "App": ["install", "launch", "terminate", "uninstall", "reset-app", "clear-data",
+                     "grant-all", "app-info", "app-container", "is-running", "foreground-app"],
+            "UI": ["a11y-tap", "tap", "swipe", "long-press", "scroll", "back", "home",
+                   "key", "input", "type-submit", "shake"],
+            "Capture": ["screenshot", "deeplink-proof", "wait-for-render", "video-start",
+                        "video-stop", "log-crash"],
+            "Navigate": ["url", "maestro"],
+            "Alerts": ["dismiss-alert", "accept-alert", "deny-alert", "auto-dismiss"],
+            "Device": ["appearance", "rotate", "location", "status-bar", "biometrics",
+                       "network", "clipboard-set", "clipboard-get"],
+            "Files": ["push", "pull", "add-media", "contacts-import"],
+            "System": ["keychain-reset", "icloud-sync", "clone", "font-size",
+                       "reduce-motion", "notifications-clear", "a11y-tree", "env"],
+        }
+        result: dict = {"commands": {}}
+        for cat, cmds in categories.items():
+            result["commands"][cat] = {c: _COMMAND_HELP.get(c, "") for c in cmds}
+        return result
+
     if command == "done":
         session = release(session_id)
         return {"session": session_id, "status": "released"}
@@ -471,6 +745,10 @@ end tell'''
             "scenario": command,
         })
 
+    # ── macOS native command dispatch ──────────────────────────────────────
+    if platform == "macos":
+        return _do_macos_command(session, command, args)
+
     if command == "install":
         if not args:
             # Auto-install: use the last build artifact
@@ -531,6 +809,7 @@ end tell'''
     elif command == "screenshot":
         output = None
         fmt = "png"
+        max_size = None
         i = 0
         while i < len(args):
             if args[i] in ("-o", "--output") and i + 1 < len(args):
@@ -539,8 +818,15 @@ end tell'''
             elif args[i] in ("-f", "--format") and i + 1 < len(args):
                 fmt = args[i + 1]
                 i += 2
+            elif args[i] == "--max-size" and i + 1 < len(args):
+                max_size = int(args[i + 1])
+                i += 2
             else:
                 i += 1
+
+        # T-25: Default max-size from env
+        if max_size is None and "SIMEMU_SCREENSHOT_MAX_SIZE" in os.environ:
+            max_size = int(os.environ["SIMEMU_SCREENSHOT_MAX_SIZE"])
 
         if not output:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -549,9 +835,9 @@ end tell'''
             output = str(out_dir / f"{session_id}_{ts}.{fmt}")
 
         if is_real and platform == "ios":
-            device.ios_screenshot(sim_id, output)
+            device.ios_screenshot(sim_id, output, max_size=max_size)
         elif platform in ("ios", "watchos", "tvos", "visionos"):
-            ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None)
+            ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
         else:
             android.screenshot(sim_id, output)
         return {"status": "captured", "path": output}
@@ -1825,3 +2111,59 @@ class SessionError(RuntimeError):
         }
         result.update(self.extra)
         return result
+
+
+# ── T-15: Command history ────────────────────────────────────────────────────
+
+def _log_command(session_id: str, command: str, args: list[str]) -> None:
+    """Append a command to the session's history log."""
+    log_dir = state.state_dir() / "history"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{session_id}.log"
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"{ts} {command} {' '.join(args[:5])}\n"
+    try:
+        with log_file.open("a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def get_command_history(session_id: str) -> list[str]:
+    """Return the command history for a session."""
+    log_file = state.state_dir() / "history" / f"{session_id}.log"
+    if not log_file.exists():
+        return []
+    return log_file.read_text().strip().splitlines()
+
+
+# ── T-29: Safe android serial helper ─────────────────────────────────────────
+
+def _android_serial(sim_id: str) -> str:
+    """Get Android serial, raising a clear error if not available."""
+    serial = android.get_serial(sim_id)
+    if not serial:
+        raise RuntimeError(
+            f"Android emulator '{sim_id}' is not running or not adb-ready. "
+            f"Try: simemu do <session> reboot"
+        )
+    return serial
+
+
+# ── T-31: Rate limiting ──────────────────────────────────────────────────────
+
+MAX_ACTIVE_PER_AGENT = 8
+
+
+def _check_rate_limit(agent: str) -> None:
+    """Raise if agent has too many active sessions."""
+    active = get_active_sessions()
+    agent_count = sum(1 for s in active.values()
+                      if s.agent == agent and s.status in ("active", "idle"))
+    if agent_count >= MAX_ACTIVE_PER_AGENT:
+        raise SessionError(
+            error="rate_limited",
+            session="",
+            hint=f"Agent '{agent}' has {agent_count} active sessions (max {MAX_ACTIVE_PER_AGENT}). "
+                 f"Release some first: simemu do <session> done",
+        )
