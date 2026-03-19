@@ -117,10 +117,8 @@ struct SimSession: Identifiable {
         return "\(m/60)h\(m%60)m"
     }
 
-    // T-003: headless indicator — true when window mode is hidden
-    var isHeadless: Bool {
-        SimConfig.load().windowMode == "hidden"
-    }
+    // T-003: headless — caller passes this in, don't load config per-session
+    var isHeadless: Bool = false
 }
 
 struct SimConfig {
@@ -195,6 +193,9 @@ func loadSessions() -> [SimSession] {
             simId: raw["sim_id"] as? String ?? ""
         ))
     }
+    let headless = SimConfig.load().windowMode == "hidden"
+    for i in result.indices { result[i].isHeadless = headless }
+
     let order: [String: Int] = ["active": 0, "idle": 1, "parked": 2]
     result.sort { (order[$0.status] ?? 9, $1.heartbeatAt ?? .distantPast) < (order[$1.status] ?? 9, $0.heartbeatAt ?? .distantPast) }
     return result
@@ -493,12 +494,8 @@ struct SimEmuPanel: View {
             }
             .buttonStyle(.plain)
 
-            // T-008: Hide All / Show All
-            Button {
-                // Write a signal file that the monitor picks up
-                let sig = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".simemu/hide_all.signal")
-                try? "1".write(to: sig, atomically: true, encoding: .utf8)
-            } label: {
+            // T-008: Hide All
+            Button { hideAllSimulators() } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "eye.slash").font(.system(size: 9))
                     Text("Hide All").font(.system(size: 10, weight: .medium))
@@ -534,6 +531,23 @@ struct SimEmuPanel: View {
     }
 
     // MARK: Helpers
+
+    private func hideAllSimulators() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Hide iOS Simulator windows
+            let script = """
+            tell application "System Events"
+                if exists process "Simulator" then
+                    tell process "Simulator"
+                        set miniaturized of every window to true
+                    end tell
+                end if
+            end tell
+            """
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
+        }
+    }
 
     private func pill(_ text: String, color: SwiftUI.Color) -> some View {
         Text(text)
@@ -583,21 +597,24 @@ struct SessionTile: View {
         .buttonStyle(.plain)
         // T-009: Right-click context menu
         .contextMenu {
-            Button("Focus Window") { focusSimulator() }
+            if session.platform == "ios" && session.status != "parked" {
+                Button("Focus Window") { focusSimulator() }
+                Button("Hide Window") { hideSimulator() }
+                Divider()
+            }
             Button("Copy Session ID") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(session.id, forType: .string)
             }
-            Divider()
-            Button("Park Session") {
-                let sig = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".simemu/park_\(session.id).signal")
-                try? "1".write(to: sig, atomically: true, encoding: .utf8)
+            Button("Copy simemu do command") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("simemu do \(session.id) ", forType: .string)
             }
+            Divider()
             Button("Release Session") {
-                let sig = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".simemu/release_\(session.id).signal")
-                try? "1".write(to: sig, atomically: true, encoding: .utf8)
+                // Copy the release command to clipboard for the user
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("simemu do \(session.id) done", forType: .string)
             }
         }
     }
@@ -699,34 +716,49 @@ struct SessionTile: View {
             .clipShape(Capsule())
     }
 
-    // T-004: Focus simulator window via AppleScript
     private func focusSimulator() {
         guard session.status != "parked" else { return }
+        guard session.platform == "ios" else { return }
         let name = session.deviceName
         guard !name.isEmpty else { return }
 
-        // Use NSAppleScript to bring the Simulator window to front
-        let script: String
-        if session.platform == "ios" {
-            script = """
+        DispatchQueue.global(qos: .userInitiated).async {
+            // First unminiaturize, then raise
+            let script = """
             tell application "Simulator" to activate
+            delay 0.3
             tell application "System Events"
                 tell process "Simulator"
                     try
-                        perform action "AXRaise" of (first window whose name contains "\(name)")
+                        set w to first window whose name contains "\(name)"
+                        set miniaturized of w to false
+                        perform action "AXRaise" of w
                     end try
                 end tell
             end tell
             """
-        } else {
-            // Android — no reliable way to focus headless emulators
-            return
-        }
-
-        DispatchQueue.global(qos: .utility).async {
-            var error: NSDictionary?
-            let appleScript = NSAppleScript(source: script)
-            appleScript?.executeAndReturnError(&error)
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
         }
     }
+
+    private func hideSimulator() {
+        let name = session.deviceName
+        guard !name.isEmpty else { return }
+
+        DispatchQueue.global(qos: .utility).async {
+            let script = """
+            tell application "System Events"
+                tell process "Simulator"
+                    try
+                        set miniaturized of (first window whose name contains "\(name)") to true
+                    end try
+                end tell
+            end tell
+            """
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
+        }
+    }
+
 }
