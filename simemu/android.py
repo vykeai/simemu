@@ -431,15 +431,17 @@ def uninstall(avd_name: str, package: str) -> None:
 
 
 def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) -> None:
-    """Capture screenshot via screencap + adb pull.
+    """Capture screenshot via adb exec-out screencap.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
     """
-    wait_until_ready(avd_name)
+    serial = wait_until_ready(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    remote = "/data/local/tmp/simemu_screenshot.png"
-    _adb(avd_name, "shell", "screencap", "-p", remote)
-    _adb(avd_name, "pull", remote, output_path)
-    _adb(avd_name, "shell", "rm", remote, check=False)
+    with open(output_path, "wb") as f:
+        subprocess.run(
+            ["adb", "-s", serial, "exec-out", "screencap", "-p"],
+            stdout=f,
+            check=True,
+        )
     if max_size:
         subprocess.run(["sips", "-Z", str(max_size), output_path],
                        capture_output=True, check=False)
