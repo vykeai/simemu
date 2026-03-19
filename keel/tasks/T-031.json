@@ -1,0 +1,36 @@
+{
+  "id": "T-031",
+  "title": "Add session claim rate limiting — max 5 active per agent",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "low",
+  "platform": null,
+  "assignee": null,
+  "depends_on": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "notes": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-19T13:44:09.585Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "run_status": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-19T13:44:09.584Z",
+  "updatedAt": "2026-03-19T13:44:09.584Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
