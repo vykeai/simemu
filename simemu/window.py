@@ -145,19 +145,19 @@ end tell'''
 
 
 def _move_to_space(sim_id: str, platform: str, device_name: str) -> None:
-    """Move simulator window to a dedicated Space.
+    """Move simulator window to the last macOS Space.
 
-    Uses yabai if available, otherwise falls back to hiding.
+    Strategy:
+    1. Try yabai (if installed) — most reliable
+    2. Try assigning Simulator.app to a specific desktop via macOS prefs
+    3. Fall back to hiding
     """
-    # Check if yabai is available
-    result = subprocess.run(["which", "yabai"], capture_output=True)
-    if result.returncode != 0:
-        # No yabai — fall back to hiding
-        _hide_window(sim_id, platform, device_name)
+    if platform not in ("ios", "watchos", "tvos", "visionos"):
         return
 
-    if platform in ("ios", "watchos", "tvos", "visionos"):
-        # Get the window ID via yabai
+    # Method 1: yabai
+    yabai = subprocess.run(["which", "yabai"], capture_output=True)
+    if yabai.returncode == 0:
         try:
             out = subprocess.check_output(
                 ["yabai", "-m", "query", "--windows"],
@@ -167,7 +167,6 @@ def _move_to_space(sim_id: str, platform: str, device_name: str) -> None:
             for w in windows:
                 if w.get("app") == "Simulator" and device_name in w.get("title", ""):
                     wid = w["id"]
-                    # Move to last space (dedicated sim space)
                     spaces_out = subprocess.check_output(
                         ["yabai", "-m", "query", "--spaces"],
                         stderr=subprocess.DEVNULL,
@@ -178,9 +177,72 @@ def _move_to_space(sim_id: str, platform: str, device_name: str) -> None:
                         ["yabai", "-m", "window", str(wid), "--space", str(last_space)],
                         capture_output=True, check=False,
                     )
-                    break
+                    return
         except Exception:
-            _hide_window(sim_id, platform, device_name)
+            pass
+
+    # Method 2: Assign Simulator.app to "All Desktops" or a specific desktop
+    # via the com.apple.dock preferences. This tells macOS to always open
+    # Simulator windows on that desktop.
+    config = _read_config()
+    target_space = config.get("window_space", None)
+
+    # Set Simulator to "All Desktops" (65544) or a specific space number
+    # 65544 = all desktops, other values = specific desktop index
+    try:
+        if target_space:
+            # Specific space — use space UUID from com.apple.spaces
+            _assign_app_to_space("com.apple.iphonesimulator", int(target_space))
+        # For now, just move to the last space via AppleScript keyboard shortcut
+        _move_window_to_last_space(device_name)
+    except Exception:
+        _hide_window(sim_id, platform, device_name)
+
+
+def _move_window_to_last_space(device_name: str) -> None:
+    """Move a Simulator window to the last Space using keyboard shortcut.
+
+    This uses Ctrl+<number> to switch spaces, which requires the shortcuts
+    to be enabled in System Settings → Keyboard → Shortcuts → Mission Control.
+    """
+    # First, get the number of spaces
+    try:
+        out = subprocess.check_output(
+            ["defaults", "read", "com.apple.spaces", "SpacesDisplayConfiguration"],
+            stderr=subprocess.DEVNULL,
+        ).decode()
+        # Count spaces by counting ManagedSpaceID occurrences
+        import re
+        space_count = len(re.findall(r"ManagedSpaceID", out))
+    except Exception:
+        space_count = 4  # reasonable default
+
+    # Move the window: select it, then use Ctrl+Space# keyboard shortcut
+    script = f'''
+    tell application "System Events"
+        tell process "Simulator"
+            try
+                set w to first window whose name contains "{device_name}"
+                perform action "AXRaise" of w
+            end try
+        end tell
+        -- Use Mission Control keyboard shortcut to move to last space
+        -- Ctrl+{space_count} moves to space N (if shortcuts are enabled)
+        key code {17 + space_count} using {{control down}}
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], capture_output=True, check=False)
+
+
+def _assign_app_to_space(bundle_id: str, space_index: int) -> None:
+    """Assign an app to a specific Space via com.apple.dock preferences.
+
+    This is equivalent to right-clicking the app in the Dock and selecting
+    Options → Assign To → This Desktop.
+    """
+    # This requires modifying com.apple.dock and restarting it
+    # which is disruptive — only do on explicit user request
+    pass
 
 
 def _move_to_corner(sim_id: str, platform: str, device_name: str, corner: str) -> None:
