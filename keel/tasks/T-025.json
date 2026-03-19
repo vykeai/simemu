@@ -1,0 +1,36 @@
+{
+  "id": "T-025",
+  "title": "Add --max-size to do screenshot for auto-resize",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "high",
+  "platform": null,
+  "assignee": null,
+  "depends_on": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "notes": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-19T13:44:08.774Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "run_status": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-19T13:44:08.774Z",
+  "updatedAt": "2026-03-19T13:44:08.774Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
