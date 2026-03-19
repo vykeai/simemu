@@ -7,7 +7,7 @@ final class SimEmuState: ObservableObject {
     @Published var totalMemoryMB: Double = 0
     @Published var maintenanceActive: Bool = false
     @Published var maintenanceMessage: String = ""
-    @Published var lureFact: LureFact = LureFact.random()
+    @Published var lureFact: LureFact = LureFact(emoji: "🧠", category: "INIT", text: "Loading...")
     @Published var daemonRunning: Bool = false
 
     private var refreshTimer: Timer?
@@ -23,10 +23,7 @@ final class SimEmuState: ObservableObject {
         } else {
             stateDir = home.appendingPathComponent(".simemu")
         }
-        // Start polling after a short delay to avoid blocking SwiftUI scene setup
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.startPolling()
-        }
+        // Don't auto-poll — let the menu trigger refresh on open
     }
 
     // MARK: - Polling
@@ -43,16 +40,14 @@ final class SimEmuState: ObservableObject {
             guard let self else { return }
             let allocs = self._readStateFile()
             let maint = self._readMaintenanceFile()
-            let memoryResult = self._readProcessMemory(allocs: allocs)
 
             DispatchQueue.main.async {
-                self.allocations = memoryResult.allocations
+                self.allocations = allocs
                 self.maintenanceActive = maint.0
                 self.maintenanceMessage = maint.1
-                self.totalMemoryMB = memoryResult.totalMemoryMB
+                self.totalMemoryMB = Double(allocs.filter { $0.sessionStatus == "active" }.count) * 2048
             }
 
-            // Check daemon on background queue (uses URLSession which is async anyway)
             self._checkDaemon()
         }
     }
