@@ -224,31 +224,86 @@ end tell'''
     ], capture_output=True, check=False)
 
 
-def _move_to_display(sim_id: str, platform: str, device_name: str, display_index: int) -> None:
-    """Move simulator window to a specific display."""
-    if platform not in ("ios", "watchos", "tvos", "visionos"):
-        return
+def list_displays() -> list[dict]:
+    """Return info about all connected displays.
 
-    # Get display bounds
+    Each display: {index, name, x, y, width, height, is_main}
+    """
     try:
-        script = f'''
-        tell application "Finder"
-            set displayCount to count of desktops
-            if displayCount >= {display_index} then
-                set targetBounds to bounds of window of desktop {display_index}
-                return (item 1 of targetBounds) & "," & (item 2 of targetBounds)
-            end if
-        end tell
-        return "0,0"
+        script = '''
+        use framework "AppKit"
+        set screens to current application's NSScreen's screens()
+        set results to ""
+        repeat with i from 1 to count of screens
+            set s to item i of screens
+            set f to s's frame()
+            set x to (item 1 of item 1 of f) as integer
+            set y to (item 2 of item 1 of f) as integer
+            set w to (item 1 of item 2 of f) as integer
+            set h to (item 2 of item 2 of f) as integer
+            set n to (s's localizedName()) as text
+            set results to results & n & "," & x & "," & y & "," & w & "," & h & "\\n"
+        end repeat
+        return results
         '''
         out = subprocess.check_output(
             ["osascript", "-e", script],
             stderr=subprocess.DEVNULL,
         ).decode().strip()
-        parts = [int(x.strip()) for x in out.split(",")]
-        target_x, target_y = parts[0], parts[1]
     except Exception:
-        target_x, target_y = 0, 0
+        return [{"index": 1, "name": "Main", "x": 0, "y": 0, "width": 2560, "height": 1440, "is_main": True}]
+
+    displays = []
+    for i, line in enumerate(out.strip().split("\n"), 1):
+        parts = line.strip().split(",")
+        if len(parts) >= 5:
+            displays.append({
+                "index": i,
+                "name": parts[0],
+                "x": int(parts[1]),
+                "y": int(parts[2]),
+                "width": int(parts[3]),
+                "height": int(parts[4]),
+                "is_main": i == 1,
+            })
+    return displays or [{"index": 1, "name": "Main", "x": 0, "y": 0, "width": 2560, "height": 1440, "is_main": True}]
+
+
+# Track how many windows we've placed on the target display for tiling
+_display_tile_counter: int = 0
+
+
+def _move_to_display(sim_id: str, platform: str, device_name: str, display_index: int) -> None:
+    """Move simulator window to a specific display, auto-tiling in a grid."""
+    global _display_tile_counter
+    if platform not in ("ios", "watchos", "tvos", "visionos"):
+        return
+
+    displays = list_displays()
+    if display_index < 1 or display_index > len(displays):
+        display_index = len(displays)  # default to last display
+
+    display = displays[display_index - 1]
+    dx, dy = display["x"], display["y"]
+    dw, dh = display["width"], display["height"]
+
+    # Compact simulator window size
+    win_w, win_h = 280, 560
+
+    # Calculate grid position — fill left to right, top to bottom
+    cols = max(1, dw // (win_w + 10))
+    col = _display_tile_counter % cols
+    row = _display_tile_counter // cols
+
+    target_x = dx + 10 + col * (win_w + 10)
+    target_y = dy + 30 + row * (win_h + 10)  # 30px for menu bar
+
+    # Wrap if off-screen
+    if target_y + win_h > dy + dh:
+        target_y = dy + 30
+        _display_tile_counter = col  # reset row
+
+    _display_tile_counter += 1
 
     subprocess.run([
         "osascript", "-e",
@@ -256,7 +311,9 @@ def _move_to_display(sim_id: str, platform: str, device_name: str, display_index
     tell process "Simulator"
         try
             set w to first window whose name contains "{device_name}"
-            set position of w to {{{target_x + 20}, {target_y + 40}}}
+            set miniaturized of w to false
+            set position of w to {{{target_x}, {target_y}}}
+            set size of w to {{{win_w}, {win_h}}}
         end try
     end tell
 end tell'''

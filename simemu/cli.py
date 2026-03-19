@@ -267,6 +267,19 @@ def cmd_config(args):
             if count:
                 print(f"  Applied to {count} running simulator(s)")
 
+    elif args.config_command == "displays":
+        displays = window_mgr.list_displays()
+        if getattr(args, "json", False):
+            _print_json(displays)
+        else:
+            print(f"{'#':<4} {'NAME':<30} {'RESOLUTION':<16} {'POSITION'}")
+            print("─" * 70)
+            for d in displays:
+                main = " (main)" if d["is_main"] else ""
+                print(f"{d['index']:<4} {d['name']}{main:<30} {d['width']}x{d['height']:<16} {d['x']},{d['y']}")
+            print()
+            print(f"Set display:  simemu config window-mode display --display <#>")
+
     elif args.config_command == "show":
         config = window_mgr._read_config()
         if config:
@@ -1834,6 +1847,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_show_p = config_sub.add_parser("show", help="Show all config")
     config_show_p.set_defaults(func=cmd_config)
+
+    config_disp_p = config_sub.add_parser("displays", help="List connected displays")
+    config_disp_p.add_argument("--json", action="store_true")
+    config_disp_p.set_defaults(func=cmd_config)
 
     # sessions
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
