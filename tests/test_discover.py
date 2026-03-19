@@ -141,29 +141,20 @@ class TestListAndroid(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].sim_id, "Nexus_5X")
 
-    @patch("simemu.genymotion.parse_runtime", return_value="Android 14")
-    @patch("simemu.genymotion.list_vms", return_value=[
-        {"uuid": "a1b2c3d4-5678-9abc-def0-111111111111", "name": "Galaxy S24 - Android 14", "state": "On"},
-    ])
-    @patch("simemu.genymotion.is_available", return_value=True)
     @patch("simemu.discover._get_booted_avds", return_value=set())
-    @patch("simemu.discover.subprocess.check_output", return_value=b"Nexus_5X\n")
-    def test_includes_genymotion_vms(self, mock_co: MagicMock, mock_booted: MagicMock,
-                                      mock_avail: MagicMock, mock_vms: MagicMock,
-                                      mock_runtime: MagicMock) -> None:
+    @patch("simemu.discover.subprocess.check_output", return_value=b"Nexus_5X\nPixel_8\n")
+    def test_lists_multiple_avds(self, mock_co: MagicMock, mock_booted: MagicMock) -> None:
         result = list_android()
         self.assertEqual(len(result), 2)
-        geny = next(s for s in result if s.sim_id == "a1b2c3d4-5678-9abc-def0-111111111111")
-        self.assertEqual(geny.platform, "android")
-        self.assertTrue(geny.booted)
-        self.assertEqual(geny.runtime, "Android 14")
+        names = [s.sim_id for s in result]
+        self.assertIn("Nexus_5X", names)
+        self.assertIn("Pixel_8", names)
 
 
 class TestGetAndroidSerial(unittest.TestCase):
 
-    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
     @patch("simemu.discover.subprocess.check_output")
-    def test_maps_avd_to_serial(self, mock_co: MagicMock, mock_geny: MagicMock) -> None:
+    def test_maps_avd_to_serial(self, mock_co: MagicMock) -> None:
         mock_co.side_effect = [
             ADB_DEVICES_OUTPUT.encode(),   # adb devices
             b"Pixel_7_API_35\nOK\n",       # adb emu avd name
@@ -171,9 +162,8 @@ class TestGetAndroidSerial(unittest.TestCase):
         serial = get_android_serial("Pixel_7_API_35")
         self.assertEqual(serial, "emulator-5554")
 
-    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
     @patch("simemu.discover.subprocess.check_output")
-    def test_returns_none_when_no_match(self, mock_co: MagicMock, mock_geny: MagicMock) -> None:
+    def test_returns_none_when_no_match(self, mock_co: MagicMock) -> None:
         mock_co.side_effect = [
             ADB_DEVICES_OUTPUT.encode(),
             b"Other_AVD\nOK\n",
@@ -181,19 +171,10 @@ class TestGetAndroidSerial(unittest.TestCase):
         serial = get_android_serial("Pixel_7_API_35")
         self.assertIsNone(serial)
 
-    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
     @patch("simemu.discover.subprocess.check_output", side_effect=FileNotFoundError)
-    def test_returns_none_when_adb_missing(self, mock_co: MagicMock, mock_geny: MagicMock) -> None:
+    def test_returns_none_when_adb_missing(self, mock_co: MagicMock) -> None:
         serial = get_android_serial("Pixel_7_API_35")
         self.assertIsNone(serial)
-
-    @patch("simemu.genymotion.get_adb_serial", return_value="192.168.56.101:5555")
-    @patch("simemu.genymotion.is_genymotion_id", return_value=True)
-    def test_routes_genymotion_uuid(self, mock_is_geny: MagicMock, mock_serial: MagicMock) -> None:
-        serial = get_android_serial("a1b2c3d4-5678-9abc-def0-111111111111")
-        self.assertEqual(serial, "192.168.56.101:5555")
-        mock_serial.assert_called_once_with("a1b2c3d4-5678-9abc-def0-111111111111")
-
 
 class TestFindSimulator(unittest.TestCase):
 
