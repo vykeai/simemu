@@ -1,166 +1,167 @@
-# simemu v3 — Complete Mobile Engineering Platform
+# simemu v2 — Complete Command Status
 
-## Vision
-simemu should be the ONLY tool agents need for mobile app development, testing, and proof capture. No agent should ever need to know about xcrun simctl, adb, Xcode, or Android Studio.
+All commands from the original v3 roadmap have been implemented and are available via `simemu do $SESSION <command>`.
 
 ---
 
-## New APIs to expose via `simemu do <session>`
+## Implemented APIs (all via `simemu do <session>`)
 
-### System Alerts & Dialogs (HIGH PRIORITY)
-Agents constantly get blocked by system alerts they can't dismiss.
+### System Alerts & Dialogs -- DONE
 
 ```bash
 simemu do $S dismiss-alert                    # dismiss any visible system alert
 simemu do $S accept-alert                     # tap "Allow" / "OK" on system alert
 simemu do $S deny-alert                       # tap "Don't Allow" / "Cancel"
+simemu do $S auto-dismiss                     # reset privacy warnings + disable animations
 ```
 
-Implementation:
-- iOS: `xcrun simctl ui <udid> alert` or Maestro's auto-dismiss
-- Android: `adb shell am broadcast` or `adb shell input keyevent KEYCODE_ENTER`
-- Could also auto-dismiss common alerts (location, notifications, tracking) on boot
+### Auto-Grant All Permissions -- DONE
 
-### Auto-Grant All Permissions on Boot
 ```bash
 simemu do $S grant-all <bundle-id>            # grant all permissions preemptively
 ```
-- iOS: `xcrun simctl privacy <udid> grant all <bundle-id>`
-- Android: `adb shell pm grant <package> <permission>` for each common permission
 
-### Deeplink Testing
+iOS: `xcrun simctl privacy grant all`. Android: grants camera, audio, location, contacts, storage, media, notifications.
+
+### Deeplink Testing -- DONE
+
 ```bash
-simemu do $S deeplink "myapp://screen/profile?id=123"
-simemu do $S deeplink --wait-for-render 3     # open + wait + screenshot
+simemu do $S url "myapp://screen/profile"                 # open deep link
+simemu do $S deeplink-proof "myapp://screen" -o proof.png # open + wait 3s + screenshot
+simemu do $S wait-for-render 3 -o proof.png               # wait + screenshot (no URL)
 ```
-Already exists as `url` but could be smarter:
-- Wait for render after opening
-- Auto-screenshot after deeplink
-- Verify the deeplink was handled (check foreground app)
 
-### Clipboard
+### Clipboard -- DONE
+
 ```bash
 simemu do $S clipboard-set "paste this text"
-simemu do $S clipboard-get
+simemu do $S clipboard-get                                # iOS only
 ```
-- iOS: `xcrun simctl pbcopy/pbpaste`
-- Android: Already works via input
 
-### App Data Management
+### App Data Management -- DONE
+
 ```bash
-simemu do $S clear-data <bundle-id>           # wipe app data
-simemu do $S export-data <bundle-id> -o ./    # export app container
-simemu do $S import-data <bundle-id> ./data   # import app data
+simemu do $S clear-data <bundle-id>           # wipe app data (Android; iOS terminates only)
+simemu do $S reset-app <bundle> <app-path>    # uninstall + reinstall + relaunch
+simemu do $S app-container <bundle>           # get app data container path
 ```
-- iOS: `xcrun simctl get_app_container` + file ops
-- Android: `adb shell pm clear` / `adb pull/push`
 
-### Network Simulation
+### Network Simulation -- DONE
+
 ```bash
-simemu do $S network offline                  # airplane mode
-simemu do $S network slow                     # throttle to 3G speeds
-simemu do $S network normal                   # restore
+simemu do $S network offline                  # disable wifi + data (Android)
+simemu do $S network slow                     # partial throttle (Android)
+simemu do $S network normal                   # restore (Android)
 ```
-- iOS: Network Link Conditioner profile
-- Android: `adb shell svc wifi/data`
 
-### Keychain
+iOS network simulation is not supported via simctl (requires Network Link Conditioner).
+
+### Keychain -- DONE
+
 ```bash
-simemu do $S keychain reset                   # clear keychain
+simemu do $S keychain-reset                   # clear keychain (iOS only)
 ```
-- iOS: `xcrun simctl keychain <udid> reset`
 
-### iCloud Sync
+### iCloud Sync -- DONE
+
 ```bash
-simemu do $S icloud-sync
+simemu do $S icloud-sync                      # trigger iCloud sync (iOS only)
 ```
-- iOS: `xcrun simctl icloud_sync <udid>`
 
-### App Info
+### App Info -- DONE
+
 ```bash
-simemu do $S app-info <bundle-id>             # version, data size, permissions
+simemu do $S app-info <bundle-id>             # version, permissions, data size
+simemu do $S is-running <bundle-id>           # check if process is running
+simemu do $S foreground-app                   # get foreground app bundle ID
 ```
-- iOS: `xcrun simctl appinfo`
-- Android: `adb shell dumpsys package`
 
-### Accessibility
+### Accessibility -- DONE
+
 ```bash
-simemu do $S a11y-tree                        # dump accessibility tree
-simemu do $S a11y-tap "Login Button"          # tap by accessibility label
+simemu do $S a11y-tree                        # dump accessibility tree (Android only)
+simemu do $S a11y-tap "Login Button"          # tap by label — headless via Maestro
 ```
-- iOS: Could use accessibility inspector bridge
-- Android: `adb shell uiautomator dump`
 
-### Device Sensors
+### Device Sensors & State -- DONE
+
 ```bash
-simemu do $S shake                            # already exists
-simemu do $S battery 20                       # set battery level
-simemu do $S orientation landscape            # already exists as rotate
+simemu do $S shake                            # shake gesture
+simemu do $S rotate landscape                 # orientation
+simemu do $S appearance dark                  # light/dark mode
+simemu do $S location 37.7 -122.4             # GPS override
+simemu do $S status-bar --time 9:41           # status bar override
+simemu do $S font-size large                  # font scale (Android)
+simemu do $S reduce-motion on                 # disable animations (Android)
+```
+
+### Navigation -- DONE
+
+```bash
+simemu do $S scroll down                      # scroll up/down/left/right
+simemu do $S back                             # go back (edge swipe iOS, key Android)
+simemu do $S home                             # home screen
+simemu do $S type-submit "search query"       # type text + press enter
+```
+
+### Video Recording -- DONE
+
+```bash
+simemu do $S video-start -o recording.mp4     # start recording
+simemu do $S video-stop <pid>                 # stop recording
+```
+
+### Additional Commands -- DONE
+
+```bash
+simemu do $S clone                            # clone iOS simulator
+simemu do $S contacts-import contacts.vcf     # import contacts
+simemu do $S notifications-clear              # clear notifications (Android)
+simemu do $S siri "query"                     # Siri invocation (limited)
+simemu do $S build                            # build app via keel config
+simemu do $S env                              # device info (UDID/serial/OS)
 ```
 
 ---
 
-## Skills for Claude Code
+## Future
 
-### /mobile-boot
-Boot simulator, install app, launch, grant permissions, take proof screenshot — all in one.
+### macOS Platform Support
 
-### /mobile-proof
-Screenshot + resize + save to project screenshot dir. The standard proof workflow.
+Add `simemu claim macos` for testing macOS apps. No simulator needed — runs directly on the host. Would need:
+- Window management for macOS app windows
+- Screenshot capture via screencapture
+- Accessibility-based interaction via AppleScript/AXUIElement
+- App lifecycle management via launchctl/open/kill
 
-### /mobile-deeplink
-Open deeplink, wait for render, screenshot. For testing navigation flows.
+### Biometrics via Session API
 
-### /mobile-reset
-Clear app data, reinstall, relaunch. Clean slate for testing.
+`biometrics match|fail` exists in the legacy CLI but has not been ported to the v2 `do` command dispatcher. Needs:
+- iOS: `xcrun simctl io <udid> sendkey` or Notifyutil for Face ID
+- Android: fingerprint injection via emulator console
 
-### /mobile-flow
-Run a Maestro flow and capture results.
+### iOS Accessibility Tree
 
-### /mobile-compare
-Screenshot iOS + Android side by side for cross-platform comparison.
+`a11y-tree` currently only works on Android (via uiautomator dump). iOS support would require:
+- XCUITest bridge or Maestro hierarchy dump
+- Parsing the accessibility hierarchy into a usable format
 
----
+### iOS Network Simulation
 
-## Headless Tap Solution
+`network` command only works on Android. iOS would need:
+- Network Link Conditioner profile installation
+- Or custom proxy configuration via simctl
 
-Current limitation: iOS tap/swipe needs a visible window (System Events click).
+### iOS Font Size / Reduce Motion
 
-Better approach: Use `xcrun simctl io <udid> enumerate` to find the device's framebuffer, then inject touch events via `simctl` private APIs or Maestro's touch injection.
+`font-size` and `reduce-motion` only work on Android. iOS would need:
+- Writing to simulator preferences plist
+- Or Accessibility Inspector bridge
 
-Alternative: Wrap all tap operations in single-step Maestro flows:
-```yaml
-- tapOn:
-    point: "250,500"
-```
-This works fully headless since Maestro connects via UDID.
+### Real Device Parity
 
----
+Expand `--real` device support beyond install/launch/screenshot to cover all commands.
 
-## Agent README v3
+### Multi-Device Orchestration
 
-```markdown
-## Simulators — simemu
-
-### Get a device (always hidden — no windows on screen)
-SESSION=$(simemu claim ios | jq -r .session)
-
-### Use it
-simemu do $SESSION install ./app.ipa
-simemu do $SESSION launch com.app.id
-simemu do $SESSION grant-all com.app.id       # no permission dialogs
-simemu do $SESSION deeplink "app://screen"
-simemu do $SESSION screenshot -o proof.png
-simemu do $SESSION maestro flow.yaml
-simemu do $SESSION done
-
-### If something breaks
-# Error message includes exact re-claim command
-SESSION=$(simemu claim ios --version 26 | jq -r .session)
-
-### Rules
-- NEVER call xcrun simctl, adb, or emulator directly
-- NEVER worry about windows/displays — everything is hidden
-- Use Maestro for UI interaction, not raw taps
-- Sessions expire after inactivity — error tells you what to do
-```
+Coordinate commands across multiple sessions for testing cross-device features (messaging, sharing, handoff).

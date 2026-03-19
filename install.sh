@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# simemu installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bash
+# simemu installer — idempotent, safe to re-run
+# Usage: bash /Users/luke/dev/simemu/install.sh
+#    or: curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bash
 set -e
 
-REPO_URL="https://github.com/vykeai/simemu.git"
-INSTALL_DIR="$HOME/dev/simemu"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="${SIMEMU_INSTALL_DIR:-$SCRIPT_DIR}"
 GUARD_SCRIPT="$HOME/.claude/simemu-guard.py"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+PLIST_LABEL="com.simemu.monitor"
+PLIST_DIR="$HOME/Library/LaunchAgents"
+PLIST_PATH="$PLIST_DIR/$PLIST_LABEL.plist"
+SWIFT_DIR="$INSTALL_DIR/simemu/swift"
+APP_INSTALL_DIR="/Applications"
+SIMEMU_DATA_DIR="$HOME/.simemu"
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -17,7 +24,7 @@ RST='\033[0m'
 
 ok()   { echo -e "${GRN}✓${RST} $*"; }
 info() { echo -e "${BLD}→${RST} $*"; }
-warn() { echo -e "${YLW}! ${RST} $*"; }
+warn() { echo -e "${YLW}!${RST} $*"; }
 die()  { echo -e "${RED}✗${RST} $*" >&2; exit 1; }
 
 echo ""
@@ -41,25 +48,95 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }
 fi
 ok "Python $PY_VERSION"
 
-# ── 2. Clone / update repo ───────────────────────────────────────────────────
-if [ -d "$INSTALL_DIR/.git" ]; then
-    info "Updating existing install at $INSTALL_DIR..."
-    git -C "$INSTALL_DIR" pull --ff-only --quiet
-    ok "Updated"
+# ── 2. Install simemu via pip ────────────────────────────────────────────────
+info "Installing simemu package..."
+"$PYTHON" -m pip install -e "$INSTALL_DIR" --quiet 2>/dev/null || \
+    "$PYTHON" -m pip install -e "$INSTALL_DIR" --quiet --break-system-packages
+ok "simemu package installed"
+
+# ── 3. Monitor launchd agent ────────────────────────────────────────────────
+info "Installing monitor launchd agent..."
+mkdir -p "$PLIST_DIR"
+mkdir -p "$SIMEMU_DATA_DIR"
+
+# Resolve the python3 binary path for the plist
+PYTHON_ABS=$("$PYTHON" -c "import sys; print(sys.executable)")
+# Build PATH with essential directories
+PLIST_PATH_VAR="$(dirname "$PYTHON_ABS"):/usr/local/lib/android/sdk/platform-tools:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+
+# Unload existing agent if loaded (ignore errors)
+launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || \
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+
+cat > "$PLIST_PATH" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PLIST_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PYTHON_ABS</string>
+        <string>-m</string>
+        <string>simemu.monitor</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$INSTALL_DIR</string>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$SIMEMU_DATA_DIR/monitor-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>$SIMEMU_DATA_DIR/monitor-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>$INSTALL_DIR</string>
+        <key>PATH</key>
+        <string>$PLIST_PATH_VAR</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+launchctl load "$PLIST_PATH" 2>/dev/null || \
+    launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+ok "Monitor agent installed at $PLIST_PATH"
+
+# ── 4. Build and install menubar app ─────────────────────────────────────────
+if [ -d "$SWIFT_DIR" ] && command -v swift >/dev/null 2>&1; then
+    info "Building menubar app (SimEmuBar)..."
+    if (cd "$SWIFT_DIR" && make app 2>/dev/null); then
+        BUILT_APP="$SWIFT_DIR/.build/SimEmuBar.app"
+        if [ -d "$BUILT_APP" ]; then
+            # Kill running instance if any
+            pkill -f "SimEmuBar" 2>/dev/null || true
+            sleep 0.5
+            rm -rf "$APP_INSTALL_DIR/SimEmuBar.app"
+            cp -R "$BUILT_APP" "$APP_INSTALL_DIR/SimEmuBar.app"
+            ok "SimEmuBar installed to $APP_INSTALL_DIR/SimEmuBar.app"
+            # Launch it
+            open "$APP_INSTALL_DIR/SimEmuBar.app" 2>/dev/null || true
+        else
+            warn "Build succeeded but .app bundle not found at $BUILT_APP"
+        fi
+    else
+        warn "Menubar app build failed (non-fatal — swift toolchain may be missing)"
+    fi
 else
-    info "Cloning simemu to $INSTALL_DIR..."
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone --quiet "$REPO_URL" "$INSTALL_DIR"
-    ok "Cloned"
+    if [ ! -d "$SWIFT_DIR" ]; then
+        warn "Menubar app source not found at $SWIFT_DIR — skipping"
+    else
+        warn "swift not found — skipping menubar app build"
+    fi
 fi
 
-# ── 3. pip install ───────────────────────────────────────────────────────────
-info "Installing simemu command..."
-"$PYTHON" -m pip install -e "$INSTALL_DIR" --quiet
-ok "simemu installed ($(simemu --version 2>/dev/null || echo 'ok'))"
-
-# ── 4. Guard hook script ─────────────────────────────────────────────────────
-info "Installing guard hook script to $GUARD_SCRIPT..."
+# ── 5. Guard hook script ────────────────────────────────────────────────────
+info "Installing guard hook script..."
 mkdir -p "$(dirname "$GUARD_SCRIPT")"
 cat > "$GUARD_SCRIPT" << 'GUARD'
 import json, sys, re
@@ -94,17 +171,16 @@ GUARD
 chmod +x "$GUARD_SCRIPT"
 ok "Guard script written"
 
-# ── 5. Claude settings.json hook registration ─────────────────────────────────
+# ── 6. Claude settings.json hook registration ───────────────────────────────
 info "Registering guard hook in $CLAUDE_SETTINGS..."
 
-# Create settings.json if it doesn't exist
 if [ ! -f "$CLAUDE_SETTINGS" ]; then
+    mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
     echo '{}' > "$CLAUDE_SETTINGS"
 fi
 
-# Use Python to safely merge the hook into existing settings
 "$PYTHON" - << PYEOF
-import json, sys
+import json
 
 path = "$CLAUDE_SETTINGS"
 guard = "$GUARD_SCRIPT"
@@ -138,25 +214,55 @@ with open(path, "w") as f:
 PYEOF
 ok "Guard hook registered"
 
-# ── 6. Optional daemon ───────────────────────────────────────────────────────
+# ── 7. Verify installation ──────────────────────────────────────────────────
 echo ""
-read -r -p "Install idle-shutdown daemon? (shuts down idle simulators to reclaim RAM) [Y/n] " DAEMON_ANSWER
-DAEMON_ANSWER="${DAEMON_ANSWER:-Y}"
-if [[ "$DAEMON_ANSWER" =~ ^[Yy]$ ]]; then
-    info "Installing daemon..."
-    simemu daemon install
-    ok "Daemon installed (idle timeout: 20 minutes)"
+info "Verifying installation..."
+ERRORS=0
+
+# Check simemu --version
+if SIMEMU_VER=$(simemu --version 2>&1); then
+    ok "simemu --version: $SIMEMU_VER"
 else
-    info "Skipping daemon. You can install it later with: simemu daemon install"
+    warn "simemu --version failed"
+    ERRORS=$((ERRORS + 1))
+fi
+
+# Check simemu sessions
+if simemu sessions --json >/dev/null 2>&1; then
+    ok "simemu sessions: working"
+else
+    warn "simemu sessions failed (server may not be running yet)"
+fi
+
+# Check monitor agent
+if launchctl list "$PLIST_LABEL" >/dev/null 2>&1; then
+    ok "Monitor agent: loaded"
+else
+    warn "Monitor agent: not loaded (may need login/logout)"
+fi
+
+# Check menubar app
+if pgrep -fl "SimEmuBar" >/dev/null 2>&1; then
+    ok "SimEmuBar: running"
+elif [ -d "$APP_INSTALL_DIR/SimEmuBar.app" ]; then
+    ok "SimEmuBar: installed (not running)"
+else
+    info "SimEmuBar: not installed"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${GRN}${BLD}simemu is ready.${RST}"
+if [ "$ERRORS" -eq 0 ]; then
+    echo -e "${GRN}${BLD}simemu is ready.${RST}"
+else
+    echo -e "${YLW}${BLD}simemu installed with warnings.${RST}"
+fi
 echo ""
-echo "  simemu list ios"
-echo "  simemu list android"
-echo "  simemu acquire ios myapp-ios --device \"Soba iPhone16 6.1in iOS18\" --wait 120"
+echo "  simemu claim ios"
+echo "  simemu claim android"
+echo "  simemu claim macos"
+echo "  simemu sessions"
+echo "  simemu status"
 echo ""
 echo "See README.md or: simemu --help"
 echo ""

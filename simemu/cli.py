@@ -316,6 +316,238 @@ def cmd_sessions(args):
         print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {os_ver:<12} {label:<20} {idle_min}m")
 
 
+# ── status overview ──────────────────────────────────────────────────────────
+
+def cmd_status_overview(args):
+    """Show a comprehensive system status overview."""
+    import platform as _plat
+    import subprocess
+
+    output_json = getattr(args, "json", False)
+    data: dict = {}
+
+    # ── System info ──────────────────────────────────────────────────────
+    mac_ver = _plat.mac_ver()[0] or "unknown"
+    machine = _plat.machine()
+    node = _plat.node().split(".")[0]
+
+    try:
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        ram_gb = round(phys_pages * page_size / (1024 ** 3))
+    except (ValueError, OSError):
+        ram_gb = 0
+
+    # Hardware model
+    hw_model = node
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            hw_model = result.stdout.strip()
+    except FileNotFoundError:
+        pass
+
+    # Displays
+    try:
+        displays = window_mgr.list_displays()
+    except Exception:
+        displays = []
+
+    # Window mode
+    try:
+        win_mode = window_mgr.get_window_mode()
+    except Exception:
+        win_mode = "unknown"
+
+    # Memory budget
+    budget_mb = session_module.DEFAULT_MEMORY_BUDGET_MB
+    env_budget = os.environ.get("SIMEMU_MEMORY_BUDGET_MB")
+    if env_budget:
+        try:
+            budget_mb = int(env_budget)
+        except ValueError:
+            pass
+
+    data["system"] = {
+        "macos_version": mac_ver,
+        "machine": hw_model,
+        "ram_gb": ram_gb,
+        "displays": displays,
+        "window_mode": win_mode,
+        "memory_budget_mb": budget_mb,
+    }
+
+    # ── Sessions ─────────────────────────────────────────────────────────
+    all_sessions = session_module.get_all_sessions()
+    active_sessions = {sid: s for sid, s in all_sessions.items() if s.status == "active"}
+    idle_sessions = {sid: s for sid, s in all_sessions.items() if s.status == "idle"}
+    parked_sessions = {sid: s for sid, s in all_sessions.items() if s.status == "parked"}
+    live_sessions = {sid: s for sid, s in all_sessions.items()
+                     if s.status in ("active", "idle", "parked")}
+
+    # Per-platform breakdown
+    platform_breakdown: dict[str, dict[str, int]] = {}
+    for sid, s in live_sessions.items():
+        pb = platform_breakdown.setdefault(s.platform, {})
+        pb[s.form_factor] = pb.get(s.form_factor, 0) + 1
+
+    data["sessions"] = {
+        "active": len(active_sessions),
+        "idle": len(idle_sessions),
+        "parked": len(parked_sessions),
+        "by_platform": {
+            plat: {"total": sum(ffs.values()), "form_factors": ffs}
+            for plat, ffs in platform_breakdown.items()
+        },
+    }
+
+    # ── Available simulators ─────────────────────────────────────────────
+    try:
+        ios_sims = list_ios()
+        ios_booted = sum(1 for s in ios_sims if s.booted)
+    except Exception:
+        ios_sims = []
+        ios_booted = 0
+
+    try:
+        android_sims = list_android()
+        android_booted = sum(1 for s in android_sims if s.booted)
+    except Exception:
+        android_sims = []
+        android_booted = 0
+
+    data["simulators"] = {
+        "ios": {"total": len(ios_sims), "booted": ios_booted},
+        "android": {"total": len(android_sims), "booted": android_booted},
+    }
+
+    # ── Services ─────────────────────────────────────────────────────────
+    # Monitor
+    monitor_status = "unknown"
+    monitor_last_tick = None
+    monitor_log = Path.home() / ".simemu" / "monitor.log"
+    try:
+        if monitor_log.exists():
+            # Read last line to get timestamp
+            lines = monitor_log.read_text().strip().splitlines()
+            if lines:
+                last_line = lines[-1]
+                # Try to extract timestamp (ISO format at start of line)
+                for part in last_line.split():
+                    try:
+                        from datetime import datetime as _dt, timezone as _tz
+                        ts = _dt.fromisoformat(part)
+                        age = (_dt.now(_tz.utc) - ts.replace(tzinfo=_tz.utc)).total_seconds()
+                        monitor_last_tick = f"{int(age)}s ago"
+                        monitor_status = "running" if age < 120 else "stale"
+                        break
+                    except (ValueError, TypeError):
+                        continue
+        if monitor_status == "unknown":
+            # Check if the launchd job is loaded
+            result = subprocess.run(
+                ["launchctl", "list", "com.simemu.monitor"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0:
+                monitor_status = "loaded"
+            else:
+                monitor_status = "not loaded"
+    except Exception:
+        pass
+
+    # Server
+    server_status = "stopped"
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=0.5):
+            server_status = "running"
+    except OSError:
+        pass
+
+    # Menubar app
+    menubar_status = "not running"
+    menubar_pid = None
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fl", "SimEmuBar"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            menubar_pid = result.stdout.strip().split()[0]
+            menubar_status = "running"
+    except FileNotFoundError:
+        pass
+
+    data["services"] = {
+        "monitor": {"status": monitor_status, "last_tick": monitor_last_tick},
+        "server": {"status": server_status, "port": 8765},
+        "menubar": {"status": menubar_status, "pid": menubar_pid},
+    }
+
+    data["version"] = "0.3.0"
+
+    # ── Output ───────────────────────────────────────────────────────────
+    if output_json:
+        _print_json(data)
+        return
+
+    # Human-readable output
+    print(f"simemu v{data['version']}")
+    print()
+
+    # System
+    print("System:")
+    display_info = ""
+    if displays:
+        names = []
+        for d in displays:
+            n = d.get("name", "Unknown")
+            w, h = d.get("width", 0), d.get("height", 0)
+            names.append(f"{n} {w}x{h}")
+        display_info = f"  Displays: {len(displays)} ({', '.join(names)})"
+    else:
+        display_info = "  Displays: unknown"
+
+    ram_str = f"{ram_gb} GB RAM" if ram_gb else "unknown RAM"
+    print(f"  macOS {mac_ver} \u00b7 {hw_model} \u00b7 {ram_str}")
+    print(display_info)
+    print(f"  Window mode: {win_mode}")
+    print(f"  Memory budget: {budget_mb // 1024} GB")
+    print()
+
+    # Sessions
+    total_live = len(live_sessions)
+    print(f"Sessions: {len(active_sessions)} active \u00b7 {len(idle_sessions)} idle \u00b7 {len(parked_sessions)} parked")
+    for plat, info in platform_breakdown.items():
+        total = sum(info.values())
+        ff_parts = [f"{count} {ff}" for ff, count in sorted(info.items())]
+        print(f"  {plat}: {total} sessions ({', '.join(ff_parts)})")
+    if not platform_breakdown:
+        print("  (none)")
+    print()
+
+    # Simulators
+    print("Simulators available:")
+    print(f"  iOS: {len(ios_sims)} simulators ({ios_booted} booted)")
+    print(f"  Android: {len(android_sims)} AVDs ({android_booted} booted)")
+    print()
+
+    # Services
+    monitor_detail = monitor_status
+    if monitor_last_tick:
+        monitor_detail = f"{monitor_status} (last tick {monitor_last_tick})"
+    menubar_detail = menubar_status
+    if menubar_pid:
+        menubar_detail = f"{menubar_status} (pid {menubar_pid})"
+
+    print(f"Monitor: {monitor_detail}")
+    print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
+    print(f"Menubar: {menubar_detail}")
+
+
 # ── legacy command handlers (DISCONTINUED) ──────────────────────────────────
 
 def _reject_legacy(args):
@@ -1805,7 +2037,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Simulator allocation manager for multi-agent development.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--version", action="version", version="simemu 0.1.0")
+    p.add_argument("--version", action="version", version="simemu 0.3.0")
     p.add_argument("--no-autostart", action="store_true",
                    help="Do not auto-start the simemu API server for this invocation")
     sub = p.add_subparsers(dest="command", required=True)
@@ -1814,7 +2046,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # claim
     claim_p = sub.add_parser("claim", help="Claim a device session (v2 API)")
-    claim_p.add_argument("platform", choices=["ios", "android"])
+    claim_p.add_argument("platform", choices=["ios", "android", "macos"])
     claim_p.add_argument("--version", help="OS version (e.g. 26, 18, 15)")
     claim_p.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
                          default="phone", help="Device form factor (default: phone)")
@@ -1861,6 +2093,11 @@ def build_parser() -> argparse.ArgumentParser:
     sess_p.add_argument("--json", action="store_true", help="Output as JSON")
     sess_p.set_defaults(func=cmd_sessions)
 
+    # status (v2 — system overview)
+    st = sub.add_parser("status", help="Show system overview: sessions, simulators, services")
+    st.add_argument("--json", action="store_true", help="Output as JSON")
+    st.set_defaults(func=cmd_status_overview)
+
     # ── legacy commands (backward compat) ────────────────────────────────────
 
     # acquire
@@ -1882,11 +2119,6 @@ def build_parser() -> argparse.ArgumentParser:
     rel = sub.add_parser("release", help="Release a reserved simulator")
     rel.add_argument("slug")
     rel.set_defaults(func=cmd_release)
-
-    # status
-    st = sub.add_parser("status", help="Show all current reservations")
-    st.add_argument("--json", action="store_true", help="Output as JSON")
-    st.set_defaults(func=cmd_status)
 
     # list
     ls = sub.add_parser("list", help="Show available (unreserved) simulators")
@@ -2527,7 +2759,7 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
 # v2 + admin commands — everything else is legacy and rejected
 _V2_COMMANDS = {
@@ -2535,6 +2767,7 @@ _V2_COMMANDS = {
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
     "cmd_list", "cmd_list_devices",  # discovery is still useful
+    "cmd_status_overview",  # v2 system overview
 }
 
 
