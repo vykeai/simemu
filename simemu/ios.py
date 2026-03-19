@@ -592,8 +592,20 @@ def _stop_hud_overlay() -> None:
 
 
 @contextmanager
-def _interactive_overlay():
+def _interactive_overlay(action: str = "", device: str = "", session: str = "",
+                         platform: str = "ios", detail: str = ""):
     _start_hud_overlay()
+    if action:
+        _hud_send({
+            "mode": "critical",
+            "title": "SIMEMU",
+            "badge": action.upper(),
+            "action": f"{action} on {device}" if device else action,
+            "detail": detail or f"Session {session}" if session else "",
+            "task": f"simemu do {session} {action}" if session else f"simemu {action}",
+            "platform": platform,
+            "screen": device,
+        })
     try:
         yield
     finally:

@@ -405,6 +405,20 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
     platform = session.platform
     is_real = session.real_device
 
+    # Update HUD with rich context
+    if platform in ("ios", "watchos", "tvos", "visionos"):
+        ios._hud_send({
+            "mode": "critical",
+            "title": "SIMEMU",
+            "badge": command.upper(),
+            "action": f"{command} on {session.device_name}",
+            "detail": f"{session.label}" if session.label else f"Session {session_id}",
+            "task": f"simemu do {session_id} {command} {' '.join(args[:2])}".strip(),
+            "platform": platform,
+            "screen": session.device_name,
+            "scenario": command,
+        })
+
     if command == "install":
         if not args:
             # Auto-install: use the last build artifact
