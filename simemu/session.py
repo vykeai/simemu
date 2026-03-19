@@ -47,6 +47,7 @@ class ClaimSpec:
     os_version: str | None = None        # requested version or None (any)
     real_device: bool = False
     label: str = ""
+    visible: bool = False                # if True, keep window visible (default: headless)
 
     def to_claim_command(self) -> str:
         """Reconstruct the CLI command to re-claim with identical parameters."""
@@ -57,6 +58,8 @@ class ClaimSpec:
             parts += ["--form-factor", self.form_factor]
         if self.real_device:
             parts.append("--real")
+        if self.visible:
+            parts.append("--visible")
         if self.label:
             parts += ["--label", f"'{self.label}'"]
         return " ".join(parts)
@@ -216,8 +219,8 @@ def claim(spec: ClaimSpec) -> Session:
         else:
             android.boot(sim.sim_id, headless=True)
 
-    # Apply window management (hide, move to space, corner, etc.)
-    if not sim.real_device:
+    # Apply window management — headless by default unless --visible
+    if not sim.real_device and not spec.visible:
         try:
             window_mgr.apply_window_mode(sim.sim_id, sim.platform, sim.device_name)
         except Exception:
