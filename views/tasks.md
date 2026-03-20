@@ -27,23 +27,29 @@
 | T-009 | Add per-tile context menu: focus, hide, park, release | done | low | — | — |
 | T-010 | Read actual memory from monitor instead of estimate | done | low | — | — |
 | T-011 | Remove dead legacy command handler code from cli.py | active | medium | — | — |
-| T-012 | Add simemu do help command — list all 50+ commands with descriptions | todo | high | — | — |
-| T-013 | Rewrite test_cli.py for v2 commands (claim, do, sessions, config) | todo | high | — | — |
-| T-014 | Session recovery after reboot — detect stale sessions on monitor startup | todo | high | — | — |
-| T-015 | Command history — log every do command to session record | todo | high | — | — |
-| T-016 | Update AGENT_README.md with all new commands and --show/--hide | todo | high | — | — |
-| T-017 | Update README.md — remove legacy sections, add complete v2 docs | todo | high | — | — |
-| T-018 | Add simemu do help with categorized command reference | todo | high | — | — |
-| T-019 | Test server v2 endpoints — /v2/claim, /v2/do, /v2/sessions | todo | medium | — | — |
-| T-020 | Add macOS platform support — claim macos, screenshot, launch | todo | medium | — | — |
-| T-021 | Auto-cleanup expired sessions from sessions.json | todo | medium | — | — |
-| T-022 | Document and test the build command | todo | medium | — | — |
-| T-023 | Create install.sh that sets up monitor + menubar + guard hook | todo | medium | — | — |
-| T-024 | Add simemu status — system health overview | todo | medium | — | — |
-| T-025 | Add --max-size to do screenshot for auto-resize | todo | high | — | — |
-| T-026 | Add progress feedback to claim — print booting status to stderr | todo | medium | — | — |
-| T-027 | Promote a11y-tap as primary interaction method in docs | todo | medium | — | — |
-| T-028 | Add monitor health watchdog — detect if cron stopped | todo | low | — | — |
-| T-029 | Fix android get_serial None checks in all new commands | todo | high | — | — |
-| T-030 | Verify crash_log and clear_data function signatures | todo | high | — | — |
-| T-031 | Add session claim rate limiting — max 5 active per agent | todo | low | — | — |
+| T-012 | Add simemu do help command — list all 50+ commands with descriptions | done | high | — | — |
+| T-013 | Rewrite test_cli.py for v2 commands (claim, do, sessions, config) | done | high | — | — |
+| T-014 | Session recovery after reboot — detect stale sessions on monitor startup | done | high | — | — |
+| T-015 | Command history — log every do command to session record | done | high | — | — |
+| T-016 | Update AGENT_README.md with all new commands and --show/--hide | done | high | — | — |
+| T-017 | Update README.md — remove legacy sections, add complete v2 docs | done | high | — | — |
+| T-018 | Add simemu do help with categorized command reference | done | high | — | — |
+| T-019 | Test server v2 endpoints — /v2/claim, /v2/do, /v2/sessions | done | medium | — | — |
+| T-020 | Add macOS platform support — claim macos, screenshot, launch | done | medium | — | — |
+| T-021 | Auto-cleanup expired sessions from sessions.json | done | medium | — | — |
+| T-022 | Document and test the build command | done | medium | — | — |
+| T-023 | Create install.sh that sets up monitor + menubar + guard hook | done | medium | — | — |
+| T-024 | Add simemu status — system health overview | done | medium | — | — |
+| T-025 | Add --max-size to do screenshot for auto-resize | done | high | — | — |
+| T-026 | Add progress feedback to claim — print booting status to stderr | done | medium | — | — |
+| T-027 | Promote a11y-tap as primary interaction method in docs | done | medium | — | — |
+| T-028 | Add monitor health watchdog — detect if cron stopped | done | low | — | — |
+| T-029 | Fix android get_serial None checks in all new commands | done | high | — | — |
+| T-030 | Verify crash_log and clear_data function signatures | done | high | — | — |
+| T-031 | Add session claim rate limiting — max 5 active per agent | done | low | — | — |
+| T-032 | Menubar app macOS 26 compatibility — fix SwiftUI rendering issues on macOS 26 | todo | high | — | — |
+| T-033 | Desktop lease coordination — simemu present command for canonical window placement and focus management | todo | high | — | — |
+| T-034 | Shared-desktop reliability — brief focus acquisition, user app restoration after interactions | todo | high | — | — |
+| T-035 | Permanent device reservations per product — sitches-ios, fitkind-ios slug-based allocation | todo | medium | — | — |
+| T-036 | Scouty integration — desktop lease coordination with scouty for multi-tool focus management | todo | medium | — | — |
+| T-037 | pip publish simemu package and install.sh improvements | todo | medium | — | — |
