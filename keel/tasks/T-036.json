@@ -1,20 +1,18 @@
 {
   "id": "T-036",
-  "title": "Scouty integration — desktop lease coordination with scouty for multi-tool focus management",
-  "description": "",
+  "title": "Integrate Scouty desktop lease API for multi-tool focus management",
+  "description": "Integrate simemu with scouty's desktop lease APIs so focus-sensitive tools can coordinate cleanly on the same machine.\n\nAcceptance criteria:\n- simemu can request, activate, update, and release scouty leases reliably\n- lease metadata carries enough context for user-app restoration and operator debugging\n- integration is verified against scouty's current API rather than a hypothetical future browser tool\n- the workflow is documented as a shared-desktop contract for onlytools and vykean",
   "product": null,
   "lane": null,
-  "wave": null,
-  "space": null,
+  "wave": "wave-1",
+  "space": "space-core",
   "status": "todo",
   "priority": "medium",
   "platform": "all",
   "assignee": null,
-  "depends_on": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "notes": [],
   "cloudy_run": null,
   "statusHistory": [
     {
@@ -24,13 +22,19 @@
   ],
   "attachments": [],
   "stage": null,
-  "run_status": null,
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:46.605Z",
-  "updatedAt": "2026-03-20T19:14:46.605Z",
+  "updatedAt": "2026-03-24T22:03:06.241Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
-  "cloudy": null
+  "cloudy": null,
+  "dependsOn": [
+    "T-033",
+    "T-034"
+  ],
+  "context": [],
+  "runStatus": null,
+  "acceptanceCriteria": []
 }
