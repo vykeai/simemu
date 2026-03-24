@@ -214,7 +214,40 @@ with open(path, "w") as f:
 PYEOF
 ok "Guard hook registered"
 
-# ── 7. Verify installation ──────────────────────────────────────────────────
+# ── 7. Wrapper repair ──────────────────────────────────────────────────────
+info "Checking simemu wrapper binary..."
+SIMEMU_BIN=$(command -v simemu 2>/dev/null || true)
+if [ -z "$SIMEMU_BIN" ]; then
+    warn "simemu not on PATH after pip install"
+    # Try to find the pip-installed script and add a symlink
+    PIP_BIN_DIR=$("$PYTHON" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
+    if [ -n "$PIP_BIN_DIR" ] && [ -f "$PIP_BIN_DIR/simemu" ]; then
+        LINK_DIR="$HOME/bin"
+        mkdir -p "$LINK_DIR"
+        ln -sf "$PIP_BIN_DIR/simemu" "$LINK_DIR/simemu"
+        ok "Symlinked $PIP_BIN_DIR/simemu → $LINK_DIR/simemu"
+        warn "Add $LINK_DIR to your PATH if not already: export PATH=\"\$HOME/bin:\$PATH\""
+        SIMEMU_BIN="$LINK_DIR/simemu"
+    else
+        warn "Could not locate pip-installed simemu binary"
+    fi
+elif [ -L "$SIMEMU_BIN" ]; then
+    # Check if symlink target exists
+    if [ ! -e "$SIMEMU_BIN" ]; then
+        warn "simemu symlink is broken: $SIMEMU_BIN → $(readlink "$SIMEMU_BIN")"
+        PIP_BIN_DIR=$("$PYTHON" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
+        if [ -n "$PIP_BIN_DIR" ] && [ -f "$PIP_BIN_DIR/simemu" ]; then
+            ln -sf "$PIP_BIN_DIR/simemu" "$SIMEMU_BIN"
+            ok "Repaired broken symlink: $SIMEMU_BIN → $PIP_BIN_DIR/simemu"
+        fi
+    else
+        ok "simemu wrapper: $SIMEMU_BIN"
+    fi
+else
+    ok "simemu wrapper: $SIMEMU_BIN"
+fi
+
+# ── 8. Verify installation ──────────────────────────────────────────────────
 echo ""
 info "Verifying installation..."
 ERRORS=0

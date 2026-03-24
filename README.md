@@ -34,9 +34,11 @@ curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bas
 
 The installer:
 1. Checks Python 3.11+ is installed
-2. Clones the repo to `~/dev/simemu`
-3. Installs the `simemu` command via `pip install -e .`
-4. Installs the guard hook into `~/.claude/settings.json`
+2. Installs `simemu` via `pip install -e .`
+3. Sets up the monitor launchd agent (lifecycle management)
+4. Builds and installs the SimEmuBar menu bar app
+5. Installs the guard hook into `~/.claude/settings.json`
+6. Repairs broken symlinks and validates the binary path
 
 ### Manual installation
 
