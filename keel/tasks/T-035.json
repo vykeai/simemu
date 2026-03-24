@@ -33,13 +33,19 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:44.690Z",
-  "updatedAt": "2026-03-24T22:28:54.073Z",
+  "updatedAt": "2026-03-24T22:28:54.365Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
   "cloudy": null,
   "dependsOn": [],
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-24T22:28:54.365Z",
+      "by": "human",
+      "text": "Implemented permanent reservations. Config stored in ~/.simemu/config.json. find_best_device() prefers reserved devices. CLI: simemu config reserve set/remove/list. 5 new tests. 328 total pass."
+    }
+  ],
   "runStatus": null,
   "acceptanceCriteria": [
     "stable product-owned reservations can be configured",
