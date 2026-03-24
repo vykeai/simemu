@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-017",
+  "title": "Android launch/url verification in server and CLI surfaces — reject proof when another app is foreground",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-2",
+  "space": "space-core",
+  "status": "todo",
+  "priority": "high",
+  "platform": "android",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-24T22:00:41.109Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-24T22:00:41.108Z",
+  "updatedAt": "2026-03-24T22:00:41.108Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
