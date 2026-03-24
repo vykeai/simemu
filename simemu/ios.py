@@ -822,51 +822,62 @@ def _restore_frontmost_app():
 
 
 @contextmanager
-def _with_brief_focus(udid: str, action: str = ""):
+def _with_brief_focus(udid: str, action: str = "", session_id: str = ""):
     """Unified focus acquisition + restoration for all interactions.
 
-    1. Records frontmost app
-    2. Raises simulator window
-    3. Yields for the interaction
-    4. Restores the previously frontmost app
-    5. Emits structured diagnostics on failure
+    1. Requests a scouty desktop lease (if scouty is available)
+    2. Records frontmost app
+    3. Raises simulator window
+    4. Yields for the interaction
+    5. Restores the previously frontmost app
+    6. Releases the desktop lease
+    7. Emits structured diagnostics on failure
 
     All interactive operations (tap, swipe, key, etc.) should use this.
     """
+    from .desktop_lease import DesktopLease
+
     previous_app = _frontmost_app_name()
     device_name = _get_device_name(udid)
     restored = False
-    try:
-        _raise_sim_window(device_name)
-        yield
-    except Exception as e:
-        # Emit diagnostics for failed interactions
-        diag = {
-            "action": action,
-            "device": device_name,
-            "udid": udid,
-            "previous_app": previous_app,
-            "error": str(e),
-        }
-        print(json.dumps({"diagnostic": "focus_interaction_failed", **diag}), file=sys.stderr, flush=True)
-        raise
-    finally:
-        if previous_app and previous_app != "Simulator":
-            try:
-                _activate_app(previous_app)
-                restored = True
-            except Exception:
-                pass
-            if not restored:
-                print(
-                    json.dumps({
-                        "diagnostic": "focus_restore_failed",
-                        "previous_app": previous_app,
-                        "device": device_name,
-                    }),
-                    file=sys.stderr,
-                    flush=True,
-                )
+
+    with DesktopLease(
+        action=action,
+        device_name=device_name,
+        platform="ios",
+        session_id=session_id,
+        reason=f"{action} on {device_name}",
+    ):
+        try:
+            _raise_sim_window(device_name)
+            yield
+        except Exception as e:
+            diag = {
+                "action": action,
+                "device": device_name,
+                "udid": udid,
+                "previous_app": previous_app,
+                "error": str(e),
+            }
+            print(json.dumps({"diagnostic": "focus_interaction_failed", **diag}), file=sys.stderr, flush=True)
+            raise
+        finally:
+            if previous_app and previous_app != "Simulator":
+                try:
+                    _activate_app(previous_app)
+                    restored = True
+                except Exception:
+                    pass
+                if not restored:
+                    print(
+                        json.dumps({
+                            "diagnostic": "focus_restore_failed",
+                            "previous_app": previous_app,
+                            "device": device_name,
+                        }),
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
 
 def _open_sim_window(udid: str) -> None:
