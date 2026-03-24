@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-24T22:39:11.745Z",
+      "by": "human",
+      "text": "Deep-link handoff now diagnoses failure mode: app-behind-sheet vs SpringBoard/never-launched. Aggressive retry (6 attempts) when app is running but sheet blocks foreground. Structured diagnostics in error message. 2 new tests. 337 total pass."
+    }
+  ],
   "acceptanceCriteria": [
     "deep-link handoff retries or bypasses OS confirmation when possible",
     "sticky confirmation sheets fail with diagnostics instead of false success",
@@ -42,7 +48,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.607Z",
-  "updatedAt": "2026-03-24T22:39:11.360Z",
+  "updatedAt": "2026-03-24T22:39:11.745Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
