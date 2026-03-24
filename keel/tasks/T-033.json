@@ -6,7 +6,7 @@
   "lane": null,
   "wave": null,
   "space": null,
-  "status": "todo",
+  "status": "done",
   "priority": "high",
   "platform": "all",
   "assignee": null,
@@ -18,6 +18,10 @@
     {
       "status": "todo",
       "ts": "2026-03-20T19:14:41.959Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-24T21:53:03.202Z"
     }
   ],
   "attachments": [],
@@ -25,7 +29,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:41.959Z",
-  "updatedAt": "2026-03-24T21:53:02.951Z",
+  "updatedAt": "2026-03-24T21:53:03.202Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
