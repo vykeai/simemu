@@ -106,7 +106,7 @@ def _serial(avd_name: str) -> str:
     if serial is None:
         raise RuntimeError(
             f"Android emulator '{avd_name}' is not running. "
-            f"Run: simemu boot <slug>"
+            f"Wake it through the session API: simemu do <session> boot"
         )
     return serial
 
@@ -123,7 +123,7 @@ def _ensure_booted(avd_name: str) -> None:
     if get_android_serial(avd_name, retries=6, delay=0.5) is None:
         raise RuntimeError(
             f"Android emulator '{avd_name}' is not running.\n"
-            f"Boot it explicitly first: simemu boot <slug>"
+            f"Wake it through the session API first: simemu do <session> boot"
         )
 
 
@@ -306,15 +306,25 @@ def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
         raise RuntimeError(f"APK not found: {apk_path}")
     if path.suffix != ".apk":
         raise RuntimeError(f"Android requires a .apk file, got: {path.suffix}")
+    def _run_install(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"Install timed out after {timeout}s. The emulator may be unresponsive. "
+                f"Try: simemu do <session> reboot"
+            )
+
     cmd = ["adb", "-s", serial, "install", "-r", str(path)]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"Install timed out after {timeout}s. The emulator may be unresponsive. "
-            f"Try: simemu reboot <slug>"
+    result = _run_install(cmd)
+    install_failed = result.returncode != 0 or "Failure" in result.stdout
+    if install_failed and "Performing Streamed Install" in (result.stdout or ""):
+        result = _run_install(
+            ["adb", "-s", serial, "install", "--no-streaming", "-r", str(path)]
         )
-    if result.returncode != 0 or "Failure" in result.stdout:
+        install_failed = result.returncode != 0 or "Failure" in result.stdout
+
+    if install_failed:
         detail = result.stdout.strip() or result.stderr.strip()
         raise RuntimeError(f"Install failed: {detail}")
 
@@ -337,7 +347,7 @@ def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
 
     raise RuntimeError(
         f"Install reported success but package manager never exposed '{package_name}'. "
-        f"Try: simemu reboot <slug>"
+        f"Try: simemu do <session> reboot"
     )
 
 
@@ -507,7 +517,20 @@ def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = 
 
 def open_url(avd_name: str, url: str) -> None:
     _ensure_booted(avd_name)
-    _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url)
+    _adb(
+        avd_name,
+        "shell",
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.VIEW",
+        "-c",
+        "android.intent.category.DEFAULT",
+        "-c",
+        "android.intent.category.BROWSABLE",
+        "-d",
+        url,
+    )
 
 
 def push(avd_name: str, local_path: str, remote_path: str) -> None:
