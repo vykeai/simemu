@@ -29,13 +29,19 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:41.131Z",
-  "updatedAt": "2026-03-24T21:40:07.584Z",
+  "updatedAt": "2026-03-24T21:53:02.351Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
   "cloudy": null,
   "dependsOn": [],
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-24T21:53:02.351Z",
+      "by": "human",
+      "text": "Updated the Swift menubar app for macOS 26 with dynamic popover sizing and outside-click dismissal monitors, rebuilt with swift build + make app, and captured fresh desktop screenshots under ~/Desktop/screenshots/simemu/."
+    }
+  ],
   "runStatus": null,
   "acceptanceCriteria": []
 }
