@@ -848,8 +848,7 @@ def _with_brief_focus(udid: str, action: str = ""):
             "previous_app": previous_app,
             "error": str(e),
         }
-        import sys as _sys
-        print(json.dumps({"diagnostic": "focus_interaction_failed", **diag}), file=_sys.stderr, flush=True)
+        print(json.dumps({"diagnostic": "focus_interaction_failed", **diag}), file=sys.stderr, flush=True)
         raise
     finally:
         if previous_app and previous_app != "Simulator":
@@ -859,14 +858,13 @@ def _with_brief_focus(udid: str, action: str = ""):
             except Exception:
                 pass
             if not restored:
-                import sys as _sys
                 print(
                     json.dumps({
                         "diagnostic": "focus_restore_failed",
                         "previous_app": previous_app,
                         "device": device_name,
                     }),
-                    file=_sys.stderr,
+                    file=sys.stderr,
                     flush=True,
                 )
 
@@ -1565,11 +1563,11 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
     device_name = _get_device_name(udid)
     device_w, device_h = _get_device_logical_size(device_name)
 
-    if abs(duration - 1.0) > 0.05:
-        _long_press_quartz(udid, x, y, duration)
-        return
-
     with _with_brief_focus(udid, action="long-press"):
+        if abs(duration - 1.0) > 0.05:
+            _long_press_quartz(udid, x, y, duration)
+            return
+
         try:
             _run_maestro_flow(
                 udid,
