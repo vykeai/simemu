@@ -64,8 +64,25 @@ def boot(udid: str, minimize: bool = False) -> None:
     state.check_maintenance()
     if _is_booted(udid):
         return
-    _simctl("boot", udid)
-    _simctl("bootstatus", udid, "-b")
+    try:
+        _simctl("boot", udid)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode(errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (exc.stdout or b"").decode(errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        msg = f"{stderr}\n{stdout}".lower()
+        if "current state: booted" not in msg and "unable to boot device in current state: booted" not in msg:
+            raise
+    try:
+        _simctl("bootstatus", udid, "-b")
+    except subprocess.CalledProcessError:
+        # bootstatus can fail or stall even when the simulator is already usable.
+        # Fall back to a short poll of simctl list instead of treating this as fatal.
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if _is_booted(udid):
+                return
+            time.sleep(0.5)
+        raise
 
 
 def _ensure_booted(udid: str) -> None:
@@ -75,7 +92,7 @@ def _ensure_booted(udid: str) -> None:
     if not _is_booted(udid):
         raise RuntimeError(
             f"iOS simulator '{udid}' is not booted.\n"
-            f"Boot it explicitly first: simemu boot <slug>"
+            f"Wake it through the session API first: simemu do <session> boot"
         )
 
 
@@ -101,7 +118,7 @@ def install(udid: str, app_path: str, timeout: int = 120) -> None:
         except subprocess.TimeoutExpired:
             raise RuntimeError(
                 f"Install timed out after {timeout}s. The simulator may be unresponsive. "
-                f"Try: simemu reboot <slug>"
+                f"Try: simemu do <session> reboot"
             )
         if result.returncode != 0:
             raise RuntimeError(f"Install failed: {result.stderr.strip() or result.stdout.strip()}")
@@ -137,8 +154,9 @@ def _extract_ipa(ipa_path: Path) -> str:
 
 def launch(udid: str, bundle_id: str, args: list[str] | None = None) -> None:
     _ensure_booted(udid)
-    cmd_args = ["launch", udid, bundle_id] + (args or [])
+    cmd_args = ["launch", "--terminate-running-process", udid, bundle_id] + (args or [])
     _simctl(*cmd_args)
+    _wait_for_app_running(udid, bundle_id)
 
 
 def terminate(udid: str, bundle_id: str) -> None:
@@ -230,6 +248,177 @@ def log_stream(udid: str, predicate: Optional[str] = None, level: str = "debug")
 def open_url(udid: str, url: str) -> None:
     _ensure_booted(udid)
     _simctl("openurl", udid, url)
+
+
+def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> bool:
+    """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff."""
+    _ensure_booted(udid)
+    accepted = False
+    for _ in range(attempts):
+        result = subprocess.run(
+            ["xcrun", "simctl", "ui", udid, "alert", "accept"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            accepted = True
+        if _click_open_app_alert_button(udid):
+            accepted = True
+        time.sleep(delay)
+    return accepted
+
+
+def click_system_alert_button(udid: str, labels: list[str], attempts: int = 3, delay: float = 0.35) -> bool:
+    """Best-effort click for generic iOS system-alert buttons by visible label."""
+    _ensure_booted(udid)
+    clicked = False
+    for _ in range(attempts):
+        if _click_alert_button(udid, labels):
+            clicked = True
+        time.sleep(delay)
+    return clicked
+
+
+def wait_for_foreground_app(
+    udid: str,
+    bundle_id: str,
+    timeout: float = 5.0,
+    delay: float = 0.25,
+) -> bool:
+    """Wait for a specific non-system bundle to become foregrounded."""
+    _ensure_booted(udid)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if foreground_app(udid) == bundle_id:
+            return True
+        time.sleep(delay)
+    return False
+
+
+def complete_open_url_handoff(
+    udid: str,
+    bundle_id: str,
+    attempts: int = 5,
+    accept_delay: float = 0.5,
+    foreground_timeout: float = 1.25,
+) -> bool:
+    """After openurl, clear the confirmation prompt and wait for app foreground."""
+    _ensure_booted(udid)
+    for _ in range(attempts):
+        # The target app can already be foregrounded while the system handoff
+        # confirmation sheet still sits on top. Give iOS a brief chance to
+        # surface the destination app, then actively clear the prompt.
+        wait_for_foreground_app(udid, bundle_id, timeout=0.35, delay=0.15)
+        accept_open_app_alert(udid, attempts=1, delay=accept_delay)
+        if wait_for_foreground_app(udid, bundle_id, timeout=foreground_timeout, delay=0.2):
+            return True
+    return foreground_app(udid) == bundle_id
+
+
+def _click_open_app_alert_button(udid: str) -> bool:
+    """Fallback for sticky iOS deeplink confirmation sheets inside Simulator."""
+    return _click_alert_button(udid, ["Open", "Continue", "Allow", "OK"])
+
+
+def _click_alert_button(udid: str, labels: list[str]) -> bool:
+    """Best-effort accessibility click for a visible iOS Simulator alert button."""
+    device_name = _get_device_name(udid).replace('"', '\\"')
+    label_literals = ", ".join(f'"{label}"' for label in labels)
+    script = f'''
+tell application "Simulator" to activate
+tell application "System Events"
+    tell process "Simulator"
+        try
+            set targetWindow to first window whose name contains "{device_name}"
+        on error
+            return ""
+        end try
+        set wantedLabels to {{{label_literals}}}
+        repeat with wantedLabel in wantedLabels
+            try
+                click (first button of targetWindow whose name is wantedLabel)
+                return "clicked"
+            end try
+            try
+                set allElements to entire contents of targetWindow
+                repeat with e in allElements
+                    try
+                        if role of e is "AXButton" and name of e is wantedLabel then
+                            perform action "AXPress" of e
+                            return "clicked"
+                        end if
+                    end try
+                end repeat
+            end try
+        end repeat
+    end tell
+end tell
+return ""
+'''
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "clicked"
+
+
+def _launchctl_bundle_ids(udid: str) -> list[str]:
+    """Return UIKit bundle IDs currently known to launchd for the simulator."""
+    _ensure_booted(udid)
+    result = subprocess.run(
+        ["xcrun", "simctl", "spawn", udid, "launchctl", "list"],
+        capture_output=True, text=True, check=False,
+    )
+    bundle_ids: list[str] = []
+    for line in result.stdout.splitlines():
+        if "UIKitApplication:" not in line:
+            continue
+        parts = line.split("UIKitApplication:")
+        if len(parts) < 2:
+            continue
+        bid = parts[1].split("[")[0].strip()
+        if bid:
+            bundle_ids.append(bid)
+    return bundle_ids
+
+
+def is_app_running(udid: str, bundle_id: str) -> bool:
+    """Return whether the target bundle currently has a UIKit process."""
+    return bundle_id in _launchctl_bundle_ids(udid)
+
+
+def _wait_for_app_running(udid: str, bundle_id: str, timeout: float = 5.0, delay: float = 0.25) -> None:
+    """Wait briefly for a launched bundle to appear in launchctl."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_app_running(udid, bundle_id):
+            return
+        time.sleep(delay)
+    raise RuntimeError(
+        f"Launch reported success but '{bundle_id}' never became a live iOS process. "
+        "The simulator may still be showing SpringBoard or an OS handoff surface."
+    )
+
+
+def foreground_app(udid: str) -> Optional[str]:
+    """Return the most plausible non-system foreground bundle ID on iOS.
+
+    simctl does not expose a reliable "frontmost app" query. We use launchctl to
+    find active UIKit bundles, but we only trust non-system bundles here. If the
+    simulator is sitting on SpringBoard or another Apple surface, return None
+    rather than inventing a misleading foreground app such as Calendar.
+    """
+    bundle_ids = _launchctl_bundle_ids(udid)
+    if not bundle_ids:
+        return None
+    non_system = [
+        bid for bid in bundle_ids
+        if not bid.startswith("com.apple.")
+    ]
+    return non_system[-1] if non_system else None
 
 
 def erase(udid: str) -> None:
@@ -630,6 +819,56 @@ def _restore_frontmost_app():
     finally:
         if previous and previous != "Simulator":
             _activate_app(previous)
+
+
+@contextmanager
+def _with_brief_focus(udid: str, action: str = ""):
+    """Unified focus acquisition + restoration for all interactions.
+
+    1. Records frontmost app
+    2. Raises simulator window
+    3. Yields for the interaction
+    4. Restores the previously frontmost app
+    5. Emits structured diagnostics on failure
+
+    All interactive operations (tap, swipe, key, etc.) should use this.
+    """
+    previous_app = _frontmost_app_name()
+    device_name = _get_device_name(udid)
+    restored = False
+    try:
+        _raise_sim_window(device_name)
+        yield
+    except Exception as e:
+        # Emit diagnostics for failed interactions
+        diag = {
+            "action": action,
+            "device": device_name,
+            "udid": udid,
+            "previous_app": previous_app,
+            "error": str(e),
+        }
+        import sys as _sys
+        print(json.dumps({"diagnostic": "focus_interaction_failed", **diag}), file=_sys.stderr, flush=True)
+        raise
+    finally:
+        if previous_app and previous_app != "Simulator":
+            try:
+                _activate_app(previous_app)
+                restored = True
+            except Exception:
+                pass
+            if not restored:
+                import sys as _sys
+                print(
+                    json.dumps({
+                        "diagnostic": "focus_restore_failed",
+                        "previous_app": previous_app,
+                        "device": device_name,
+                    }),
+                    file=_sys.stderr,
+                    flush=True,
+                )
 
 
 def _open_sim_window(udid: str) -> None:
@@ -1265,20 +1504,20 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
     _ensure_booted(udid)
     device_name = _get_device_name(udid)
     device_w, device_h = _get_device_logical_size(device_name)
-    _raise_sim_window(device_name)
 
-    try:
-        _run_maestro_flow(
-            udid,
-            "\n".join([
-                "- swipe:",
-                f'    start: "{_pct_string(x1, y1, device_w, device_h)}"',
-                f'    end: "{_pct_string(x2, y2, device_w, device_h)}"',
-                f"    duration: {int(duration * 1000)}",
-            ]),
-        )
-    except Exception:
-        _swipe_quartz(udid, x1, y1, x2, y2, duration)
+    with _with_brief_focus(udid, action="swipe"):
+        try:
+            _run_maestro_flow(
+                udid,
+                "\n".join([
+                    "- swipe:",
+                    f'    start: "{_pct_string(x1, y1, device_w, device_h)}"',
+                    f'    end: "{_pct_string(x2, y2, device_w, device_h)}"',
+                    f"    duration: {int(duration * 1000)}",
+                ]),
+            )
+        except Exception:
+            _swipe_quartz(udid, x1, y1, x2, y2, duration)
 
 
 def _long_press_quartz(udid: str, x: int, y: int, duration: float) -> None:
@@ -1325,22 +1564,22 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
     _ensure_booted(udid)
     device_name = _get_device_name(udid)
     device_w, device_h = _get_device_logical_size(device_name)
-    _raise_sim_window(device_name)
 
     if abs(duration - 1.0) > 0.05:
         _long_press_quartz(udid, x, y, duration)
         return
 
-    try:
-        _run_maestro_flow(
-            udid,
-            "\n".join([
-                "- longPressOn:",
-                f'    point: "{_pct_string(x, y, device_w, device_h)}"',
-            ]),
-        )
-    except Exception:
-        _long_press_quartz(udid, x, y, duration)
+    with _with_brief_focus(udid, action="long-press"):
+        try:
+            _run_maestro_flow(
+                udid,
+                "\n".join([
+                    "- longPressOn:",
+                    f'    point: "{_pct_string(x, y, device_w, device_h)}"',
+                ]),
+            )
+        except Exception:
+            _long_press_quartz(udid, x, y, duration)
 
 
 def rotate(udid: str, orientation: str) -> None:
@@ -1348,24 +1587,25 @@ def rotate(udid: str, orientation: str) -> None:
 
     'portrait' and 'landscape' check the current state and only rotate if needed.
     'left' / 'right' always send one rotation in that direction.
-    May bring Simulator to the front while sending the shortcut.
+    Briefly acquires focus and restores the previously frontmost app.
     """
     _ensure_booted(udid)
     orientation = orientation.lower()
 
-    if orientation in ("left", "right"):
-        vk = _VK_LEFT if orientation == "left" else _VK_RIGHT
-        _post_key(vk, ("command down",))
-        return
+    with _with_brief_focus(udid, action="rotate"):
+        if orientation in ("left", "right"):
+            vk = _VK_LEFT if orientation == "left" else _VK_RIGHT
+            _post_key(vk, ("command down",))
+            return
 
-    if orientation not in ("portrait", "landscape"):
-        raise RuntimeError(f"orientation must be portrait, landscape, left, or right — got '{orientation}'")
+        if orientation not in ("portrait", "landscape"):
+            raise RuntimeError(f"orientation must be portrait, landscape, left, or right — got '{orientation}'")
 
-    # Check current orientation from window dimensions and rotate once if needed
-    px, py, sw, sh = _get_sim_bounds(udid)
-    current = "landscape" if sw > sh else "portrait"
-    if current != orientation:
-        _post_key(_VK_RIGHT, ("command down",))
+        # Check current orientation from window dimensions and rotate once if needed
+        px, py, sw, sh = _get_sim_bounds(udid)
+        current = "landscape" if sw > sh else "portrait"
+        if current != orientation:
+            _post_key(_VK_RIGHT, ("command down",))
 
 
 # Named key → (virtual key code, modifier names, description)
@@ -1386,7 +1626,7 @@ def key(udid: str, key_name: str) -> None:
     """Press a named hardware key on the simulator.
 
     Supported: home, lock, siri, screenshot, enter
-    May bring Simulator to the front while sending the shortcut.
+    Briefly acquires focus and restores the previously frontmost app.
     """
     _ensure_booted(udid)
     k = key_name.lower()
@@ -1395,7 +1635,8 @@ def key(udid: str, key_name: str) -> None:
             f"Unknown iOS key '{key_name}'. Supported: {', '.join(_IOS_KEYS)}"
         )
     vk, modifiers, _ = _IOS_KEYS[k]
-    _post_key(vk, modifiers)
+    with _with_brief_focus(udid, action="key"):
+        _post_key(vk, modifiers)
 
 
 def status_bar(udid: str, time_str: Optional[str] = None, battery: Optional[int] = None,
