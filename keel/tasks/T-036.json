@@ -33,7 +33,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:46.605Z",
-  "updatedAt": "2026-03-24T22:36:33.961Z",
+  "updatedAt": "2026-03-24T22:36:34.455Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
@@ -42,7 +42,13 @@
     "T-033",
     "T-034"
   ],
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-24T22:36:34.455Z",
+      "by": "human",
+      "text": "Created simemu/desktop_lease.py — standalone module for scouty lease coordination. Works with v1 and v2 sessions. Integrated into _with_brief_focus for all iOS interactions. 8 tests. Graceful degradation when scouty offline. 336 total tests pass."
+    }
+  ],
   "runStatus": null,
   "acceptanceCriteria": []
 }
