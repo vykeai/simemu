@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-013",
+  "title": "Installer hardening — repair PATH, wrapper, monitor, and menu bar installation",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-3",
+  "space": "space-core",
+  "status": "todo",
+  "priority": "medium",
+  "platform": "all",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-24T22:00:40.492Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-24T22:00:40.491Z",
+  "updatedAt": "2026-03-24T22:00:40.491Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
