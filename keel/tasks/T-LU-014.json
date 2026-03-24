@@ -1,26 +1,35 @@
 {
   "id": "T-LU-014",
   "title": "iOS URL handoff hardening — avoid sticky Open in app confirmation sheets and emit diagnostics",
-  "description": "",
+  "description": "Harden iOS deep-link handoff so simemu either avoids sticky OS confirmation sheets or captures clear diagnostics when they block proof.\n\nAcceptance criteria:\n- deep-link flows retry or bypass the handoff prompt when possible\n- sticky confirmation sheets produce explicit diagnostics and not false-success screenshots\n- foreground verification distinguishes app-under-sheet from SpringBoard failures\n- regressions cover the stuck confirmation path",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "high",
   "platform": "ios",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "deep-link handoff retries or bypasses OS confirmation when possible",
+    "sticky confirmation sheets fail with diagnostics instead of false success",
+    "foreground verification distinguishes app-under-sheet from SpringBoard",
+    "tests cover the stuck confirmation path"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:40.608Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-24T22:37:06.306Z"
     }
   ],
   "attachments": [],
@@ -29,7 +38,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.607Z",
-  "updatedAt": "2026-03-24T22:00:40.607Z",
+  "updatedAt": "2026-03-24T22:37:06.304Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
