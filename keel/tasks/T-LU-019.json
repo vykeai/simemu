@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-019",
+  "title": "Session provenance — persist launched app, deep link, artifact path, and proof metadata per command",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-2",
+  "space": "space-core",
+  "status": "todo",
+  "priority": "medium",
+  "platform": "all",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-24T22:00:41.433Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-24T22:00:41.432Z",
+  "updatedAt": "2026-03-24T22:00:41.432Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
