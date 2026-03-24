@@ -410,9 +410,31 @@ def release(session_id: str) -> Session:
     """Immediately release a session and free the device."""
     session = require_session(session_id)
 
+    if not session.real_device:
+        try:
+            if session.platform in ("ios", "watchos", "tvos", "visionos"):
+                ios.erase(session.sim_id)
+            else:
+                android.erase(session.sim_id)
+        except Exception:
+            try:
+                if session.platform in ("ios", "watchos", "tvos", "visionos"):
+                    ios.shutdown(session.sim_id)
+                else:
+                    android.shutdown(session.sim_id)
+            except Exception:
+                pass
+
+        try:
+            window_mgr.apply_window_mode(session.sim_id, session.platform, session.device_name)
+        except Exception:
+            pass
+
     with _locked_sessions() as (data, save):
         if session_id in data["sessions"]:
             data["sessions"][session_id]["status"] = "released"
+            data["sessions"][session_id]["visible"] = False
+            data["sessions"][session_id].pop("last_build_artifact", None)
             save(data)
 
     session.status = "released"
@@ -453,6 +475,7 @@ _COMMAND_HELP: dict[str, str] = {
     "uninstall":        "Remove an installed app",
     "reset-app":        "Terminate + uninstall + reinstall + launch",
     "clear-data":       "Clear app data (Android) or hint to reinstall (iOS)",
+    "clean-retry":      "Clear Android app data and relaunch from a clean state",
     "grant-all":        "Grant ALL permissions preemptively",
     "app-info":         "Show app version, data size, container path",
     "app-container":    "Get the app's data container path",
@@ -648,7 +671,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
     if command == "help":
         categories = {
             "Session": ["boot", "show", "hide", "renew", "done", "reboot"],
-            "App": ["install", "launch", "terminate", "uninstall", "reset-app", "clear-data",
+            "App": ["install", "launch", "terminate", "uninstall", "reset-app", "clear-data", "clean-retry",
                      "grant-all", "app-info", "app-container", "is-running", "foreground-app"],
             "UI": ["a11y-tap", "tap", "swipe", "long-press", "scroll", "back", "home",
                    "key", "input", "type-submit", "shake"],
@@ -1118,6 +1141,23 @@ end tell'''
             android.clear_data(sim_id, bundle)
         return {"status": "cleared", "app": bundle}
 
+    elif command == "clean-retry":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> clean-retry <bundle-or-package>")
+        bundle = args[0]
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError(
+                "'clean-retry' is Android only. On iOS use "
+                "`simemu do <session> reset-app <bundle> <app-path>`."
+            )
+        android.clear_data(sim_id, bundle)
+        android.launch(sim_id, bundle, [])
+        return {
+            "status": "clean_retried",
+            "app": bundle,
+            "hint": "App data cleared and relaunched from a clean state.",
+        }
+
     elif command == "clipboard-set":
         if not args:
             raise RuntimeError("Usage: simemu do <session> clipboard-set <text>")
@@ -1217,7 +1257,6 @@ end tell'''
         return {"status": "captured", "waited": seconds, "path": output}
 
     elif command == "deeplink-proof":
-        import subprocess as _sp
         import time as _time
         if not args:
             raise RuntimeError("Usage: simemu do <session> deeplink-proof <url> [-o output]")
@@ -1230,6 +1269,7 @@ end tell'''
         # Open the URL
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
+            ios.accept_open_app_alert(sim_id)
         else:
             android.open_url(sim_id, url)
         # Wait for render
@@ -1266,22 +1306,10 @@ end tell'''
         return {"status": "reset", "app": bundle, "reinstalled_from": app_path}
 
     elif command == "foreground-app":
-        import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            result = _sp.run(
-                ["xcrun", "simctl", "spawn", sim_id, "launchctl", "list"],
-                capture_output=True, text=True, check=False,
-            )
-            foreground = None
-            for line in result.stdout.splitlines():
-                if "UIKitApplication" in line:
-                    # Extract bundle ID from UIKitApplication:com.example.app[…]
-                    parts = line.split("UIKitApplication:")
-                    if len(parts) > 1:
-                        bid = parts[1].split("[")[0].strip()
-                        foreground = bid
-            return {"status": "ok", "foreground_app": foreground}
+            return {"status": "ok", "foreground_app": ios.foreground_app(sim_id)}
         else:
+            import subprocess as _sp
             serial = android.get_serial(sim_id)
             result = _sp.run(
                 ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
@@ -1392,13 +1420,26 @@ end tell'''
             return {"status": "ok", "app": bundle, "info": result.stdout.strip()}
         else:
             serial = android.get_serial(sim_id)
+            pm_path = _sp.run(
+                ["adb", "-s", serial, "shell", "pm", "path", bundle],
+                capture_output=True, text=True, check=False,
+            )
+            resolved_launcher = _sp.run(
+                ["adb", "-s", serial, "shell", "cmd", "package", "resolve-activity", "--brief", bundle],
+                capture_output=True, text=True, check=False,
+            )
             result = _sp.run(
                 ["adb", "-s", serial, "shell", "dumpsys", "package", bundle],
                 capture_output=True, text=True, check=False,
             )
-            # Truncate to first 200 lines to avoid massive output
+            sections = []
+            pm_path_text = pm_path.stdout.strip() or pm_path.stderr.strip() or "(no output)"
+            sections.append(f"pm path:\n{pm_path_text}")
+            resolved_text = resolved_launcher.stdout.strip() or resolved_launcher.stderr.strip() or "(no output)"
+            sections.append(f"resolve-activity --brief:\n{resolved_text}")
             lines = result.stdout.strip().splitlines()[:200]
-            return {"status": "ok", "app": bundle, "info": "\n".join(lines)}
+            sections.append("dumpsys package:\n" + "\n".join(lines))
+            return {"status": "ok", "app": bundle, "info": "\n\n".join(sections)}
 
     elif command == "a11y-tree":
         import subprocess as _sp
@@ -1690,7 +1731,7 @@ end tell'''
             f"Unknown command '{command}'. Available: boot, show, hide, install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
-            f"dismiss-alert, accept-alert, deny-alert, grant-all, clear-data, "
+            f"dismiss-alert, accept-alert, deny-alert, grant-all, clear-data, clean-retry, "
             f"clipboard-set, clipboard-get, shake, status-bar, build, env, "
             f"auto-dismiss, wait-for-render, deeplink-proof, reset-app, "
             f"foreground-app, is-running, network, keychain-reset, icloud-sync, "
