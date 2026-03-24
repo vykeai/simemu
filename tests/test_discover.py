@@ -102,7 +102,6 @@ class TestListIos(unittest.TestCase):
 
 
 EMULATOR_LIST = b"Pixel_7_API_35\nNexus_5X\n"
-EMULATOR_LIST_MIXED = b"Biscuit_MedPhone_6.3in_API35\nPixel8_API34\n"
 
 ADB_DEVICES_OUTPUT = "List of devices attached\nemulator-5554\tdevice\n"
 
@@ -136,15 +135,6 @@ class TestListAndroid(unittest.TestCase):
         self.assertEqual(api_sim.runtime, "API 35")
         nexus = next(s for s in result if s.sim_id == "Nexus_5X")
         self.assertEqual(nexus.runtime, "Android")
-
-    @patch("simemu.discover._get_booted_avds", return_value=set())
-    @patch("simemu.discover.subprocess.check_output", return_value=EMULATOR_LIST_MIXED)
-    def test_extracts_api_from_compact_name(self, mock_co: MagicMock, mock_booted: MagicMock) -> None:
-        result = list_android()
-        biscuit = next(s for s in result if s.sim_id == "Biscuit_MedPhone_6.3in_API35")
-        pixel = next(s for s in result if s.sim_id == "Pixel8_API34")
-        self.assertEqual(biscuit.runtime, "API 35")
-        self.assertEqual(pixel.runtime, "API 34")
 
     @patch("simemu.genymotion.is_available", return_value=False)
     @patch("simemu.discover._get_booted_avds", return_value=set())
@@ -188,79 +178,6 @@ class TestGetAndroidSerial(unittest.TestCase):
     def test_returns_none_when_adb_missing(self, mock_co: MagicMock) -> None:
         serial = get_android_serial("Pixel_7_API_35")
         self.assertIsNone(serial)
-
-
-class TestFindBestDeviceAndroidVersion(unittest.TestCase):
-
-    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
-    @patch("simemu.discover.list_android")
-    def test_prefers_matching_android_api(self, mock_list_android: MagicMock, mock_claimed: MagicMock) -> None:
-        mock_list_android.return_value = [
-            SimulatorInfo(
-                sim_id="Biscuit_MedPhone_6.3in_API35",
-                platform="android",
-                device_name="Biscuit MedPhone 6.3in API35",
-                booted=False,
-                runtime="API 35",
-            ),
-            SimulatorInfo(
-                sim_id="Pixel8_API34",
-                platform="android",
-                device_name="Pixel8 API34",
-                booted=False,
-                runtime="API 34",
-            ),
-        ]
-        best = find_best_device(SimpleNamespace(
-            platform="android",
-            form_factor="phone",
-            os_version="34",
-            real_device=False,
-        ))
-        self.assertEqual(best.sim_id, "Pixel8_API34")
-
-    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
-    @patch("simemu.discover.list_watchos")
-    @patch("simemu.discover.list_android")
-    def test_android_watch_claim_stays_on_android(
-        self,
-        mock_list_android: MagicMock,
-        mock_list_watchos: MagicMock,
-        mock_claimed: MagicMock,
-    ) -> None:
-        mock_list_android.return_value = [
-            SimulatorInfo(
-                sim_id="Wear_OS_Small_Round_API_35",
-                platform="android",
-                device_name="Wear OS Small Round API 35",
-                booted=False,
-                runtime="API 35",
-            ),
-        ]
-        mock_list_watchos.return_value = [
-            SimulatorInfo(
-                sim_id="WATCH-UDID",
-                platform="watchos",
-                device_name="Apple Watch Ultra 2",
-                booted=False,
-                runtime="watchOS 26.4",
-            ),
-        ]
-
-        best = find_best_device(
-            SimpleNamespace(
-                platform="android",
-                form_factor="watch",
-                os_version="35",
-                real_device=False,
-                device_selector=None,
-            )
-        )
-
-        self.assertEqual(best.platform, "android")
-        self.assertEqual(best.sim_id, "Wear_OS_Small_Round_API_35")
-        mock_list_android.assert_called_once()
-        mock_list_watchos.assert_not_called()
 
 class TestFindSimulator(unittest.TestCase):
 
@@ -390,7 +307,6 @@ class TestReservations(unittest.TestCase):
     def test_find_best_device_prefers_reserved(self, mock_list_ios, mock_claimed) -> None:
         import os
         os.environ["SIMEMU_AGENT"] = "sitches"
-        self.addCleanup(os.environ.pop, "SIMEMU_AGENT", None)
         self._write_config({
             "reservations": {
                 "sitches": {"ios": {"device": "iPhone 17 Pro Max"}}
@@ -405,61 +321,7 @@ class TestReservations(unittest.TestCase):
         spec = ClaimSpec(platform="ios")
         result = find_best_device(spec)
         self.assertEqual(result.device_name, "iPhone 17 Pro Max")
-
-
-    def test_get_reservation_pool_format(self) -> None:
-        self._write_config({
-            "reservation_pools": {
-                "sitches": {
-                    "ios-phone": ["iPhone 17 Pro Max", "iPhone 17 Pro"],
-                    "android-phone": ["Pixel 9 Pro"],
-                }
-            }
-        })
-        result = get_reservation("sitches", "ios", "phone")
-        self.assertIsNotNone(result)
-        self.assertEqual(result["devices"], ["iPhone 17 Pro Max", "iPhone 17 Pro"])
-
-    def test_get_reservation_pool_wrong_form_factor(self) -> None:
-        self._write_config({
-            "reservation_pools": {
-                "sitches": {"ios-phone": ["iPhone 17 Pro"]}
-            }
-        })
-        result = get_reservation("sitches", "ios", "tablet")
-        self.assertIsNone(result)
-
-    def test_pool_takes_precedence_over_simple(self) -> None:
-        self._write_config({
-            "reservations": {"sitches": {"ios": {"device": "iPhone 16"}}},
-            "reservation_pools": {"sitches": {"ios-phone": ["iPhone 17 Pro Max"]}},
-        })
-        result = get_reservation("sitches", "ios", "phone")
-        # Pool format should win
-        self.assertIn("devices", result)
-        self.assertEqual(result["devices"], ["iPhone 17 Pro Max"])
-
-    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
-    @patch("simemu.discover.list_ios")
-    def test_find_best_device_prefers_pool_reservation(self, mock_list_ios, mock_claimed) -> None:
-        import os
-        os.environ["SIMEMU_AGENT"] = "fitkind"
-        self.addCleanup(os.environ.pop, "SIMEMU_AGENT", None)
-        self._write_config({
-            "reservation_pools": {
-                "fitkind": {"ios-phone": ["iPhone 17 Pro", "iPhone 17"]}
-            }
-        })
-        mock_list_ios.return_value = [
-            SimulatorInfo("A", "ios", "iPhone Air", False, "iOS 26.1"),
-            SimulatorInfo("B", "ios", "iPhone 17 Pro", False, "iOS 26.1"),
-            SimulatorInfo("C", "ios", "iPhone 17", False, "iOS 26.1"),
-        ]
-        from simemu.session import ClaimSpec
-        spec = ClaimSpec(platform="ios")
-        result = find_best_device(spec)
-        # Should pick one of the pool devices, not iPhone Air
-        self.assertIn(result.device_name, ["iPhone 17 Pro", "iPhone 17"])
+        os.environ.pop("SIMEMU_AGENT", None)
 
 
 if __name__ == "__main__":

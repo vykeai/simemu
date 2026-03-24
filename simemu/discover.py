@@ -4,13 +4,9 @@ and connected real devices, filtering out any already claimed in simemu sessions
 """
 
 import json
-import os
-import re
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
-
-from .device_aliases import find_alias_for_device
 
 
 @dataclass
@@ -22,7 +18,6 @@ class SimulatorInfo:
     runtime: str      # e.g. "iOS 26.2" or "API 35"
     real_device: bool = False   # True for physical devices, False for simulators/emulators
     genymotion: bool = False    # True for Genymotion VMs (preferred over standard AVDs)
-    label: str = ""
 
 
 def _list_apple_simulators(
@@ -106,9 +101,9 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
             if not avd or avd in allocated_ids:
                 continue
             runtime = "Android"
-            api_match = re.search(r"API[_-]?(\d+)", avd, re.IGNORECASE)
-            if api_match:
-                runtime = f"API {api_match.group(1)}"
+            if "API_" in avd:
+                api = avd.split("API_")[-1].split("_")[0]
+                runtime = f"API {api}"
             results.append(SimulatorInfo(
                 sim_id=avd,
                 platform="android",
@@ -134,15 +129,13 @@ def list_real_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
     for dev in device.list_ios_devices():
         if dev.device_id in allocated_ids:
             continue
-        display_name = f"{dev.alias} · {dev.device_name}" if dev.alias else dev.device_name
         results.append(SimulatorInfo(
             sim_id=dev.device_id,
             platform="ios",
-            device_name=f"{display_name} (real)",
+            device_name=f"{dev.device_name} (real)",
             booted=dev.connected,
             runtime=f"iOS {dev.os_version}" if dev.os_version else "iOS",
             real_device=True,
-            label=dev.alias,
         ))
     return results
 
@@ -155,33 +148,15 @@ def list_real_android(allocated_ids: set[str] | None = None) -> list[SimulatorIn
     for dev in device.list_android_devices():
         if dev.device_id in allocated_ids:
             continue
-        display_name = f"{dev.alias} · {dev.device_name}" if dev.alias else dev.device_name
         results.append(SimulatorInfo(
             sim_id=dev.device_id,
             platform="android",
-            device_name=f"{display_name} (real)",
+            device_name=f"{dev.device_name} (real)",
             booted=dev.connected,
             runtime=f"Android {dev.os_version}" if dev.os_version else "Android",
             real_device=True,
-            label=dev.alias,
         ))
     return results
-
-
-def _matches_device_selector(sim: SimulatorInfo, selector: str) -> bool:
-    """Return True when a candidate matches an explicit device selector."""
-    wanted = selector.strip().lower()
-    if not wanted:
-        return True
-    if sim.sim_id.lower() == wanted:
-        return True
-    if sim.device_name.lower() == wanted or wanted in sim.device_name.lower():
-        return True
-    if sim.real_device:
-        alias = find_alias_for_device(sim.platform, sim.sim_id)
-        if alias and alias.lower() == wanted:
-            return True
-    return False
 
 
 def _get_booted_avds() -> set[str]:
@@ -263,12 +238,6 @@ def _classify_form_factor(sim: SimulatorInfo) -> str | None:
     """Infer a coarse form factor from a discovered device name."""
     name = sim.device_name.lower()
 
-    if any(hint in name for hint in ("apple tv", "appletv")):
-        return "tv"
-    if any(hint in name for hint in ("apple watch", "watch", "wear os", "wear")):
-        return "watch"
-    if any(hint in name for hint in ("apple vision", "vision pro")):
-        return "vision"
     if any(hint in name for hint in ("ipad", "tablet")):
         return "tablet"
     if any(hint in name for hint in ("iphone", "pixel", "galaxy", "phone", "nexus")):
@@ -276,23 +245,19 @@ def _classify_form_factor(sim: SimulatorInfo) -> str | None:
     return None
 
 
-def get_reservation(agent: str, platform: str, form_factor: str = "phone") -> dict | None:
-    """Check if an agent has a reserved device for a platform + form factor.
+def get_reservation(agent: str, platform: str) -> dict | None:
+    """Check if an agent has a reserved device for a platform.
 
-    Supports two config formats in ~/.simemu/config.json:
-
-    Simple (legacy):
-    {"reservations": {"sitches": {"ios": {"device": "iPhone 17 Pro Max"}}}}
-
-    Pool (new):
-    {"reservation_pools": {
-      "sitches": {
-        "ios-phone": ["iPhone 17 Pro Max", "iPhone 17 Pro"],
-        "android-phone": ["Pixel 9 Pro"]
+    Reads from ~/.simemu/config.json under "reservations":
+    {
+      "reservations": {
+        "sitches": {
+          "ios": {"device": "iPhone 17 Pro Max"},
+          "android": {"device": "Pixel 9 Pro"}
+        }
       }
-    }}
-
-    Returns {"device": "name"} or {"devices": ["name1", "name2"]} or None.
+    }
+    Returns the reservation dict (with "device" key) or None.
     """
     from . import state as _state
     config_path = _state.config_dir() / "config.json"
@@ -302,26 +267,16 @@ def get_reservation(agent: str, platform: str, form_factor: str = "phone") -> di
         config = json.loads(config_path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-
-    # Check pool format first (more specific)
-    pools = config.get("reservation_pools", {})
-    agent_pool = pools.get(agent, {})
-    pool_key = f"{platform}-{form_factor}"
-    if pool_key in agent_pool:
-        devices = agent_pool[pool_key]
-        if isinstance(devices, list) and devices:
-            return {"devices": devices}
-
-    # Fall back to simple format
     reservations = config.get("reservations", {})
+    # Check by agent name (e.g. "sitches", "fitkind")
     agent_res = reservations.get(agent, {})
     return agent_res.get(platform)
 
 
-def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
-    """Return ranked devices matching a ClaimSpec, best candidate first.
+def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
+    """Find the best available device matching a ClaimSpec.
 
-    Scoring: exact version match > booted > non-Genymotion.
+    Scoring: booted > shutdown, exact version match > close, less memory > more.
     Maps form_factor to platform and device name filters.
     Respects permanent reservations: if the agent has a reserved device, prefer it.
     """
@@ -329,16 +284,14 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
 
     allocated_ids = _get_claimed_sim_ids()
 
-    # Only Apple claims fan out by form factor into sibling simulator platforms.
-    _APPLE_FORM_FACTOR_PLATFORM = {
+    # Map form_factor to platform and device filter
+    _FORM_FACTOR_PLATFORM = {
         "watch": "watchos",
         "tv": "tvos",
         "vision": "visionos",
     }
 
-    platform = spec.platform
-    if spec.platform in {"ios", "watchos", "tvos", "visionos"}:
-        platform = _APPLE_FORM_FACTOR_PLATFORM.get(spec.form_factor, spec.platform)
+    platform = _FORM_FACTOR_PLATFORM.get(spec.form_factor, spec.platform)
 
     if spec.real_device:
         if platform == "ios":
@@ -370,7 +323,7 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
             f"Re-try later or create a new one."
         )
 
-    if spec.form_factor in {"phone", "tablet", "watch", "tv", "vision"}:
+    if spec.form_factor in {"phone", "tablet"}:
         filtered = [
             sim for sim in candidates
             if _classify_form_factor(sim) == spec.form_factor
@@ -393,36 +346,17 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
             )
         candidates = filtered
 
-    selector = getattr(spec, "device_selector", None)
-    if selector:
-        filtered = [sim for sim in candidates if _matches_device_selector(sim, selector)]
-        if not filtered:
-            available = ", ".join(sim.device_name for sim in candidates)
-            raise NoSimulatorAvailable(
-                f"No available {platform} {kind} matching '{selector}'. "
-                f"Available unclaimed devices: {available}"
-            )
-        candidates = filtered
-
-    # Check for permanent reservation (simple or pool)
-    agent = os.environ.get("SIMEMU_AGENT", "")
-    reservation = get_reservation(agent, platform, spec.form_factor) if agent else None
-    reserved_device_names: list[str] = []
-    if reservation:
-        if "devices" in reservation:
-            reserved_device_names = reservation["devices"]
-        elif "device" in reservation:
-            reserved_device_names = [reservation["device"]]
+    # Check for permanent reservation
+    import os as _os
+    agent = _os.environ.get("SIMEMU_AGENT", "")
+    reservation = get_reservation(agent, platform) if agent else None
+    reserved_device_name = reservation.get("device", "") if reservation else ""
 
     # Score candidates
     def _score(sim: SimulatorInfo) -> tuple:
         """Lower score = better match. Returns tuple for sorting."""
         # Permanent reservation match is highest priority
-        reserved_score = 1
-        for rname in reserved_device_names:
-            if rname in sim.device_name:
-                reserved_score = 0
-                break
+        reserved_score = 0 if (reserved_device_name and reserved_device_name in sim.device_name) else 1
 
         # Prefer booted devices (saves boot time)
         booted_score = 0 if sim.booted else 1
@@ -442,12 +376,7 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
         return (reserved_score, version_score, booted_score, geny_score, sim.device_name)
 
     candidates.sort(key=_score)
-    return candidates
-
-
-def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
-    """Find the best available device matching a ClaimSpec."""
-    return find_matching_devices(spec)[0]
+    return candidates[0]
 
 
 def find_simulator(
