@@ -478,6 +478,8 @@ _COMMAND_HELP: dict[str, str] = {
     "clean-retry":      "Clear Android app data and relaunch from a clean state",
     "grant-all":        "Grant ALL permissions preemptively",
     "app-info":         "Show app version, data size, container path",
+    "verify-install":   "Verify Android package registration after install",
+    "repair-install":   "Cold-repair Android package-manager state and reinstall",
     "app-container":    "Get the app's data container path",
     "is-running":       "Check if an app is running (returns bool + pid)",
     "foreground-app":   "Return which app is currently in foreground",
@@ -672,7 +674,8 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         categories = {
             "Session": ["boot", "show", "hide", "renew", "done", "reboot"],
             "App": ["install", "launch", "terminate", "uninstall", "reset-app", "clear-data", "clean-retry",
-                     "grant-all", "app-info", "app-container", "is-running", "foreground-app"],
+                     "grant-all", "app-info", "verify-install", "repair-install", "app-container",
+                     "is-running", "foreground-app"],
             "UI": ["a11y-tap", "tap", "swipe", "long-press", "scroll", "back", "home",
                    "key", "input", "type-submit", "shake"],
             "Capture": ["screenshot", "deeplink-proof", "wait-for-render", "video-start",
@@ -802,6 +805,10 @@ end tell'''
             ios.launch(sim_id, bundle, extra)
         else:
             android.launch(sim_id, bundle, extra)
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
+                save(data)
         return {"status": "launched", "app": bundle}
 
     elif command == "tap":
@@ -903,7 +910,10 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
         else:
-            android.open_url(sim_id, url)
+            expected_package = None
+            with _locked_sessions() as (data, save):
+                expected_package = data["sessions"].get(session_id, {}).get("last_app")
+            android.open_url(sim_id, url, expected_package=expected_package)
         return {"status": "opened", "url": url}
 
     elif command == "terminate":
@@ -1152,6 +1162,10 @@ end tell'''
             )
         android.clear_data(sim_id, bundle)
         android.launch(sim_id, bundle, [])
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
+                save(data)
         return {
             "status": "clean_retried",
             "app": bundle,
@@ -1303,29 +1317,17 @@ end tell'''
             android.uninstall(sim_id, bundle)
             android.install(sim_id, app_path)
             android.launch(sim_id, bundle, [])
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
+                save(data)
         return {"status": "reset", "app": bundle, "reinstalled_from": app_path}
 
     elif command == "foreground-app":
         if platform in ("ios", "watchos", "tvos", "visionos"):
             return {"status": "ok", "foreground_app": ios.foreground_app(sim_id)}
         else:
-            import subprocess as _sp
-            serial = android.get_serial(sim_id)
-            result = _sp.run(
-                ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
-                capture_output=True, text=True, check=False,
-            )
-            foreground = None
-            for line in result.stdout.splitlines():
-                if "mResumedActivity" in line:
-                    # Extract package/activity from the line
-                    parts = line.split()
-                    for part in parts:
-                        if "/" in part and "." in part:
-                            foreground = part.split("/")[0]
-                            break
-                    break
-            return {"status": "ok", "foreground_app": foreground}
+            return {"status": "ok", "foreground_app": android.foreground_app(sim_id)}
 
     elif command == "is-running":
         if not args:
@@ -1419,27 +1421,31 @@ end tell'''
             )
             return {"status": "ok", "app": bundle, "info": result.stdout.strip()}
         else:
-            serial = android.get_serial(sim_id)
-            pm_path = _sp.run(
-                ["adb", "-s", serial, "shell", "pm", "path", bundle],
-                capture_output=True, text=True, check=False,
-            )
-            resolved_launcher = _sp.run(
-                ["adb", "-s", serial, "shell", "cmd", "package", "resolve-activity", "--brief", bundle],
-                capture_output=True, text=True, check=False,
-            )
-            result = _sp.run(
-                ["adb", "-s", serial, "shell", "dumpsys", "package", bundle],
-                capture_output=True, text=True, check=False,
-            )
-            sections = []
-            pm_path_text = pm_path.stdout.strip() or pm_path.stderr.strip() or "(no output)"
-            sections.append(f"pm path:\n{pm_path_text}")
-            resolved_text = resolved_launcher.stdout.strip() or resolved_launcher.stderr.strip() or "(no output)"
-            sections.append(f"resolve-activity --brief:\n{resolved_text}")
-            lines = result.stdout.strip().splitlines()[:200]
-            sections.append("dumpsys package:\n" + "\n".join(lines))
-            return {"status": "ok", "app": bundle, "info": "\n\n".join(sections)}
+            try:
+                probe = android.verify_install(sim_id, bundle, timeout=15)
+            except RuntimeError:
+                serial = android.wait_until_ready(sim_id)
+                probe = android._probe_package_state(serial, bundle)
+            return {"status": "ok", "app": bundle, "info": probe.format_report()}
+
+    elif command == "verify-install":
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> verify-install <package>")
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("'verify-install' is Android only.")
+        bundle = args[0]
+        probe = android.verify_install(sim_id, bundle)
+        return {"status": "verified", "app": bundle, "info": probe.format_report()}
+
+    elif command == "repair-install":
+        if len(args) < 2:
+            raise RuntimeError("Usage: simemu do <session> repair-install <package> <apk-path>")
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("'repair-install' is Android only.")
+        bundle = args[0]
+        app_path = args[1]
+        probe = android.repair_install(sim_id, bundle, app_path)
+        return {"status": "repaired", "app": bundle, "reinstalled_from": app_path, "info": probe.format_report()}
 
     elif command == "a11y-tree":
         import subprocess as _sp

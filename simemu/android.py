@@ -9,6 +9,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -231,6 +232,45 @@ def _adb(avd_name: str, *args, capture: bool = False, check: bool = True) -> Opt
         return None
 
 
+def foreground_app(avd_name: str) -> Optional[str]:
+    """Return the currently resumed Android package, if detectable."""
+    serial = wait_until_ready(avd_name)
+    result = subprocess.run(
+        ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    for line in result.stdout.splitlines():
+        if "mResumedActivity" not in line and "ResumedActivity" not in line and "topResumedActivity" not in line:
+            continue
+        for part in line.split():
+            if "/" in part and "." in part:
+                return part.split("/")[0]
+    return None
+
+
+def _wait_for_foreground_package(
+    avd_name: str,
+    package: str,
+    timeout: float = 5.0,
+    delay: float = 0.25,
+) -> None:
+    """Wait briefly until the expected package is resumed."""
+    deadline = time.time() + timeout
+    last_foreground = None
+    while time.time() < deadline:
+        last_foreground = foreground_app(avd_name)
+        if last_foreground == package:
+            return
+        time.sleep(delay)
+    raise RuntimeError(
+        f"Android command did not foreground '{package}'. "
+        f"Foreground app was {last_foreground or 'unknown'} instead."
+    )
+
+
 def _apk_application_id(apk_path: str) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -246,6 +286,154 @@ def _apk_application_id(apk_path: str) -> Optional[str]:
         return None
     package_name = result.stdout.strip()
     return package_name or None
+
+
+@dataclass
+class PackageVerification:
+    package: str
+    pm_path: str
+    resolve_activity: str
+    dumpsys: str
+    pm_path_ok: bool
+    resolve_activity_ok: bool
+    dumpsys_ok: bool
+
+    @property
+    def ok(self) -> bool:
+        return self.pm_path_ok and self.resolve_activity_ok and self.dumpsys_ok
+
+    def format_report(self) -> str:
+        sections = [
+            f"pm path:\n{self.pm_path or '(no output)'}",
+            f"resolve-activity --brief:\n{self.resolve_activity or '(no output)'}",
+            f"dumpsys package:\n{self.dumpsys or '(no output)'}",
+        ]
+        return "\n\n".join(sections)
+
+
+def verify_install(avd_name: str, package: str, timeout: int = 30) -> PackageVerification:
+    """Verify Android package-manager state is coherent after install."""
+    serial = wait_until_ready(avd_name)
+    deadline = time.time() + timeout
+    last_probe: PackageVerification | None = None
+
+    while time.time() < deadline:
+        last_probe = _probe_package_state(serial, package)
+        if last_probe.ok:
+            return last_probe
+        time.sleep(1)
+
+    if last_probe is None:
+        last_probe = _probe_package_state(serial, package)
+    if last_probe.ok:
+        return last_probe
+    raise RuntimeError(_format_install_verification_error(last_probe))
+
+
+def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 120) -> PackageVerification:
+    """Attempt escalating recovery for a package that installed into a bad PM state."""
+    timeout = max(timeout, 120)
+    serial = wait_until_ready(avd_name, timeout=max(timeout, 180))
+    subprocess.run(["adb", "-s", serial, "uninstall", package], capture_output=True, text=True, check=False)
+
+    recovery_errors: list[str] = []
+    recovery_steps = [
+        ("reboot", _repair_reboot_cycle),
+        ("cold-boot", _repair_cold_boot_cycle),
+        ("wipe-data", _repair_wipe_data_cycle),
+    ]
+
+    for label, action in recovery_steps:
+        try:
+            action(avd_name)
+            install(avd_name, apk_path, timeout=timeout, repair_on_failure=False)
+            return verify_install(avd_name, package)
+        except RuntimeError as exc:
+            recovery_errors.append(f"{label}: {exc}")
+
+    joined = "\n".join(recovery_errors) or "unknown repair failure"
+    raise RuntimeError(
+        f"repair-install could not recover coherent package-manager state for '{package}'.\n"
+        f"Recovery attempts:\n{joined}"
+    )
+
+
+def _repair_reboot_cycle(avd_name: str) -> None:
+    reboot(avd_name)
+
+
+def _repair_cold_boot_cycle(avd_name: str) -> None:
+    shutdown(avd_name)
+    time.sleep(3)
+    boot(avd_name, headless=True)
+    wait_until_ready(avd_name, timeout=180)
+
+
+def _repair_wipe_data_cycle(avd_name: str) -> None:
+    erase(avd_name)
+    time.sleep(5)
+    boot(avd_name, headless=True)
+    wait_until_ready(avd_name, timeout=240)
+
+
+def _probe_package_state(serial: str, package: str) -> PackageVerification:
+    pm_path = subprocess.run(
+        ["adb", "-s", serial, "shell", "pm", "path", package],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    resolved_launcher = subprocess.run(
+        [
+            "adb", "-s", serial, "shell", "cmd", "package", "resolve-activity",
+            "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", package,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    dumpsys = subprocess.run(
+        ["adb", "-s", serial, "shell", "dumpsys", "package", package],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    pm_path_text = pm_path.stdout.strip() or pm_path.stderr.strip()
+    resolved_text = resolved_launcher.stdout.strip() or resolved_launcher.stderr.strip()
+    dumpsys_text = dumpsys.stdout.strip() or dumpsys.stderr.strip()
+    dumpsys_lines = "\n".join(dumpsys_text.splitlines()[:200])
+
+    return PackageVerification(
+        package=package,
+        pm_path=pm_path_text,
+        resolve_activity=resolved_text,
+        dumpsys=dumpsys_lines,
+        pm_path_ok=pm_path.returncode == 0 and "package:" in pm_path_text,
+        resolve_activity_ok="/" in resolved_text and "No activity found" not in resolved_text,
+        dumpsys_ok=_dumpsys_has_real_package(dumpsys_lines, package),
+    )
+
+
+def _dumpsys_has_real_package(text: str, package: str) -> bool:
+    if not text or "pkg=null" in text:
+        return False
+    return (
+        f"Package [{package}]" in text or
+        f"pkg=Package{{" in text and package in text or
+        f"PackageSetting{{" in text and package in text
+    )
+
+
+def _format_install_verification_error(probe: PackageVerification) -> str:
+    return (
+        f"Android install verification failed for '{probe.package}': emulator package-manager state is inconsistent.\n"
+        f"{probe.format_report()}\n\n"
+        "Try: simemu do <session> repair-install <package> <apk-path>"
+    )
 
 
 def boot(avd_name: str, headless: bool = False) -> None:
@@ -299,7 +487,7 @@ def shutdown(avd_name: str) -> None:
     _adb(avd_name, "emu", "kill", check=False)
 
 
-def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
+def install(avd_name: str, apk_path: str, timeout: int = 120, repair_on_failure: bool = True) -> None:
     serial = wait_until_ready(avd_name, timeout=max(timeout, 180))
     path = Path(apk_path)
     if not path.exists():
@@ -318,7 +506,11 @@ def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
     cmd = ["adb", "-s", serial, "install", "-r", str(path)]
     result = _run_install(cmd)
     install_failed = result.returncode != 0 or "Failure" in result.stdout
-    if install_failed and "Performing Streamed Install" in (result.stdout or ""):
+    install_output = result.stdout or ""
+    if install_failed and (
+        "Performing Streamed Install" in install_output or
+        "Performing Push Install" in install_output
+    ):
         result = _run_install(
             ["adb", "-s", serial, "install", "--no-streaming", "-r", str(path)]
         )
@@ -332,23 +524,13 @@ def install(avd_name: str, apk_path: str, timeout: int = 120) -> None:
     if not package_name:
         return
 
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        pm_path = subprocess.run(
-            ["adb", "-s", serial, "shell", "pm", "path", package_name],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        if pm_path.returncode == 0 and "package:" in pm_path.stdout:
-            return
-        time.sleep(1)
-
-    raise RuntimeError(
-        f"Install reported success but package manager never exposed '{package_name}'. "
-        f"Try: simemu do <session> reboot"
-    )
+    try:
+        verify_install(avd_name, package_name)
+        return
+    except RuntimeError:
+        if not repair_on_failure:
+            raise
+        repair_install(avd_name, package_name, str(path), timeout=timeout)
 
 
 def list_apps(avd_name: str) -> list[dict]:
@@ -373,38 +555,36 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
       - "com.example.app"           → resolves main launcher activity
       - "com.example.app/.MainActivity"  → explicit activity
     """
+    expected_package = package_activity.split("/", 1)[0]
     if "/" not in package_activity:
+        try:
+            verify_install(avd_name, expected_package, timeout=15)
+        except RuntimeError:
+            # Fall through to the existing launcher resolution path so the caller
+            # still gets the real foreground or package-manager error.
+            pass
         # Use am start with launcher category — monkey logs noisy "Error type 3"
         # on apps with non-standard launcher activities.
         try:
             _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.MAIN",
                  "-c", "android.intent.category.LAUNCHER", package_activity)
+            _wait_for_foreground_package(avd_name, expected_package)
             return
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, RuntimeError):
             # Ask package manager for the real launcher component before falling
             # back to hard-coded MainActivity guesses.
-            try:
-                resolved = _adb(
-                    avd_name,
-                    "shell",
-                    "cmd",
-                    "package",
-                    "resolve-activity",
-                    "--brief",
-                    package_activity,
-                    capture=True,
-                ) or ""
-                resolved_lines = [line.strip() for line in resolved.splitlines() if line.strip()]
-                for component in reversed(resolved_lines):
-                    if "/" not in component or component == "No activity found":
-                        continue
-                    try:
-                        _adb(avd_name, "shell", "am", "start", "-n", component)
-                        return
-                    except subprocess.CalledProcessError:
-                        pass
-            except subprocess.CalledProcessError:
-                pass
+            serial = wait_until_ready(avd_name)
+            probe = _probe_package_state(serial, package_activity)
+            resolved_lines = [line.strip() for line in probe.resolve_activity.splitlines() if line.strip()]
+            for component in reversed(resolved_lines):
+                if "/" not in component or component == "No activity found":
+                    continue
+                try:
+                    _adb(avd_name, "shell", "am", "start", "-n", component)
+                    _wait_for_foreground_package(avd_name, expected_package)
+                    return
+                except subprocess.CalledProcessError:
+                    pass
 
             base_package = package_activity
             for suffix in (".dev", ".staging", ".prod", ".debug", ".release"):
@@ -420,6 +600,7 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
             for component in candidates:
                 try:
                     _adb(avd_name, "shell", "am", "start", "-n", component)
+                    _wait_for_foreground_package(avd_name, expected_package)
                     return
                 except subprocess.CalledProcessError as exc:
                     last_error = exc
@@ -428,6 +609,7 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
     else:
         cmd = ["shell", "am", "start", "-n", package_activity] + (args or [])
         _adb(avd_name, *cmd)
+        _wait_for_foreground_package(avd_name, expected_package)
 
 
 def terminate(avd_name: str, package: str) -> None:
@@ -515,7 +697,7 @@ def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = 
         pass
 
 
-def open_url(avd_name: str, url: str) -> None:
+def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) -> None:
     _ensure_booted(avd_name)
     _adb(
         avd_name,
@@ -531,6 +713,8 @@ def open_url(avd_name: str, url: str) -> None:
         "-d",
         url,
     )
+    if expected_package:
+        _wait_for_foreground_package(avd_name, expected_package)
 
 
 def push(avd_name: str, local_path: str, remote_path: str) -> None:
