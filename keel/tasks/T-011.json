@@ -29,13 +29,19 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-19T07:37:26.279Z",
-  "updatedAt": "2026-03-24T21:40:07.787Z",
+  "updatedAt": "2026-03-24T21:53:01.796Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
   "cloudy": null,
   "dependsOn": [],
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-24T21:53:01.796Z",
+      "by": "human",
+      "text": "Removed the dead legacy cmd_acquire handler body from cli.py, kept the legacy command surface rejecting cleanly, and revalidated CLI/do regressions with python3 -m pytest -q tests/test_do_commands.py tests/test_cli.py (107 passed)."
+    }
+  ],
   "runStatus": null,
   "acceptanceCriteria": []
 }
