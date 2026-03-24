@@ -29,13 +29,19 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:43.362Z",
-  "updatedAt": "2026-03-24T22:20:54.306Z",
+  "updatedAt": "2026-03-24T22:20:54.575Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
   "cloudy": null,
   "dependsOn": [],
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-24T22:20:54.575Z",
+      "by": "human",
+      "text": "Implemented _with_brief_focus() context manager. All iOS interaction paths (tap, swipe, long_press, key, rotate) now save/restore the frontmost app. Structured diagnostics on failure. 5 new tests. 314 total tests pass."
+    }
+  ],
   "runStatus": null,
   "acceptanceCriteria": [
     "focus-sensitive simulator actions use a shared restoration path",
