@@ -287,15 +287,34 @@ class TestDoUrl(DoCommandBase):
 
     @patch("simemu.session.ios.open_url")
     @patch("simemu.session.ios.complete_open_url_handoff", return_value=False)
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.is_app_running", return_value=False)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_url_ios_raises_when_expected_app_never_foregrounds(
-        self, mock_serial, mock_complete, mock_url
+    def test_do_url_ios_raises_springboard_diagnostic(
+        self, mock_serial, mock_running, mock_fg, mock_complete, mock_url
     ) -> None:
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())
         data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
         sf.write_text(json.dumps(data))
-        with self.assertRaisesRegex(RuntimeError, "did not become foreground on iOS"):
+        with self.assertRaisesRegex(RuntimeError, "never launched"):
+            do_command("s-test01", "url", ["fitkind://debug/route"])
+
+    @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=False)
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.is_app_running", return_value=True)
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=False)
+    @patch("simemu.session.ios.wait_for_foreground_app", return_value=False)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_ios_raises_stuck_behind_sheet_diagnostic(
+        self, mock_serial, mock_wait, mock_accept, mock_running, mock_fg, mock_complete, mock_url
+    ) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "stuck behind"):
             do_command("s-test01", "url", ["fitkind://debug/route"])
 
 

@@ -939,11 +939,32 @@ end tell'''
             expected_bundle = None
             with _locked_sessions() as (data, save):
                 expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
-            if expected_bundle and not ios.complete_open_url_handoff(sim_id, expected_bundle):
-                raise RuntimeError(
-                    f"Opened URL but '{expected_bundle}' did not become foreground on iOS. "
-                    "The simulator may still be showing an OS confirmation sheet."
-                )
+            if expected_bundle:
+                handoff_ok = ios.complete_open_url_handoff(sim_id, expected_bundle)
+                if not handoff_ok:
+                    # Diagnose: what IS in the foreground?
+                    actual_fg = ios.foreground_app(sim_id)
+                    app_running = ios.is_app_running(sim_id, expected_bundle)
+                    if app_running and actual_fg != expected_bundle:
+                        # App launched but sheet on top — try one more aggressive dismiss
+                        ios.accept_open_app_alert(sim_id, attempts=6, delay=0.3)
+                        handoff_ok = ios.wait_for_foreground_app(sim_id, expected_bundle, timeout=3.0)
+                    if not handoff_ok:
+                        diag = {
+                            "expected": expected_bundle,
+                            "actual_foreground": actual_fg,
+                            "app_running": app_running,
+                            "url": url,
+                        }
+                        hint = (
+                            f"App '{expected_bundle}' is running but stuck behind a confirmation sheet"
+                            if app_running
+                            else f"App '{expected_bundle}' never launched — still on SpringBoard or system UI"
+                        )
+                        raise RuntimeError(
+                            f"URL handoff failed: {hint}.\n"
+                            f"Diagnostics: {json.dumps(diag)}"
+                        )
         else:
             expected_package = None
             with _locked_sessions() as (data, save):
