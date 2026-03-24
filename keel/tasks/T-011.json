@@ -10,11 +10,9 @@
   "priority": "medium",
   "platform": null,
   "assignee": null,
-  "depends_on": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "notes": [],
   "cloudy_run": null,
   "statusHistory": [
     {
@@ -28,13 +26,16 @@
   ],
   "attachments": [],
   "stage": null,
-  "run_status": null,
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-19T07:37:26.279Z",
-  "updatedAt": "2026-03-19T07:43:18.804Z",
+  "updatedAt": "2026-03-24T21:40:07.787Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
-  "cloudy": null
+  "cloudy": null,
+  "dependsOn": [],
+  "context": [],
+  "runStatus": null,
+  "acceptanceCriteria": []
 }
