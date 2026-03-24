@@ -31,13 +31,18 @@
   "attachments": [],
   "recurring": null,
   "createdAt": "2026-03-18T15:30:00Z",
-  "updatedAt": "2026-03-24T22:24:36.730Z",
+  "updatedAt": "2026-03-24T22:24:37.016Z",
   "dependsOn": [],
   "context": [
     {
       "at": "2026-03-18T15:45:00Z",
       "by": "ted",
       "text": "Key insight: --variant replaces both iOS --scheme and Android --flavour. One cross-platform concept. Config lives in keel/execution.yaml under buildVariants. Agent never thinks about platform-specific flags."
+    },
+    {
+      "at": "2026-03-24T22:24:37.016Z",
+      "by": "human",
+      "text": "Build wrapper was already implemented. Fixed _store_build_artifact lock bug (_locked() → _locked_sessions()). Added 9 tests: raw mode, iOS/Android variants, default variant, unknown variant error, build failure diagnostics, YAML parsing. 323 total tests pass."
     }
   ],
   "runStatus": null,
