@@ -468,6 +468,8 @@ _COMMAND_HELP: dict[str, str] = {
     "renew":            "Extend session before it expires",
     "done":             "Release the session and free the device",
     "reboot":           "Restart the simulator",
+    "present":          "Present the iOS simulator window in a canonical position",
+    "stabilize":        "Stabilize the iOS simulator window for reliable interaction",
     # App management
     "install":          "Install .app/.ipa (iOS) or .apk (Android)",
     "launch":           "Launch app by bundle ID or package name",
@@ -672,7 +674,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
     # T-12: Help command
     if command == "help":
         categories = {
-            "Session": ["boot", "show", "hide", "renew", "done", "reboot"],
+            "Session": ["boot", "show", "hide", "renew", "done", "reboot", "present", "stabilize"],
             "App": ["install", "launch", "terminate", "uninstall", "reset-app", "clear-data", "clean-retry",
                      "grant-all", "app-info", "verify-install", "repair-install", "app-container",
                      "is-running", "foreground-app"],
@@ -702,6 +704,31 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         # but agents expect an explicit boot command
         session = touch(session_id)
         return session.to_agent_json()
+
+    if command == "present":
+        session = touch(session_id)
+        if session.real_device or session.platform not in ("ios", "watchos", "tvos", "visionos"):
+            return {
+                "status": "unsupported",
+                "platform": session.platform,
+                "hint": "present is currently available for iOS-family simulators only.",
+            }
+        result = ios.present(session.sim_id)
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["visible"] = True
+                save(data)
+        return result
+
+    if command == "stabilize":
+        session = touch(session_id)
+        if session.real_device or session.platform not in ("ios", "watchos", "tvos", "visionos"):
+            return {
+                "status": "unsupported",
+                "platform": session.platform,
+                "hint": "stabilize is currently available for iOS-family simulators only.",
+            }
+        return ios.stabilize(session.sim_id)
 
     if command in ("visible", "show"):
         session = touch(session_id)
@@ -909,6 +936,14 @@ end tell'''
         url = args[0]
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
+            expected_bundle = None
+            with _locked_sessions() as (data, save):
+                expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+            if expected_bundle and not ios.complete_open_url_handoff(sim_id, expected_bundle):
+                raise RuntimeError(
+                    f"Opened URL but '{expected_bundle}' did not become foreground on iOS. "
+                    "The simulator may still be showing an OS confirmation sheet."
+                )
         else:
             expected_package = None
             with _locked_sessions() as (data, save):
@@ -1079,6 +1114,7 @@ end tell'''
             # Try simctl ui alert dismiss, fall back to Maestro
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
                      capture_output=True, check=False)
+            ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow", "Don't Allow"])
         else:
             # Android: press Enter key to dismiss
             _sp.run(["adb", "-s", android.get_serial(sim_id),
@@ -1089,8 +1125,12 @@ end tell'''
     elif command == "accept-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
-                     capture_output=True, check=False)
+            ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35)
+            expected_bundle = None
+            with _locked_sessions() as (data, save):
+                expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+            if expected_bundle:
+                ios.complete_open_url_handoff(sim_id, expected_bundle, attempts=3, foreground_timeout=1.0)
         else:
             _sp.run(["adb", "-s", android.get_serial(sim_id),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
@@ -1102,6 +1142,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "deny"],
                      capture_output=True, check=False)
+            ios.click_system_alert_button(sim_id, ["Don’t Allow", "Don't Allow", "Cancel", "Not Now"])
         else:
             _sp.run(["adb", "-s", android.get_serial(sim_id),
                       "shell", "input", "keyevent", "KEYCODE_BACK"],
@@ -1283,7 +1324,15 @@ end tell'''
         # Open the URL
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
-            ios.accept_open_app_alert(sim_id)
+            expected_bundle = None
+            with _locked_sessions() as (data, save):
+                expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+            if expected_bundle and not ios.complete_open_url_handoff(sim_id, expected_bundle):
+                raise RuntimeError(
+                    f"Opened deep link but '{expected_bundle}' never became foreground on iOS."
+                )
+            if not expected_bundle:
+                ios.accept_open_app_alert(sim_id)
         else:
             android.open_url(sim_id, url)
         # Wait for render
@@ -1976,11 +2025,10 @@ def _find_android_artifact(task: str):
 
 def _store_build_artifact(session_id: str, artifact_path: str):
     """Store the build artifact path in session state for auto-install."""
-    with _locked():
-        data = _read_sessions_raw()
+    with _locked_sessions() as (data, save):
         if session_id in data.get("sessions", {}):
             data["sessions"][session_id]["last_build_artifact"] = artifact_path
-            _write_sessions_raw(data)
+            save(data)
 
 
 def _get_build_artifact(session_id: str) -> str | None:
