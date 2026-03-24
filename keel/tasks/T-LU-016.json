@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-016",
+  "title": "Runecode/doctor integration — detect broken simemu setup and suggest fixes",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-3",
+  "space": "space-core",
+  "status": "todo",
+  "priority": "medium",
+  "platform": "all",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-24T22:00:40.910Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-24T22:00:40.909Z",
+  "updatedAt": "2026-03-24T22:00:40.909Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
