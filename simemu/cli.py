@@ -282,6 +282,42 @@ def cmd_config(args):
             print()
             print(f"Set display:  simemu config window-mode display --display <#>")
 
+    elif args.config_command == "reserve":
+        config = window_mgr._read_config()
+        reservations = config.setdefault("reservations", {})
+
+        if args.reserve_action == "set":
+            agent_res = reservations.setdefault(args.agent_name, {})
+            agent_res[args.platform] = {"device": args.device}
+            if args.version:
+                agent_res[args.platform]["version"] = args.version
+            window_mgr._write_config(config)
+            print(f"Reserved {args.platform} device '{args.device}' for agent '{args.agent_name}'")
+
+        elif args.reserve_action == "remove":
+            if args.agent_name in reservations:
+                if args.platform:
+                    reservations[args.agent_name].pop(args.platform, None)
+                    if not reservations[args.agent_name]:
+                        del reservations[args.agent_name]
+                else:
+                    del reservations[args.agent_name]
+                window_mgr._write_config(config)
+                print(f"Removed reservation for '{args.agent_name}'" +
+                      (f" ({args.platform})" if args.platform else ""))
+            else:
+                print(f"No reservations found for '{args.agent_name}'")
+
+        elif args.reserve_action == "list":
+            if not reservations:
+                print("No permanent reservations configured.")
+            else:
+                print(f"{'AGENT':<20} {'PLATFORM':<12} {'DEVICE':<30} {'VERSION'}")
+                print("─" * 70)
+                for agent_name, platforms in sorted(reservations.items()):
+                    for plat, res in sorted(platforms.items()):
+                        print(f"{agent_name:<20} {plat:<12} {res.get('device', '?'):<30} {res.get('version', 'any')}")
+
     elif args.config_command == "show":
         config = window_mgr._read_config()
         if config:
@@ -560,70 +596,6 @@ def _reject_legacy(args):
 
 def cmd_acquire(args):
     _reject_legacy(args)
-    # Dead code below — kept for reference only
-    wait = getattr(args, "wait", 0)
-    real = getattr(args, "real", False)
-    poll = 10  # seconds between retries
-    deadline = time.time() + wait
-    attempt = 0
-
-    while True:
-        try:
-            sim = find_simulator(args.platform, args.device, real_device=real)
-            break
-        except NoSimulatorAvailable as e:
-            if time.time() >= deadline:
-                raise RuntimeError(str(e)) from None
-            attempt += 1
-            remaining = int(deadline - time.time())
-            kind = "device" if real else "simulator"
-            print(f"No {kind} available, retrying in {poll}s (up to {remaining}s remaining)...",
-                  flush=True)
-            time.sleep(poll)
-
-    alloc = state.acquire(
-        slug=args.slug,
-        sim_id=sim.sim_id,
-        platform=sim.platform,
-        device_name=sim.device_name,
-        agent=_agent(),
-    )
-
-    if args.json:
-        _print_json({
-            "slug": args.slug,
-            "sim_id": sim.sim_id,
-            "platform": sim.platform,
-            "device_name": sim.device_name,
-            "runtime": sim.runtime,
-            "real_device": sim.real_device,
-            "agent": alloc.agent,
-            "acquired_at": alloc.acquired_at,
-        })
-    else:
-        label = "real device" if sim.real_device else "simulator"
-        print(f"Reserved '{args.slug}' → {sim.device_name} ({sim.runtime}) [{label}]")
-        print(f"  sim_id:  {sim.sim_id}")
-        print(f"  agent:   {alloc.agent}")
-
-    # Real devices are already booted — skip boot step
-    if sim.real_device:
-        if not args.json:
-            print("Ready (real device — already connected).")
-        return
-
-    if not args.no_boot:
-        if not args.json:
-            print("Booting...", flush=True)
-        if sim.platform == "ios":
-            ios.boot(sim.sim_id)
-        else:
-            android.boot(sim.sim_id, headless=not args.window)
-        placement = _maybe_apply_agent_workspace(args.slug)
-        if not args.json:
-            print("Ready.")
-            if placement and placement.get("applied"):
-                print(f"Placed '{args.slug}' in the '{alloc.agent}' workspace.")
 
 
 def cmd_release(args):
@@ -1225,7 +1197,7 @@ def cmd_delete(args):
         # Not in simemu state — delete by raw sim_id/avd
         raise RuntimeError(
             f"No reservation for '{args.slug}'. "
-            f"Use 'simemu acquire' first, or delete directly via the platform tools."
+            f"Use 'simemu claim' first, or delete directly via the platform tools."
         )
 
 
@@ -1991,7 +1963,7 @@ def cmd_create(args):
             _print_json({"name": args.name, "uuid": uuid, "platform": "android", "backend": "genymotion"})
         else:
             print(f"Created Genymotion VM '{args.name}': {uuid}")
-            print(f"Acquire with: simemu acquire android <slug> --device \"{args.name}\"")
+            print(f"Claim with: simemu claim android --device \"{args.name}\"")
 
     elif args.platform == "android":
         if args.list_images:
@@ -2087,6 +2059,26 @@ def build_parser() -> argparse.ArgumentParser:
     config_disp_p = config_sub.add_parser("displays", help="List connected displays")
     config_disp_p.add_argument("--json", action="store_true")
     config_disp_p.set_defaults(func=cmd_config)
+
+    # config reserve
+    res_p = config_sub.add_parser("reserve", help="Manage permanent device reservations per product")
+    res_sub = res_p.add_subparsers(dest="reserve_action", required=True)
+
+    res_set_p = res_sub.add_parser("set", help="Reserve a device for a product agent")
+    res_set_p.add_argument("agent_name", help="Agent/product name (e.g. sitches, fitkind)")
+    res_set_p.add_argument("platform", choices=["ios", "android"],
+                           help="Platform to reserve")
+    res_set_p.add_argument("device", help="Device name to reserve (e.g. 'iPhone 17 Pro Max')")
+    res_set_p.add_argument("--version", help="Preferred OS version")
+    res_set_p.set_defaults(func=cmd_config)
+
+    res_rm_p = res_sub.add_parser("remove", help="Remove a reservation")
+    res_rm_p.add_argument("agent_name", help="Agent/product name")
+    res_rm_p.add_argument("platform", nargs="?", help="Platform (omit to remove all)")
+    res_rm_p.set_defaults(func=cmd_config)
+
+    res_ls_p = res_sub.add_parser("list", help="List all reservations")
+    res_ls_p.set_defaults(func=cmd_config)
 
     # sessions
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
@@ -2771,9 +2763,36 @@ _V2_COMMANDS = {
 }
 
 
+def _warn_if_module_invocation() -> None:
+    """Warn when simemu is invoked through a module path instead of the public CLI."""
+    if Path(sys.argv[0]).name == "cli.py":
+        print(
+            "Warning: invoked via 'python -m simemu.cli'. Use the public CLI instead: 'simemu ...'",
+            file=sys.stderr,
+        )
+
+
+def _get_subparser(parser: argparse.ArgumentParser, name: str) -> argparse.ArgumentParser | None:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices.get(name)
+    return None
+
+
+def _maybe_print_help_and_exit(parser: argparse.ArgumentParser, raw_args: list[str]) -> None:
+    if raw_args[:2] == ["do", "help"] or raw_args[:2] == ["do", "--help"] or raw_args[:2] == ["do", "-h"]:
+        do_parser = _get_subparser(parser, "do")
+        if do_parser is not None:
+            do_parser.print_help()
+            raise SystemExit(0)
+
+
 def main():
+    _warn_if_module_invocation()
     parser = build_parser()
-    args = parser.parse_args()
+    raw_args = sys.argv[1:]
+    _maybe_print_help_and_exit(parser, raw_args)
+    args = parser.parse_args(raw_args)
     if getattr(args, "no_autostart", False):
         os.environ["SIMEMU_NO_AUTOSTART"] = "1"
     if getattr(args.func, "__name__", "") not in {"cmd_serve", "cmd_daemon"}:

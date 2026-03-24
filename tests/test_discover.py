@@ -3,6 +3,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -10,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simemu.discover import (
     NoSimulatorAvailable,
     SimulatorInfo,
+    find_best_device,
     find_simulator,
     get_android_serial,
+    get_reservation,
     list_android,
     list_ios,
 )
@@ -215,6 +218,110 @@ class TestFindSimulator(unittest.TestCase):
     def test_raises_for_unknown_platform(self) -> None:
         with self.assertRaises(RuntimeError):
             find_simulator("windows")
+
+
+class TestFindBestDevice(unittest.TestCase):
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch(
+        "simemu.discover.list_ios",
+        return_value=[
+            SimulatorInfo("ipad-1", "ios", "iPad Air", True, "iOS 26.2"),
+            SimulatorInfo("iphone-1", "ios", "iPhone 16 Pro", False, "iOS 26.2"),
+        ],
+    )
+    def test_prefers_requested_phone_form_factor(self, mock_list: MagicMock, mock_claimed: MagicMock) -> None:
+        spec = SimpleNamespace(
+            platform="ios",
+            form_factor="phone",
+            os_version=None,
+            real_device=False,
+        )
+        result = find_best_device(spec)
+        self.assertEqual(result.sim_id, "iphone-1")
+
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch(
+        "simemu.discover.list_ios",
+        return_value=[SimulatorInfo("ipad-1", "ios", "iPad Air", True, "iOS 26.2")],
+    )
+    def test_raises_when_requested_phone_is_unavailable(self, mock_list: MagicMock, mock_claimed: MagicMock) -> None:
+        spec = SimpleNamespace(
+            platform="ios",
+            form_factor="phone",
+            os_version=None,
+            real_device=False,
+        )
+        with self.assertRaises(NoSimulatorAvailable) as ctx:
+            find_best_device(spec)
+        self.assertIn("form factor 'phone'", str(ctx.exception))
+        self.assertIn("iPad Air", str(ctx.exception))
+
+
+class TestReservations(unittest.TestCase):
+    """Tests for permanent device reservations."""
+
+    def setUp(self) -> None:
+        import tempfile, os
+        self.tmpdir = tempfile.mkdtemp(prefix="simemu-res-test-")
+        self._old_config = os.environ.get("SIMEMU_CONFIG_DIR")
+        os.environ["SIMEMU_CONFIG_DIR"] = self.tmpdir
+
+    def tearDown(self) -> None:
+        import os, shutil
+        if self._old_config is None:
+            os.environ.pop("SIMEMU_CONFIG_DIR", None)
+        else:
+            os.environ["SIMEMU_CONFIG_DIR"] = self._old_config
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_config(self, config: dict) -> None:
+        config_path = Path(self.tmpdir) / "config.json"
+        config_path.write_text(json.dumps(config))
+
+    def test_get_reservation_returns_match(self) -> None:
+        self._write_config({
+            "reservations": {
+                "sitches": {"ios": {"device": "iPhone 17 Pro Max"}}
+            }
+        })
+        result = get_reservation("sitches", "ios")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["device"], "iPhone 17 Pro Max")
+
+    def test_get_reservation_returns_none_for_unknown_agent(self) -> None:
+        self._write_config({"reservations": {"sitches": {"ios": {"device": "iPhone 17"}}}})
+        result = get_reservation("unknown", "ios")
+        self.assertIsNone(result)
+
+    def test_get_reservation_returns_none_for_wrong_platform(self) -> None:
+        self._write_config({"reservations": {"sitches": {"ios": {"device": "iPhone 17"}}}})
+        result = get_reservation("sitches", "android")
+        self.assertIsNone(result)
+
+    def test_get_reservation_returns_none_when_no_config(self) -> None:
+        result = get_reservation("sitches", "ios")
+        self.assertIsNone(result)
+
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch("simemu.discover.list_ios")
+    def test_find_best_device_prefers_reserved(self, mock_list_ios, mock_claimed) -> None:
+        import os
+        os.environ["SIMEMU_AGENT"] = "sitches"
+        self._write_config({
+            "reservations": {
+                "sitches": {"ios": {"device": "iPhone 17 Pro Max"}}
+            }
+        })
+        mock_list_ios.return_value = [
+            SimulatorInfo("A", "ios", "iPhone 17", False, "iOS 26.1"),
+            SimulatorInfo("B", "ios", "iPhone 17 Pro Max", False, "iOS 26.1"),
+            SimulatorInfo("C", "ios", "iPhone 17 Pro", False, "iOS 26.1"),
+        ]
+        from simemu.session import ClaimSpec
+        spec = ClaimSpec(platform="ios")
+        result = find_best_device(spec)
+        self.assertEqual(result.device_name, "iPhone 17 Pro Max")
+        os.environ.pop("SIMEMU_AGENT", None)
 
 
 if __name__ == "__main__":
