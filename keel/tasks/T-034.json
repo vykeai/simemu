@@ -1,12 +1,12 @@
 {
   "id": "T-034",
   "title": "Shared-desktop reliability — brief focus acquisition, user app restoration after interactions",
-  "description": "Finish the shared-desktop interaction contract so simemu can briefly take focus for fragile operations and then restore the user's previous app and window state.\n\nAcceptance criteria:\n- focus-sensitive iOS actions use a single helper path for brief activation and restoration\n- the previously frontmost app is restored after simulator interactions when feasible\n- failures return structured diagnostics instead of silently stealing focus\n- regression coverage proves the restore path is exercised for the shared helpers",
+  "description": "",
   "product": null,
   "lane": null,
   "wave": "wave-1",
-  "space": "space-core",
-  "status": "done",
+  "space": null,
+  "status": "todo",
   "priority": "high",
   "platform": "all",
   "assignee": null,
@@ -18,10 +18,6 @@
     {
       "status": "todo",
       "ts": "2026-03-20T19:14:43.363Z"
-    },
-    {
-      "status": "done",
-      "ts": "2026-03-24T22:20:54.307Z"
     }
   ],
   "attachments": [],
@@ -29,24 +25,13 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:43.362Z",
-  "updatedAt": "2026-03-24T22:20:54.575Z",
+  "updatedAt": "2026-03-24T22:00:38.581Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
   "cloudy": null,
   "dependsOn": [],
-  "context": [
-    {
-      "at": "2026-03-24T22:20:54.575Z",
-      "by": "human",
-      "text": "Implemented _with_brief_focus() context manager. All iOS interaction paths (tap, swipe, long_press, key, rotate) now save/restore the frontmost app. Structured diagnostics on failure. 5 new tests. 314 total tests pass."
-    }
-  ],
+  "context": [],
   "runStatus": null,
-  "acceptanceCriteria": [
-    "focus-sensitive simulator actions use a shared restoration path",
-    "the previous frontmost app is restored after interactions when possible",
-    "focus acquisition failures emit actionable diagnostics",
-    "tests cover the shared focus/restore helpers"
-  ]
+  "acceptanceCriteria": []
 }
