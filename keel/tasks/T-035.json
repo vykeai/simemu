@@ -1,11 +1,11 @@
 {
   "id": "T-035",
   "title": "Permanent device reservations per product — sitches-ios, fitkind-ios slug-based allocation",
-  "description": "",
+  "description": "Add first-class permanent reservation support so specific products can claim well-known devices without fighting other work.\n\nAcceptance criteria:\n- simemu supports stable product-owned reservations for named iOS and Android devices\n- reservation metadata survives monitor restarts\n- claim flows respect reserved pools before general allocation\n- documentation explains how products opt in to reserved devices",
   "product": null,
   "lane": null,
   "wave": "wave-1",
-  "space": null,
+  "space": "space-core",
   "status": "todo",
   "priority": "medium",
   "platform": "all",
@@ -25,7 +25,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:44.690Z",
-  "updatedAt": "2026-03-24T22:00:38.846Z",
+  "updatedAt": "2026-03-24T22:03:05.878Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
@@ -33,5 +33,10 @@
   "dependsOn": [],
   "context": [],
   "runStatus": null,
-  "acceptanceCriteria": []
+  "acceptanceCriteria": [
+    "stable product-owned reservations can be configured",
+    "reservation metadata survives monitor restarts",
+    "claim flows prefer reserved pools when applicable",
+    "reservation setup is documented for downstream repos"
+  ]
 }
