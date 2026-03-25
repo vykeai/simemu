@@ -373,6 +373,15 @@ def cmd_config(args):
             print("No config set (using defaults)")
 
 
+def cmd_completions(args):
+    """Generate shell completions."""
+    from .completions import zsh_completion, bash_completion
+    if args.shell == "zsh":
+        print(zsh_completion())
+    else:
+        print(bash_completion())
+
+
 def cmd_sessions(args):
     """List all v2 sessions."""
     sessions = session_module.get_active_sessions()
@@ -2140,6 +2149,11 @@ def build_parser() -> argparse.ArgumentParser:
     res_ls_p = res_sub.add_parser("list", help="List all reservations")
     res_ls_p.set_defaults(func=cmd_config)
 
+    # completions
+    comp_p = sub.add_parser("completions", help="Generate shell completions (zsh or bash)")
+    comp_p.add_argument("shell", choices=["zsh", "bash"], help="Shell type")
+    comp_p.set_defaults(func=cmd_completions)
+
     # sessions
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
     sess_p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -2811,11 +2825,11 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar", "cmd_completions"}
 
 # v2 + admin commands — everything else is legacy and rejected
 _V2_COMMANDS = {
-    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config",
+    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config", "cmd_completions",
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
     "cmd_list", "cmd_list_devices",  # discovery is still useful
