@@ -16,7 +16,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T20:44:57.537Z",
+      "by": "human",
+      "text": "DispatchSource file watch on ~/.simemu/ dir. 200ms debounce, 30s fallback. Popover updates live. Built and verified running. Wave 2 complete."
+    }
+  ],
   "acceptanceCriteria": [
     "menu bar reacts to sessions.json changes without polling",
     "open panel state updates while visible",
@@ -44,7 +50,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:41.725Z",
-  "updatedAt": "2026-03-25T20:44:57.266Z",
+  "updatedAt": "2026-03-25T20:44:57.537Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
