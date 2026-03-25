@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:56:31.174Z",
+      "by": "human",
+      "text": "PyPI metadata, MANIFEST.in, Makefile with build/publish/test targets."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.207Z",
-  "updatedAt": "2026-03-25T21:56:31.030Z",
+  "updatedAt": "2026-03-25T21:56:31.174Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
