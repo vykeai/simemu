@@ -142,12 +142,38 @@ def _compute_expires_at(status: str, heartbeat_at: str) -> str:
 
 # ── state persistence ────────────────────────────────────────────────────────
 
+SCHEMA_VERSION = 2  # Current schema version
+
+
 def _sessions_file() -> Path:
     return state.state_dir() / "sessions.json"
 
 
 def _sessions_lock_file() -> Path:
     return state.state_dir() / "sessions.lock"
+
+
+def _migrate_schema(data: dict) -> dict:
+    """Migrate sessions.json to the current schema version.
+
+    Migrations are additive — they add fields with defaults, never remove.
+    """
+    version = data.get("schema_version", 1)
+
+    if version < 2:
+        # v1 → v2: Add provenance dict and claim spec fields to each session
+        for sid, session in data.get("sessions", {}).items():
+            session.setdefault("provenance", {})
+            session.setdefault("claim_platform", session.get("platform", ""))
+            session.setdefault("claim_form_factor", session.get("form_factor", "phone"))
+            session.setdefault("claim_os_version", session.get("os_version"))
+            session.setdefault("claim_real_device", session.get("real_device", False))
+            session.setdefault("claim_label", session.get("label", ""))
+            session.setdefault("resolved_os_version", None)
+            session.setdefault("last_build_artifact", None)
+        data["schema_version"] = 2
+
+    return data
 
 
 @contextmanager
@@ -181,6 +207,12 @@ def _read_sessions_raw() -> dict:
         try:
             data = json.loads(sf.read_text())
             if isinstance(data, dict) and "sessions" in data:
+                if data.get("schema_version", 1) < SCHEMA_VERSION:
+                    data = _migrate_schema(data)
+                    try:
+                        _write_sessions_raw(data)
+                    except OSError:
+                        pass
                 return data
         except (json.JSONDecodeError, OSError):
             pass
@@ -221,6 +253,9 @@ def _write_sessions_raw(data: dict):
     sf = _sessions_file()
     bak = sf.with_suffix(".bak")
     tmp = sf.with_suffix(".tmp")
+
+    # Stamp schema version
+    data["schema_version"] = SCHEMA_VERSION
 
     content = json.dumps(data, indent=2)
 
