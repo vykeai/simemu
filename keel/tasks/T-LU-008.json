@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T16:51:29.859Z",
+      "by": "human",
+      "text": "New visibility.py module — CGWindowList-based live reconciliation. Sessions listing shows WINDOW column. Parked excluded from live counts. 12 tests."
+    }
+  ],
   "acceptanceCriteria": [
     "live visibility is derived from actual desktop state",
     "menubar counts match externally changed window visibility",
@@ -50,7 +56,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.029Z",
-  "updatedAt": "2026-03-25T16:51:29.511Z",
+  "updatedAt": "2026-03-25T16:51:29.859Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
