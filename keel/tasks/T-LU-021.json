@@ -17,7 +17,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T19:26:39.537Z",
+      "by": "human",
+      "text": "7 new convenience routes on /v2/ for present, stabilize, verify-install, repair-install, proof. All route through do_command. 7 tests. 15 server tests pass."
+    }
+  ],
   "acceptanceCriteria": [
     "v2 server exposes present, stabilize, verify-install, and repair-install",
     "server payloads align with the CLI/session contract",
@@ -45,7 +51,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:42.019Z",
-  "updatedAt": "2026-03-25T19:26:39.379Z",
+  "updatedAt": "2026-03-25T19:26:39.537Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
