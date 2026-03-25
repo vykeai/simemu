@@ -4,6 +4,7 @@ and connected real devices, filtering out any already claimed in simemu sessions
 """
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -347,8 +348,7 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
         candidates = filtered
 
     # Check for permanent reservation
-    import os as _os
-    agent = _os.environ.get("SIMEMU_AGENT", "")
+    agent = os.environ.get("SIMEMU_AGENT", "")
     reservation = get_reservation(agent, platform) if agent else None
     reserved_device_name = reservation.get("device", "") if reservation else ""
 

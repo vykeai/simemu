@@ -307,6 +307,7 @@ class TestReservations(unittest.TestCase):
     def test_find_best_device_prefers_reserved(self, mock_list_ios, mock_claimed) -> None:
         import os
         os.environ["SIMEMU_AGENT"] = "sitches"
+        self.addCleanup(os.environ.pop, "SIMEMU_AGENT", None)
         self._write_config({
             "reservations": {
                 "sitches": {"ios": {"device": "iPhone 17 Pro Max"}}
@@ -321,7 +322,6 @@ class TestReservations(unittest.TestCase):
         spec = ClaimSpec(platform="ios")
         result = find_best_device(spec)
         self.assertEqual(result.device_name, "iPhone 17 Pro Max")
-        os.environ.pop("SIMEMU_AGENT", None)
 
 
 if __name__ == "__main__":

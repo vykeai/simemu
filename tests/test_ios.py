@@ -166,14 +166,14 @@ class IOSControlTests(unittest.TestCase):
 
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
-    def test_accept_open_app_alert_retries(self, mock_run, mock_booted) -> None:
+    def test_accept_open_app_alert_returns_true_on_first_success(self, mock_run, mock_booted) -> None:
         mock_run.return_value = Mock(returncode=0)
         with patch("simemu.ios._click_open_app_alert_button", return_value=False) as mock_click:
             with patch("simemu.ios.time.sleep"):
                 accepted = ios.accept_open_app_alert("SIM-001", attempts=3, delay=0.01)
         self.assertTrue(accepted)
-        self.assertEqual(3, mock_run.call_count)
-        self.assertEqual(3, mock_click.call_count)
+        # Early exit — should only call once since simctl succeeded
+        self.assertEqual(1, mock_run.call_count)
 
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
@@ -183,8 +183,9 @@ class IOSControlTests(unittest.TestCase):
             with patch("simemu.ios.time.sleep"):
                 accepted = ios.accept_open_app_alert("SIM-001", attempts=3, delay=0.01)
         self.assertTrue(accepted)
-        self.assertEqual(3, mock_run.call_count)
-        self.assertEqual(3, mock_click.call_count)
+        # Early exit on first button click success
+        self.assertEqual(1, mock_run.call_count)
+        self.assertEqual(1, mock_click.call_count)
 
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.wait_for_foreground_app", side_effect=[False, True])

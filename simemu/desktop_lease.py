@@ -93,7 +93,10 @@ class DesktopLease:
         self.extra_metadata = extra_metadata
         self.lease_id: str | None = None
         self.enabled = False
-        self.countdown_seconds = int(os.environ.get("SIMEMU_DESKTOP_LEASE_COUNTDOWN", "3"))
+        try:
+            self.countdown_seconds = int(os.environ.get("SIMEMU_DESKTOP_LEASE_COUNTDOWN", "3"))
+        except ValueError:
+            self.countdown_seconds = 3
 
     def __enter__(self):
         try:

@@ -347,7 +347,11 @@ def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 12
         try:
             action(avd_name)
             install(avd_name, apk_path, timeout=timeout, repair_on_failure=False)
-            return verify_install(avd_name, package)
+            probe = verify_install(avd_name, package)
+            # Double-check after a brief delay — PM state can drift on slow emulators
+            time.sleep(3)
+            probe2 = verify_install(avd_name, package, timeout=10)
+            return probe2
         except RuntimeError as exc:
             recovery_errors.append(f"{label}: {exc}")
 
@@ -622,11 +626,48 @@ def uninstall(avd_name: str, package: str) -> None:
     _adb(avd_name, "uninstall", package)
 
 
+def dismiss_system_dialogs(avd_name: str) -> bool:
+    """Dismiss any Android system dialog (ANR, crash, app not responding).
+
+    Returns True if a dialog was detected and dismissed.
+    """
+    serial = wait_until_ready(avd_name)
+    # Check for system dialog via dumpsys window
+    result = subprocess.run(
+        ["adb", "-s", serial, "shell", "dumpsys", "window", "windows"],
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+    has_dialog = any(
+        marker in result.stdout
+        for marker in ("Application Not Responding", "has crashed", "isn't responding",
+                       "ANR", "Application Error", "mIsAnrDialog=true")
+    )
+    if has_dialog:
+        # Press Enter to dismiss the dialog, then back as fallback
+        subprocess.run(["adb", "-s", serial, "shell", "input", "keyevent", "66"],
+                       capture_output=True, check=False, timeout=5)
+        time.sleep(0.3)
+        subprocess.run(["adb", "-s", serial, "shell", "input", "keyevent", "4"],
+                       capture_output=True, check=False, timeout=5)
+        time.sleep(0.5)
+        # Broadcast to dismiss any remaining system dialogs
+        subprocess.run(
+            ["adb", "-s", serial, "shell", "am", "broadcast",
+             "-a", "android.intent.action.CLOSE_SYSTEM_DIALOGS"],
+            capture_output=True, check=False, timeout=5,
+        )
+        return True
+    return False
+
+
 def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) -> None:
     """Capture screenshot via adb exec-out screencap.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
+    Automatically dismisses ANR/system dialogs before capture.
     """
     serial = wait_until_ready(avd_name)
+    # Dismiss any blocking system dialogs before capturing
+    dismiss_system_dialogs(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
         subprocess.run(

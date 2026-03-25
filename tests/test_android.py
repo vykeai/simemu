@@ -58,6 +58,222 @@ class TestInstall(unittest.TestCase):
                 android.install("MyAVD", f.name, timeout=5)
             self.assertIn("timed out", str(ctx.exception))
 
+    @patch("simemu.android.verify_install")
+    @patch("simemu.android._apk_application_id", return_value="app.fitkind.dev")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_runs_post_install_verification(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_app_id: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
+        with tempfile.NamedTemporaryFile(suffix=".apk") as f:
+            android.install("MyAVD", f.name)
+        mock_verify.assert_called_once_with("MyAVD", "app.fitkind.dev")
+
+    @patch("simemu.android.repair_install")
+    @patch("simemu.android.verify_install", side_effect=RuntimeError("broken pm"))
+    @patch("simemu.android._apk_application_id", return_value="app.fitkind.dev")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_attempts_repair_when_verification_fails(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_app_id: MagicMock,
+        mock_verify: MagicMock,
+        mock_repair: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
+        with tempfile.NamedTemporaryFile(suffix=".apk") as f:
+            android.install("MyAVD", f.name)
+            mock_repair.assert_called_once_with("MyAVD", "app.fitkind.dev", f.name, timeout=120)
+
+
+class TestPackageVerification(unittest.TestCase):
+    def _result(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+        return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_verify_install_passes_with_coherent_package_state(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            self._result(stdout="package:/data/app/app.fitkind.dev/base.apk\n"),
+            self._result(stdout="priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\napp.fitkind.dev/.MainActivity\n"),
+            self._result(stdout="Package [app.fitkind.dev] (123abc):\n  pkg=Package{123abc app.fitkind.dev}\n"),
+        ]
+        probe = android.verify_install("MyAVD", "app.fitkind.dev", timeout=0)
+        self.assertTrue(probe.ok)
+        self.assertIn("pm path", probe.format_report())
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_verify_install_raises_on_pkg_null_state(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            self._result(stdout=""),
+            self._result(stdout="No activity found\n"),
+            self._result(stdout="Packages:\n  Package [app.sitches.dev] (abc):\n    pkg=null\n"),
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            android.verify_install("MyAVD", "app.sitches.dev", timeout=0)
+        msg = str(ctx.exception)
+        self.assertIn("package-manager state is inconsistent", msg)
+        self.assertIn("pkg=null", msg)
+        self.assertIn("repair-install", msg)
+
+    @patch("simemu.android.verify_install", return_value=android.PackageVerification(
+        package="app.sitches.dev",
+        pm_path="package:/data/app/app.sitches.dev/base.apk",
+        resolve_activity="app.sitches.dev/.MainActivity",
+        dumpsys="Package [app.sitches.dev]",
+        pm_path_ok=True,
+        resolve_activity_ok=True,
+        dumpsys_ok=True,
+    ))
+    @patch("simemu.android.install")
+    @patch("simemu.android.reboot")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_reboots_and_reinstalls(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_reboot: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertTrue(probe.ok)
+        mock_run.assert_called_once()
+        mock_reboot.assert_called_once_with("MyAVD")
+        mock_install.assert_called_once_with("MyAVD", "/tmp/app.apk", timeout=120, repair_on_failure=False)
+        # verify_install called twice: initial + delayed recheck
+        self.assertEqual(mock_verify.call_count, 2)
+
+    @patch("simemu.android.verify_install", side_effect=[
+        RuntimeError("soft reboot still bad"),  # reboot attempt: initial verify fails
+        # cold-boot attempt: initial verify passes
+        android.PackageVerification(
+            package="app.sitches.dev",
+            pm_path="package:/data/app/app.sitches.dev/base.apk",
+            resolve_activity="app.sitches.dev/.MainActivity",
+            dumpsys="Package [app.sitches.dev]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        ),
+        # cold-boot attempt: delayed recheck also passes
+        android.PackageVerification(
+            package="app.sitches.dev",
+            pm_path="package:/data/app/app.sitches.dev/base.apk",
+            resolve_activity="app.sitches.dev/.MainActivity",
+            dumpsys="Package [app.sitches.dev]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        ),
+    ])
+    @patch("simemu.android.install")
+    @patch("simemu.android._repair_wipe_data_cycle")
+    @patch("simemu.android._repair_cold_boot_cycle")
+    @patch("simemu.android._repair_reboot_cycle")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_escalates_to_cold_boot(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_reboot_cycle: MagicMock,
+        mock_cold_boot_cycle: MagicMock,
+        mock_wipe_cycle: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertTrue(probe.ok)
+        mock_reboot_cycle.assert_called_once_with("MyAVD")
+        mock_cold_boot_cycle.assert_called_once_with("MyAVD")
+        mock_wipe_cycle.assert_not_called()
+        self.assertEqual(2, mock_install.call_count)
+
+    @patch("simemu.android.verify_install", side_effect=RuntimeError("still broken"))
+    @patch("simemu.android.install")
+    @patch("simemu.android._repair_wipe_data_cycle")
+    @patch("simemu.android._repair_cold_boot_cycle")
+    @patch("simemu.android._repair_reboot_cycle")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_raises_after_all_recovery_steps_fail(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_reboot_cycle: MagicMock,
+        mock_cold_boot_cycle: MagicMock,
+        mock_wipe_cycle: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertIn("repair-install could not recover", str(ctx.exception))
+        self.assertIn("reboot:", str(ctx.exception))
+        self.assertIn("cold-boot:", str(ctx.exception))
+        self.assertIn("wipe-data:", str(ctx.exception))
+
+
+class TestForegroundVerification(unittest.TestCase):
+    def _result(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+        return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_foreground_app_parses_resumed_package(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.return_value = self._result(
+            stdout="  mResumedActivity: ActivityRecord{abc u0 app.fitkind.dev/.MainActivity t12}\n"
+        )
+        self.assertEqual("app.fitkind.dev", android.foreground_app("MyAVD"))
+
+    @patch("simemu.android.foreground_app", return_value="com.vivii.dev")
+    def test_wait_for_foreground_package_raises_for_wrong_app(self, mock_foreground: MagicMock) -> None:
+        with patch("simemu.android.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "Foreground app was com.vivii.dev instead"):
+                android._wait_for_foreground_package("MyAVD", "app.fitkind.dev", timeout=0.2, delay=0.01)
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_launch_verifies_foreground_package(
+        self,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.launch("MyAVD", "app.fitkind.dev")
+        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev")
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb")
+    @patch("simemu.android._ensure_booted")
+    def test_open_url_verifies_expected_package_when_provided(
+        self,
+        mock_booted: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.open_url("MyAVD", "fitkind://debug/vault/template-detail-proof", expected_package="app.fitkind.dev")
+        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev")
+
 
 class TestKey(unittest.TestCase):
 
@@ -329,6 +545,53 @@ class TestBiometrics(unittest.TestCase):
                                          mock_adb: MagicMock) -> None:
         android.biometrics("MyAVD", match=False)
         mock_adb.assert_called_once_with("MyAVD", "emu", "finger", "touch", "2")
+
+
+class TestDismissSystemDialogs(unittest.TestCase):
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_detects_and_dismisses_anr(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="mIsAnrDialog=true Application Not Responding",
+            stderr="",
+        )
+        result = android.dismiss_system_dialogs("TestAVD")
+        self.assertTrue(result)
+        # dumpsys + keyevent 66 + keyevent 4 + broadcast = 4 calls
+        self.assertGreaterEqual(mock_run.call_count, 4)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_returns_false_when_no_dialog(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Window #0: com.example.app/MainActivity",
+            stderr="",
+        )
+        result = android.dismiss_system_dialogs("TestAVD")
+        self.assertFalse(result)
+        mock_run.assert_called_once()
+
+
+class TestRepairInstallDelayedVerify(unittest.TestCase):
+    @patch("simemu.android.verify_install")
+    @patch("simemu.android.install")
+    @patch("simemu.android._repair_reboot_cycle")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android.subprocess.run")
+    def test_repair_does_delayed_recheck(self, mock_sub, mock_ready, mock_reboot,
+                                          mock_install, mock_verify) -> None:
+        probe = android.PackageVerification(
+            package="com.test", pm_path="package:/data/app/com.test",
+            resolve_activity="com.test/.Main", dumpsys="Package [com.test]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        )
+        mock_verify.return_value = probe
+        result = android.repair_install("TestAVD", "com.test", "/tmp/app.apk")
+        # verify_install called twice: initial + delayed recheck
+        self.assertEqual(mock_verify.call_count, 2)
+        self.assertTrue(result.ok)
 
 
 if __name__ == "__main__":

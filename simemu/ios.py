@@ -253,31 +253,27 @@ def open_url(udid: str, url: str) -> None:
 def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> bool:
     """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff."""
     _ensure_booted(udid)
-    accepted = False
     for _ in range(attempts):
         result = subprocess.run(
             ["xcrun", "simctl", "ui", udid, "alert", "accept"],
-            capture_output=True,
-            text=True,
-            check=False,
+            capture_output=True, text=True, check=False,
         )
         if result.returncode == 0:
-            accepted = True
+            return True
         if _click_open_app_alert_button(udid):
-            accepted = True
+            return True
         time.sleep(delay)
-    return accepted
+    return False
 
 
 def click_system_alert_button(udid: str, labels: list[str], attempts: int = 3, delay: float = 0.35) -> bool:
     """Best-effort click for generic iOS system-alert buttons by visible label."""
     _ensure_booted(udid)
-    clicked = False
     for _ in range(attempts):
         if _click_alert_button(udid, labels):
-            clicked = True
+            return True
         time.sleep(delay)
-    return clicked
+    return False
 
 
 def wait_for_foreground_app(

@@ -1163,7 +1163,7 @@ end tell'''
             # Try simctl ui alert dismiss, fall back to Maestro
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
                      capture_output=True, check=False)
-            ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow", "Don't Allow"])
+            ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow"])
         else:
             # Android: press Enter key to dismiss
             _sp.run(["adb", "-s", android.get_serial(sim_id),
@@ -1191,7 +1191,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "deny"],
                      capture_output=True, check=False)
-            ios.click_system_alert_button(sim_id, ["Don’t Allow", "Don't Allow", "Cancel", "Not Now"])
+            ios.click_system_alert_button(sim_id, ["Don’t Allow", "Cancel", "Not Now", "Close"])
         else:
             _sp.run(["adb", "-s", android.get_serial(sim_id),
                       "shell", "input", "keyevent", "KEYCODE_BACK"],
