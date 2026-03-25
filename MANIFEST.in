@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+include install.sh
+recursive-include simemu *.py
+recursive-include docs *.md
+exclude simemu/swift/*
+prune tests
+prune simemu/swift
