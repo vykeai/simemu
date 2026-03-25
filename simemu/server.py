@@ -347,6 +347,71 @@ def v2_sessions():
     return [s.to_agent_json() for s in sessions.values()]
 
 
+# ── v2 convenience routes ────────────────────────────────────────────────────
+
+@app.post("/v2/present/{session_id}", summary="Present simulator window (iOS)")
+def v2_present(session_id: str):
+    return _v2_do(session_id, "present", [])
+
+
+@app.post("/v2/stabilize/{session_id}", summary="Stabilize simulator for interaction (iOS)")
+def v2_stabilize(session_id: str):
+    return _v2_do(session_id, "stabilize", [])
+
+
+class V2VerifyInstallRequest(BaseModel):
+    package: str
+
+@app.post("/v2/verify-install/{session_id}", summary="Verify Android package-manager state")
+def v2_verify_install(session_id: str, req: V2VerifyInstallRequest):
+    return _v2_do(session_id, "verify-install", [req.package])
+
+
+class V2RepairInstallRequest(BaseModel):
+    package: str
+    apk_path: str
+
+@app.post("/v2/repair-install/{session_id}", summary="Repair Android package-manager state and reinstall")
+def v2_repair_install(session_id: str, req: V2RepairInstallRequest):
+    return _v2_do(session_id, "repair-install", [req.package, req.apk_path])
+
+
+class V2ProofRequest(BaseModel):
+    output: str | None = None
+    url: str | None = None
+    appearance: str | None = None
+    wait: float = 2.0
+    label: str = ""
+    max_size: int | None = None
+
+@app.post("/v2/proof/{session_id}", summary="Capture verified proof screenshot with normalized device state")
+def v2_proof(session_id: str, req: V2ProofRequest):
+    args: list[str] = []
+    if req.output:
+        args += ["-o", req.output]
+    if req.url:
+        args += ["--url", req.url]
+    if req.appearance:
+        args += ["--appearance", req.appearance]
+    args += ["--wait", str(req.wait)]
+    if req.label:
+        args += ["--label", req.label]
+    if req.max_size:
+        args += ["--max-size", str(req.max_size)]
+    return _v2_do(session_id, "proof", args)
+
+
+def _v2_do(session_id: str, command: str, args: list[str]):
+    """Shared handler for v2 convenience routes."""
+    try:
+        result = session_module.do_command(session_id, command, args)
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=e.to_json())
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return result or {"status": "ok"}
+
+
 # ── server entrypoint ─────────────────────────────────────────────────────────
 
 def serve(host: str = "127.0.0.1", port: int = 8765):

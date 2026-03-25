@@ -162,5 +162,56 @@ class ServerDiscoveryTests(unittest.TestCase):
         self.assertEqual(data[0]["real_device"], True)
 
 
+class TestV2ConvenienceRoutes(unittest.TestCase):
+    """Tests for v2 convenience routes: present, stabilize, verify-install, repair-install, proof."""
+
+    @patch("simemu.server.session_module.do_command", return_value={"status": "presented"})
+    def test_v2_present(self, mock_do) -> None:
+        resp = client.post("/v2/present/s-abc123")
+        self.assertEqual(resp.status_code, 200)
+        mock_do.assert_called_once_with("s-abc123", "present", [])
+
+    @patch("simemu.server.session_module.do_command", return_value={"status": "stabilized"})
+    def test_v2_stabilize(self, mock_do) -> None:
+        resp = client.post("/v2/stabilize/s-abc123")
+        self.assertEqual(resp.status_code, 200)
+        mock_do.assert_called_once_with("s-abc123", "stabilize", [])
+
+    @patch("simemu.server.session_module.do_command", return_value={"status": "verified"})
+    def test_v2_verify_install(self, mock_do) -> None:
+        resp = client.post("/v2/verify-install/s-abc123", json={"package": "com.example.app"})
+        self.assertEqual(resp.status_code, 200)
+        mock_do.assert_called_once_with("s-abc123", "verify-install", ["com.example.app"])
+
+    @patch("simemu.server.session_module.do_command", return_value={"status": "repaired"})
+    def test_v2_repair_install(self, mock_do) -> None:
+        resp = client.post("/v2/repair-install/s-abc123",
+                           json={"package": "com.example.app", "apk_path": "/tmp/app.apk"})
+        self.assertEqual(resp.status_code, 200)
+        mock_do.assert_called_once_with("s-abc123", "repair-install", ["com.example.app", "/tmp/app.apk"])
+
+    @patch("simemu.server.session_module.do_command", return_value={"status": "proved", "path": "/tmp/p.png"})
+    def test_v2_proof(self, mock_do) -> None:
+        resp = client.post("/v2/proof/s-abc123",
+                           json={"output": "/tmp/p.png", "url": "app://screen", "appearance": "dark", "wait": 1.5})
+        self.assertEqual(resp.status_code, 200)
+        args = mock_do.call_args[0]
+        self.assertEqual(args[0], "s-abc123")
+        self.assertEqual(args[1], "proof")
+        self.assertIn("-o", args[2])
+        self.assertIn("--url", args[2])
+        self.assertIn("--appearance", args[2])
+
+    @patch("simemu.server.session_module.do_command", side_effect=SessionError("session_expired", "s-abc123", "expired"))
+    def test_v2_convenience_returns_409_on_session_error(self, mock_do) -> None:
+        resp = client.post("/v2/present/s-abc123")
+        self.assertEqual(resp.status_code, 409)
+
+    @patch("simemu.server.session_module.do_command", side_effect=RuntimeError("boom"))
+    def test_v2_convenience_returns_500_on_runtime_error(self, mock_do) -> None:
+        resp = client.post("/v2/stabilize/s-abc123")
+        self.assertEqual(resp.status_code, 500)
+
+
 if __name__ == "__main__":
     unittest.main()
