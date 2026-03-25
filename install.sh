@@ -283,6 +283,42 @@ else
     info "SimEmuBar: not installed"
 fi
 
+# Check platform tools
+if command -v xcrun >/dev/null 2>&1; then
+    XCODE_VER=$(xcrun --version 2>&1 | head -1 || echo "unknown")
+    ok "Xcode tools: $XCODE_VER"
+else
+    warn "xcrun not found — iOS simulators unavailable. Install: xcode-select --install"
+fi
+
+if command -v adb >/dev/null 2>&1; then
+    ADB_VER=$(adb --version 2>&1 | head -1 || echo "unknown")
+    ok "adb: $ADB_VER"
+else
+    info "adb not found — Android emulators unavailable (optional)"
+fi
+
+# Check guard hook is functional
+if [ -f "$GUARD_SCRIPT" ]; then
+    GUARD_TEST=$(echo '{"tool_input":{"command":"xcrun simctl boot test"}}' | "$PYTHON" "$GUARD_SCRIPT" 2>/dev/null)
+    if echo "$GUARD_TEST" | grep -q '"block"'; then
+        ok "Guard hook: blocking direct xcrun/adb"
+    else
+        warn "Guard hook: not blocking as expected — check $GUARD_SCRIPT"
+        ERRORS=$((ERRORS + 1))
+    fi
+else
+    warn "Guard hook script not found at $GUARD_SCRIPT"
+fi
+
+# Check data directory permissions
+if [ -w "$SIMEMU_DATA_DIR" ]; then
+    ok "Data dir: $SIMEMU_DATA_DIR (writable)"
+else
+    warn "Data dir not writable: $SIMEMU_DATA_DIR"
+    ERRORS=$((ERRORS + 1))
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 if [ "$ERRORS" -eq 0 ]; then
