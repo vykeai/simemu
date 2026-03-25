@@ -1,26 +1,38 @@
 {
   "id": "T-LU-021",
   "title": "Server v2 parity for present, stabilize, verify-install, and repair-install",
-  "description": "",
+  "description": "Bring the HTTP/server surface up to parity with the newer CLI/session commands so automation does not need to shell out for recently-added recovery and presentation features.\n\nAcceptance criteria:\n- v2 server routes expose present, stabilize, verify-install, and repair-install\n- request and response payloads match the CLI command contract closely enough for downstream tooling\n- parity is documented in the server API reference or README\n- endpoint tests cover the newly-added command mappings",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
-  "dependsOn": [],
+  "assignee": "claude",
+  "dependsOn": [
+    "T-LU-014",
+    "T-LU-017"
+  ],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "v2 server exposes present, stabilize, verify-install, and repair-install",
+    "server payloads align with the CLI/session contract",
+    "server parity is documented",
+    "tests cover the new endpoint mappings"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:42.020Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T19:24:48.084Z"
     }
   ],
   "attachments": [],
@@ -29,7 +41,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:42.019Z",
-  "updatedAt": "2026-03-24T22:00:42.019Z",
+  "updatedAt": "2026-03-25T19:24:48.084Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
