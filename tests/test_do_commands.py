@@ -129,13 +129,25 @@ class TestDoLaunch(DoCommandBase):
         self.assertEqual(result["status"], "launched")
 
     @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_launch_android(self, mock_serial, mock_launch) -> None:
+    def test_do_launch_android(self, mock_serial, mock_fg, mock_launch) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "launch", ["com.example.app/.MainActivity"])
         mock_launch.assert_called_once_with("Pixel_7", "com.example.app/.MainActivity", [])
         self.assertEqual(result["status"], "launched")
+
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.other.app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_launch_android_warns_on_foreground_mismatch(self, mock_serial, mock_fg, mock_launch) -> None:
+        """Launch succeeds but emits diagnostic when wrong app is foreground."""
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7")
+        result = do_command("s-droid1", "launch", ["com.example.app"])
+        self.assertEqual(result["status"], "launched")
+        # Diagnostic emitted to stderr — we just verify launch still completes
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_launch_missing_arg(self, mock_serial) -> None:
@@ -269,8 +281,9 @@ class TestDoUrl(DoCommandBase):
         mock_url.assert_called_once_with("Pixel_7", "https://example.com", expected_package=None)
 
     @patch("simemu.session.android.open_url")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_url_android_uses_last_launched_app_for_verification(self, mock_serial, mock_url) -> None:
+    def test_do_url_android_uses_last_launched_app_for_verification(self, mock_serial, mock_fg, mock_url) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         sf = Path(self.tmpdir.name) / "sessions.json"
@@ -284,6 +297,30 @@ class TestDoUrl(DoCommandBase):
     def test_do_url_missing_arg(self, mock_serial) -> None:
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "url", [])
+
+    @patch("simemu.session.android.open_url")
+    @patch("simemu.session.android.foreground_app", return_value="com.chrome.browser")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_android_raises_when_wrong_app_foreground(self, mock_serial, mock_fg, mock_url) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "not foreground on Android"):
+            do_command("s-droid1", "url", ["fitkind://debug/route"])
+
+    @patch("simemu.session.android.open_url")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_android_passes_when_correct_app_foreground(self, mock_serial, mock_fg, mock_url) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "url", ["fitkind://debug/route"])
+        self.assertEqual(result["status"], "opened")
 
     @patch("simemu.session.ios.open_url")
     @patch("simemu.session.ios.complete_open_url_handoff", return_value=False)

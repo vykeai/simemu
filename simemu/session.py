@@ -832,6 +832,16 @@ end tell'''
             ios.launch(sim_id, bundle, extra)
         else:
             android.launch(sim_id, bundle, extra)
+            # Verify the right package is foregrounded
+            actual_fg = android.foreground_app(sim_id)
+            expected_pkg = bundle.split("/", 1)[0]
+            if actual_fg and actual_fg != expected_pkg:
+                import sys as _sys
+                print(json.dumps({
+                    "diagnostic": "android_launch_foreground_mismatch",
+                    "expected": expected_pkg,
+                    "actual": actual_fg,
+                }), file=_sys.stderr, flush=True)
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
@@ -970,6 +980,20 @@ end tell'''
             with _locked_sessions() as (data, save):
                 expected_package = data["sessions"].get(session_id, {}).get("last_app")
             android.open_url(sim_id, url, expected_package=expected_package)
+            # Verify foreground after URL open
+            if expected_package:
+                actual_fg = android.foreground_app(sim_id)
+                if actual_fg and actual_fg != expected_package:
+                    diag = {
+                        "expected": expected_package,
+                        "actual_foreground": actual_fg,
+                        "url": url,
+                    }
+                    raise RuntimeError(
+                        f"URL opened but '{expected_package}' is not foreground on Android. "
+                        f"Foreground: '{actual_fg}'. Another app may have intercepted the URL.\n"
+                        f"Diagnostics: {json.dumps(diag)}"
+                    )
         return {"status": "opened", "url": url}
 
     elif command == "terminate":
