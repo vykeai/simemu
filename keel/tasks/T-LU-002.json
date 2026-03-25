@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:04:02.594Z",
+      "by": "human",
+      "text": "Crash-safe writes for sessions.json and state.json. Backup before write, recovery from backup on corruption, stale tmp cleanup. 9 tests."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:39.052Z",
-  "updatedAt": "2026-03-25T21:04:02.461Z",
+  "updatedAt": "2026-03-25T21:04:02.594Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
