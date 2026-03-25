@@ -1,26 +1,35 @@
 {
   "id": "T-LU-008",
   "title": "Live visibility reconciliation — derive visible/headless from actual simulator/emulator window state",
-  "description": "",
+  "description": "Stop trusting stale session metadata for visibility. Reconcile visible/headless state from the actual desktop window state for Simulator and Android Emulator surfaces.\n\nAcceptance criteria:\n- simemu can derive current visibility from live desktop state instead of only sessions.json\n- menubar counts and per-session badges reflect real visibility after external window changes\n- parked sessions are never counted as visible/headless live devices\n- tests cover missing, stale, and externally-changed visibility state",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "high",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "live visibility is derived from actual desktop state",
+    "menubar counts match externally changed window visibility",
+    "parked sessions are excluded from live visibility counts",
+    "tests cover stale and missing visibility metadata"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:40.030Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T12:58:23.384Z"
     }
   ],
   "attachments": [],
@@ -29,7 +38,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.029Z",
-  "updatedAt": "2026-03-24T22:00:40.029Z",
+  "updatedAt": "2026-03-25T12:58:23.382Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
