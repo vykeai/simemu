@@ -1,26 +1,35 @@
 {
   "id": "T-LU-019",
   "title": "Session provenance — persist launched app, deep link, artifact path, and proof metadata per command",
-  "description": "",
+  "description": "Persist proof provenance in session history so transcript-backed debugging can answer what app, URL, artifact, and render wait produced a screenshot.\n\nAcceptance criteria:\n- session history stores launched app, deep link, screenshot path, and proof metadata\n- provenance survives normal monitor writes and session recovery\n- menubar/server surfaces can read the last proof metadata when needed\n- regression tests verify provenance shape and persistence",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "session history stores app, URL, screenshot path, and proof metadata",
+    "provenance survives normal writes and recovery",
+    "server or UI surfaces can read last proof metadata",
+    "tests verify provenance persistence"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:41.433Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T12:58:24.367Z"
     }
   ],
   "attachments": [],
@@ -29,7 +38,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:41.432Z",
-  "updatedAt": "2026-03-24T22:00:41.432Z",
+  "updatedAt": "2026-03-25T12:58:24.366Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
