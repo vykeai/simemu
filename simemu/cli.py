@@ -589,6 +589,13 @@ def cmd_status_overview(args):
 
     data["version"] = "0.3.0"
 
+    # ── Watchdog ──────────────────────────────────────────────────────────
+    from .watchdog import full_health_check
+    try:
+        data["health"] = full_health_check()
+    except Exception:
+        data["health"] = {"status": "check_failed"}
+
     # ── Output ───────────────────────────────────────────────────────────
     if output_json:
         _print_json(data)
@@ -646,6 +653,32 @@ def cmd_status_overview(args):
     print(f"Monitor: {monitor_detail}")
     print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
     print(f"Menubar: {menubar_detail}")
+
+    # Watchdog health check
+    from .watchdog import check_stale_sessions, check_state_file_health
+    print()
+    stale = check_stale_sessions()
+    state_health = check_state_file_health()
+    issues: list[str] = []
+
+    if stale["status"] == "stale":
+        for ss in stale.get("stale_sessions", []):
+            issues.append(f"Session {ss['session']} idle {ss['idle_hours']}h (status: {ss['status']})")
+    if stale["status"] == "corrupted":
+        issues.append(f"sessions.json: {stale.get('hint', 'corrupted')}")
+    for issue in state_health.get("issues", []):
+        issues.append(issue)
+    if server_status != "running":
+        issues.append("API server not running — start with: simemu serve")
+    if monitor_status not in ("running", "loaded"):
+        issues.append("Monitor not running — install with: bash install.sh")
+
+    if issues:
+        print("Health issues:")
+        for issue in issues:
+            print(f"  \u26a0 {issue}")
+    else:
+        print("Health: all good")
 
 
 # ── legacy command handlers (DISCONTINUED) ──────────────────────────────────
