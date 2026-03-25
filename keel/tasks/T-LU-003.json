@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:06:49.666Z",
+      "by": "human",
+      "text": "Reservation pools with form-factor keys. Config format: reservation_pools.agent.platform-formfactor = [devices]. Pool takes precedence over simple. CLI: --pool --form-factor. 4 new tests. 30 discover tests pass."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:39.236Z",
-  "updatedAt": "2026-03-25T21:06:49.542Z",
+  "updatedAt": "2026-03-25T21:06:49.666Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
