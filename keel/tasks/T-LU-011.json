@@ -1,26 +1,40 @@
 {
   "id": "T-LU-011",
   "title": "Proof mode command — normalize appearance/status bar/render waits and capture an artifact bundle",
-  "description": "",
+  "description": "Add a first-class proof mode command that sets up a deterministic screenshot environment, launches or deep-links the app, waits for render, and stores a proof bundle with metadata.\n\nAcceptance criteria:\n- one command can normalize appearance, status bar, and render wait before capture\n- proof output includes screenshot path and machine-readable metadata\n- proof mode works for both iOS and Android sessions\n- failures stop before invalid proof is captured",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "high",
   "platform": "all",
-  "assignee": null,
-  "dependsOn": [],
+  "assignee": "claude",
+  "dependsOn": [
+    "T-LU-008",
+    "T-LU-014",
+    "T-LU-017",
+    "T-LU-019"
+  ],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "proof mode normalizes device state before capture",
+    "proof output includes screenshot and metadata",
+    "proof mode works for iOS and Android",
+    "invalid proof attempts fail explicitly"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:40.321Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T16:51:30.103Z"
     }
   ],
   "attachments": [],
@@ -29,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.320Z",
-  "updatedAt": "2026-03-24T22:00:40.320Z",
+  "updatedAt": "2026-03-25T16:51:30.102Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
