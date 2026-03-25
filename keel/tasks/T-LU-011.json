@@ -19,7 +19,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T16:55:49.934Z",
+      "by": "human",
+      "text": "Proof mode command implemented. 10-step pipeline: dismiss→appearance→status_bar→isolate→url→wait→verify→fail_or_capture→provenance. Fails before screenshot if foreground mismatch. 6 tests. Unblocks all agents for trustworthy proof."
+    }
+  ],
   "acceptanceCriteria": [
     "proof mode normalizes device state before capture",
     "proof output includes screenshot and metadata",
@@ -47,7 +53,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.320Z",
-  "updatedAt": "2026-03-25T16:55:49.582Z",
+  "updatedAt": "2026-03-25T16:55:49.934Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
