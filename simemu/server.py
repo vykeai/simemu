@@ -142,9 +142,61 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="simemu",
     description="Simulator allocation manager for multi-agent iOS/Android development.",
-    version="0.1.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
+
+
+# ── Auth + rate limiting middleware ──────────────────────────────────────────
+
+import time as _time
+from collections import defaultdict as _defaultdict
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_MAX = int(os.environ.get("SIMEMU_RATE_LIMIT", "120"))  # requests per window
+_rate_counters: dict[str, list[float]] = _defaultdict(list)
+
+_API_KEY = os.environ.get("SIMEMU_API_KEY", "")  # empty = no auth required
+
+# Paths exempt from auth (health, docs, federation)
+_AUTH_EXEMPT = {"/health", "/docs", "/openapi.json", "/redoc", "/fed/info", "/fed/runs"}
+
+
+class AuthRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # API key auth (only when SIMEMU_API_KEY is set)
+        if _API_KEY and path not in _AUTH_EXEMPT:
+            auth_header = request.headers.get("Authorization", "")
+            token = auth_header.replace("Bearer ", "").strip()
+            if token != _API_KEY:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "unauthorized", "hint": "Set Authorization: Bearer $SIMEMU_API_KEY"},
+                )
+
+        # Rate limiting by client IP
+        client_ip = request.client.host if request.client else "unknown"
+        now = _time.time()
+        window = _rate_counters[client_ip]
+        # Prune old entries
+        _rate_counters[client_ip] = [t for t in window if now - t < _RATE_LIMIT_WINDOW]
+        if len(_rate_counters[client_ip]) >= _RATE_LIMIT_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "rate_limited",
+                         "hint": f"Max {_RATE_LIMIT_MAX} requests per {_RATE_LIMIT_WINDOW}s. Retry after a brief wait."},
+            )
+        _rate_counters[client_ip].append(now)
+
+        return await call_next(request)
+
+
+app.add_middleware(AuthRateLimitMiddleware)
 
 from .dashboard import register_dashboard
 register_dashboard(app, state.get_all)

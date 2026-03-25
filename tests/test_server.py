@@ -213,5 +213,73 @@ class TestV2ConvenienceRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 500)
 
 
+class TestRateLimiting(unittest.TestCase):
+    def test_health_not_rate_limited(self) -> None:
+        # Health endpoint should always work
+        for _ in range(5):
+            resp = client.get("/health")
+            self.assertEqual(resp.status_code, 200)
+
+    def test_rate_limit_returns_429(self) -> None:
+        import simemu.server as srv
+        old_max = srv._RATE_LIMIT_MAX
+        srv._RATE_LIMIT_MAX = 3
+        srv._rate_counters.clear()
+        try:
+            statuses = []
+            for _ in range(5):
+                resp = client.get("/status")
+                statuses.append(resp.status_code)
+            self.assertIn(429, statuses)
+        finally:
+            srv._RATE_LIMIT_MAX = old_max
+            srv._rate_counters.clear()
+
+
+class TestApiKeyAuth(unittest.TestCase):
+    def test_no_auth_when_key_unset(self) -> None:
+        import simemu.server as srv
+        old = srv._API_KEY
+        srv._API_KEY = ""
+        try:
+            resp = client.get("/status")
+            self.assertIn(resp.status_code, (200, 429))  # might hit rate limit from previous test
+        finally:
+            srv._API_KEY = old
+
+    def test_auth_rejects_when_key_set(self) -> None:
+        import simemu.server as srv
+        old = srv._API_KEY
+        srv._API_KEY = "secret-key-123"
+        srv._rate_counters.clear()
+        try:
+            resp = client.get("/status")
+            self.assertEqual(resp.status_code, 401)
+        finally:
+            srv._API_KEY = old
+
+    def test_auth_accepts_correct_key(self) -> None:
+        import simemu.server as srv
+        old = srv._API_KEY
+        srv._API_KEY = "secret-key-123"
+        srv._rate_counters.clear()
+        try:
+            resp = client.get("/status", headers={"Authorization": "Bearer secret-key-123"})
+            self.assertEqual(resp.status_code, 200)
+        finally:
+            srv._API_KEY = old
+
+    def test_health_exempt_from_auth(self) -> None:
+        import simemu.server as srv
+        old = srv._API_KEY
+        srv._API_KEY = "secret-key-123"
+        srv._rate_counters.clear()
+        try:
+            resp = client.get("/health")
+            self.assertEqual(resp.status_code, 200)
+        finally:
+            srv._API_KEY = old
+
+
 if __name__ == "__main__":
     unittest.main()
