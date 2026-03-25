@@ -1,26 +1,37 @@
 {
   "id": "T-LU-020",
   "title": "Menubar live refresh — watch sessions.json changes instead of polling",
-  "description": "",
+  "description": "Replace polling-based menu bar refresh with file watching so the panel updates immediately when sessions change without stale counts or unnecessary churn.\n\nAcceptance criteria:\n- the menu bar app reacts to sessions.json changes without a fixed poll timer\n- open panel state updates cleanly while the popover is visible\n- refresh logic is resilient to temporary file replacement during atomic writes\n- CPU wakeups are lower than the current polling model",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
-  "dependsOn": [],
+  "assignee": "claude",
+  "dependsOn": [
+    "T-LU-008"
+  ],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "menu bar reacts to sessions.json changes without polling",
+    "open panel state updates while visible",
+    "file-watch logic tolerates atomic replace writes",
+    "refresh path reduces unnecessary wakeups"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:41.726Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T19:26:39.702Z"
     }
   ],
   "attachments": [],
@@ -29,7 +40,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:41.725Z",
-  "updatedAt": "2026-03-24T22:00:41.725Z",
+  "updatedAt": "2026-03-25T19:26:39.702Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
