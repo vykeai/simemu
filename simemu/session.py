@@ -174,18 +174,72 @@ def _locked_sessions():
 
 def _read_sessions_raw() -> dict:
     sf = _sessions_file()
+    bak = sf.with_suffix(".bak")
+
+    # Try primary file
     if sf.exists():
         try:
-            return json.loads(sf.read_text())
+            data = json.loads(sf.read_text())
+            if isinstance(data, dict) and "sessions" in data:
+                return data
         except (json.JSONDecodeError, OSError):
             pass
+
+    # Primary corrupted or missing — try backup
+    if bak.exists():
+        try:
+            data = json.loads(bak.read_text())
+            if isinstance(data, dict) and "sessions" in data:
+                # Restore from backup
+                import sys as _sys
+                print(json.dumps({
+                    "diagnostic": "sessions_recovered_from_backup",
+                    "primary": str(sf),
+                    "backup": str(bak),
+                }), file=_sys.stderr, flush=True)
+                # Write it back as primary
+                try:
+                    sf.write_text(json.dumps(data, indent=2))
+                except OSError:
+                    pass
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Clean stale .tmp files that might exist from a crashed write
+    tmp = sf.with_suffix(".tmp")
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
     return {"sessions": {}}
 
 
 def _write_sessions_raw(data: dict):
     sf = _sessions_file()
+    bak = sf.with_suffix(".bak")
     tmp = sf.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+
+    content = json.dumps(data, indent=2)
+
+    # Validate JSON roundtrips before writing
+    try:
+        json.loads(content)
+    except json.JSONDecodeError:
+        raise RuntimeError("BUG: attempted to write invalid JSON to sessions.json")
+
+    # Create backup of current file before overwriting
+    if sf.exists():
+        try:
+            import shutil
+            shutil.copy2(sf, bak)
+        except OSError:
+            pass
+
+    # Atomic write: tmp → rename
+    tmp.write_text(content)
     tmp.replace(sf)
 
 
