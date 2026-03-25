@@ -340,8 +340,15 @@ def cmd_sessions(args):
         _print_json([s.to_agent_json() for s in sessions.values()])
         return
 
-    print(f"{'SESSION':<12} {'PLATFORM':<10} {'FORM':<8} {'STATUS':<8} {'OS':<12} {'LABEL':<20} {'IDLE'}")
-    print("─" * 90)
+    # Reconcile live visibility
+    from .visibility import reconcile_all_sessions
+    try:
+        live_vis = reconcile_all_sessions()
+    except Exception:
+        live_vis = {}
+
+    print(f"{'SESSION':<12} {'PLATFORM':<10} {'FORM':<8} {'STATUS':<8} {'WINDOW':<10} {'OS':<12} {'LABEL':<20} {'IDLE'}")
+    print("─" * 100)
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     for sid, s in sessions.items():
@@ -349,7 +356,8 @@ def cmd_sessions(args):
         idle_min = int((now - hb).total_seconds() / 60)
         os_ver = s.resolved_os_version or s.os_version or "latest"
         label = (s.label or "")[:20]
-        print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {os_ver:<12} {label:<20} {idle_min}m")
+        vis = live_vis.get(sid, "?")
+        print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {vis:<10} {os_ver:<12} {label:<20} {idle_min}m")
 
 
 # ── status overview ──────────────────────────────────────────────────────────
