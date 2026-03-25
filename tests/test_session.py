@@ -376,6 +376,63 @@ class TestTouch(unittest.TestCase):
         self.assertEqual(ctx.exception.error_type, "session_released")
 
 
+class TestRealDeviceRecovery(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory(prefix="simemu-real-test-")
+        self._old_state = os.environ.get("SIMEMU_STATE_DIR")
+        self._old_config = os.environ.get("SIMEMU_CONFIG_DIR")
+        os.environ["SIMEMU_STATE_DIR"] = self.tmpdir.name
+        os.environ["SIMEMU_CONFIG_DIR"] = self.tmpdir.name
+
+    def tearDown(self) -> None:
+        if self._old_state is None:
+            os.environ.pop("SIMEMU_STATE_DIR", None)
+        else:
+            os.environ["SIMEMU_STATE_DIR"] = self._old_state
+        if self._old_config is None:
+            os.environ.pop("SIMEMU_CONFIG_DIR", None)
+        else:
+            os.environ["SIMEMU_CONFIG_DIR"] = self._old_config
+        self.tmpdir.cleanup()
+
+    def _seed_real_session(self, platform="ios") -> None:
+        from simemu.session import _write_sessions_raw, _now_iso, _compute_expires_at
+        now = _now_iso()
+        _write_sessions_raw({"sessions": {
+            "s-real01": {
+                "session_id": "s-real01", "platform": platform,
+                "form_factor": "phone", "os_version": None,
+                "real_device": True, "label": "", "status": "active",
+                "sim_id": "REAL-UDID-001", "device_name": "iPhone 15 (real)",
+                "agent": "test", "created_at": now, "heartbeat_at": now,
+                "expires_at": _compute_expires_at("active", now),
+                "resolved_os_version": "iOS 18.2",
+                "claim_platform": platform, "claim_form_factor": "phone",
+                "claim_os_version": None, "claim_real_device": True, "claim_label": "",
+            }
+        }})
+
+    @patch("simemu.session.android.get_android_serial", return_value=None)
+    def test_touch_raises_when_real_android_disconnected(self, mock_serial) -> None:
+        self._seed_real_session(platform="android")
+        with self.assertRaises(RuntimeError) as ctx:
+            touch("s-real01")
+        self.assertIn("no longer connected", str(ctx.exception))
+
+    @patch("simemu.session.android.get_android_serial", return_value="SERIAL123")
+    def test_touch_succeeds_when_real_android_connected(self, mock_serial) -> None:
+        self._seed_real_session(platform="android")
+        session = touch("s-real01")
+        self.assertEqual(session.status, "active")
+
+    @patch("simemu.discover.list_real_ios", return_value=[])
+    def test_touch_raises_when_real_ios_disconnected(self, mock_list) -> None:
+        self._seed_real_session(platform="ios")
+        with self.assertRaises(RuntimeError) as ctx:
+            touch("s-real01")
+        self.assertIn("no longer connected", str(ctx.exception))
+
+
 class TestRenew(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory(prefix="simemu-renew-test-")
@@ -486,6 +543,34 @@ class TestRelease(unittest.TestCase):
         # Verify persisted too
         persisted = get_session("s-aaa111")
         self.assertEqual(persisted.status, "released")
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.ios.erase")
+    def test_release_cleans_up_ios_simulator_state(self, mock_erase, mock_window) -> None:
+        self._seed_session(visible=True, last_build_artifact="/tmp/build/App.app")
+        release("s-aaa111")
+
+        mock_erase.assert_called_once_with("AAA-111")
+        mock_window.assert_called_once_with("AAA-111", "ios", "iPhone 16 Pro")
+
+        persisted = json.loads((Path(self.tmpdir.name) / "sessions.json").read_text())
+        saved = persisted["sessions"]["s-aaa111"]
+        self.assertFalse(saved["visible"])
+        self.assertNotIn("last_build_artifact", saved)
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.erase")
+    def test_release_cleans_up_android_simulator_state(self, mock_erase, mock_window) -> None:
+        self._seed_session(
+            session_id="s-droid1",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+        )
+        release("s-droid1")
+
+        mock_erase.assert_called_once_with("Pixel_7")
+        mock_window.assert_called_once_with("Pixel_7", "android", "Pixel 7")
 
     def test_release_raises_for_nonexistent(self) -> None:
         with self.assertRaises(SessionError) as ctx:

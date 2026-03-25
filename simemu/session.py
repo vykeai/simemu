@@ -455,7 +455,30 @@ def touch(session_id: str) -> Session:
     ):
         reboot_needed = True
 
-    # Re-boot if parked
+    # Real device connectivity check — verify the device is still connected
+    if session.real_device:
+        if session.platform in ("ios", "watchos", "tvos", "visionos"):
+            # iOS real device — check via devicectl
+            try:
+                from .discover import list_real_ios
+                connected = any(d.sim_id == session.sim_id for d in list_real_ios(set()))
+                if not connected:
+                    raise RuntimeError(
+                        f"Real iOS device '{session.device_name}' is no longer connected.\n"
+                        f"Reconnect the device and retry, or re-claim: {session.reclaim_command()}"
+                    )
+            except ImportError:
+                pass
+        elif session.platform == "android":
+            # Android real device — check adb
+            serial = android.get_android_serial(session.sim_id, retries=2, delay=0.5)
+            if serial is None:
+                raise RuntimeError(
+                    f"Real Android device '{session.device_name}' is no longer connected via adb.\n"
+                    f"Reconnect and retry, or re-claim: {session.reclaim_command()}"
+                )
+
+    # Re-boot if parked (simulators only — real devices don't boot)
     if reboot_needed:
         if not session.real_device:
             if session.platform in ("ios", "watchos", "tvos", "visionos"):
