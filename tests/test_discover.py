@@ -324,5 +324,60 @@ class TestReservations(unittest.TestCase):
         self.assertEqual(result.device_name, "iPhone 17 Pro Max")
 
 
+    def test_get_reservation_pool_format(self) -> None:
+        self._write_config({
+            "reservation_pools": {
+                "sitches": {
+                    "ios-phone": ["iPhone 17 Pro Max", "iPhone 17 Pro"],
+                    "android-phone": ["Pixel 9 Pro"],
+                }
+            }
+        })
+        result = get_reservation("sitches", "ios", "phone")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["devices"], ["iPhone 17 Pro Max", "iPhone 17 Pro"])
+
+    def test_get_reservation_pool_wrong_form_factor(self) -> None:
+        self._write_config({
+            "reservation_pools": {
+                "sitches": {"ios-phone": ["iPhone 17 Pro"]}
+            }
+        })
+        result = get_reservation("sitches", "ios", "tablet")
+        self.assertIsNone(result)
+
+    def test_pool_takes_precedence_over_simple(self) -> None:
+        self._write_config({
+            "reservations": {"sitches": {"ios": {"device": "iPhone 16"}}},
+            "reservation_pools": {"sitches": {"ios-phone": ["iPhone 17 Pro Max"]}},
+        })
+        result = get_reservation("sitches", "ios", "phone")
+        # Pool format should win
+        self.assertIn("devices", result)
+        self.assertEqual(result["devices"], ["iPhone 17 Pro Max"])
+
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch("simemu.discover.list_ios")
+    def test_find_best_device_prefers_pool_reservation(self, mock_list_ios, mock_claimed) -> None:
+        import os
+        os.environ["SIMEMU_AGENT"] = "fitkind"
+        self.addCleanup(os.environ.pop, "SIMEMU_AGENT", None)
+        self._write_config({
+            "reservation_pools": {
+                "fitkind": {"ios-phone": ["iPhone 17 Pro", "iPhone 17"]}
+            }
+        })
+        mock_list_ios.return_value = [
+            SimulatorInfo("A", "ios", "iPhone Air", False, "iOS 26.1"),
+            SimulatorInfo("B", "ios", "iPhone 17 Pro", False, "iOS 26.1"),
+            SimulatorInfo("C", "ios", "iPhone 17", False, "iOS 26.1"),
+        ]
+        from simemu.session import ClaimSpec
+        spec = ClaimSpec(platform="ios")
+        result = find_best_device(spec)
+        # Should pick one of the pool devices, not iPhone Air
+        self.assertIn(result.device_name, ["iPhone 17 Pro", "iPhone 17"])
+
+
 if __name__ == "__main__":
     unittest.main()

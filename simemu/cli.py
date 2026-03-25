@@ -285,38 +285,72 @@ def cmd_config(args):
     elif args.config_command == "reserve":
         config = window_mgr._read_config()
         reservations = config.setdefault("reservations", {})
+        pools = config.setdefault("reservation_pools", {})
 
         if args.reserve_action == "set":
-            agent_res = reservations.setdefault(args.agent_name, {})
-            agent_res[args.platform] = {"device": args.device}
-            if args.version:
-                agent_res[args.platform]["version"] = args.version
-            window_mgr._write_config(config)
-            print(f"Reserved {args.platform} device '{args.device}' for agent '{args.agent_name}'")
+            form_factor = getattr(args, "form_factor", "phone") or "phone"
+            pool_mode = getattr(args, "pool", False)
+
+            if pool_mode:
+                # Pool mode: add device to the agent's pool for platform-formfactor
+                agent_pool = pools.setdefault(args.agent_name, {})
+                pool_key = f"{args.platform}-{form_factor}"
+                device_list = agent_pool.setdefault(pool_key, [])
+                if args.device not in device_list:
+                    device_list.append(args.device)
+                window_mgr._write_config(config)
+                print(f"Added '{args.device}' to pool {pool_key} for '{args.agent_name}'")
+                print(f"  Pool now: {device_list}")
+            else:
+                # Simple mode: single device reservation
+                agent_res = reservations.setdefault(args.agent_name, {})
+                agent_res[args.platform] = {"device": args.device}
+                if getattr(args, "version", None):
+                    agent_res[args.platform]["version"] = args.version
+                window_mgr._write_config(config)
+                print(f"Reserved {args.platform} device '{args.device}' for agent '{args.agent_name}'")
 
         elif args.reserve_action == "remove":
+            removed = False
             if args.agent_name in reservations:
-                if args.platform:
+                if getattr(args, "platform", None):
                     reservations[args.agent_name].pop(args.platform, None)
                     if not reservations[args.agent_name]:
                         del reservations[args.agent_name]
                 else:
                     del reservations[args.agent_name]
+                removed = True
+            if args.agent_name in pools:
+                if getattr(args, "platform", None):
+                    # Remove all pool keys matching this platform
+                    keys_to_remove = [k for k in pools[args.agent_name] if k.startswith(args.platform)]
+                    for k in keys_to_remove:
+                        del pools[args.agent_name][k]
+                    if not pools[args.agent_name]:
+                        del pools[args.agent_name]
+                else:
+                    del pools[args.agent_name]
+                removed = True
+            if removed:
                 window_mgr._write_config(config)
                 print(f"Removed reservation for '{args.agent_name}'" +
-                      (f" ({args.platform})" if args.platform else ""))
+                      (f" ({args.platform})" if getattr(args, "platform", None) else ""))
             else:
                 print(f"No reservations found for '{args.agent_name}'")
 
         elif args.reserve_action == "list":
-            if not reservations:
+            has_any = bool(reservations) or bool(pools)
+            if not has_any:
                 print("No permanent reservations configured.")
             else:
-                print(f"{'AGENT':<20} {'PLATFORM':<12} {'DEVICE':<30} {'VERSION'}")
-                print("─" * 70)
+                print(f"{'AGENT':<20} {'KEY':<16} {'DEVICES'}")
+                print("─" * 80)
                 for agent_name, platforms in sorted(reservations.items()):
                     for plat, res in sorted(platforms.items()):
-                        print(f"{agent_name:<20} {plat:<12} {res.get('device', '?'):<30} {res.get('version', 'any')}")
+                        print(f"{agent_name:<20} {plat:<16} {res.get('device', '?')}")
+                for agent_name, agent_pools in sorted(pools.items()):
+                    for pool_key, devices in sorted(agent_pools.items()):
+                        print(f"{agent_name:<20} {pool_key:<16} {', '.join(devices)}")
 
     elif args.config_command == "show":
         config = window_mgr._read_config()
@@ -2078,6 +2112,10 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Platform to reserve")
     res_set_p.add_argument("device", help="Device name to reserve (e.g. 'iPhone 17 Pro Max')")
     res_set_p.add_argument("--version", help="Preferred OS version")
+    res_set_p.add_argument("--pool", action="store_true",
+                           help="Add device to a reservation pool (multiple devices per product)")
+    res_set_p.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
+                           default="phone", help="Form factor for pool key (default: phone)")
     res_set_p.set_defaults(func=cmd_config)
 
     res_rm_p = res_sub.add_parser("remove", help="Remove a reservation")

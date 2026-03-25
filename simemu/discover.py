@@ -246,19 +246,23 @@ def _classify_form_factor(sim: SimulatorInfo) -> str | None:
     return None
 
 
-def get_reservation(agent: str, platform: str) -> dict | None:
-    """Check if an agent has a reserved device for a platform.
+def get_reservation(agent: str, platform: str, form_factor: str = "phone") -> dict | None:
+    """Check if an agent has a reserved device for a platform + form factor.
 
-    Reads from ~/.simemu/config.json under "reservations":
-    {
-      "reservations": {
-        "sitches": {
-          "ios": {"device": "iPhone 17 Pro Max"},
-          "android": {"device": "Pixel 9 Pro"}
-        }
+    Supports two config formats in ~/.simemu/config.json:
+
+    Simple (legacy):
+    {"reservations": {"sitches": {"ios": {"device": "iPhone 17 Pro Max"}}}}
+
+    Pool (new):
+    {"reservation_pools": {
+      "sitches": {
+        "ios-phone": ["iPhone 17 Pro Max", "iPhone 17 Pro"],
+        "android-phone": ["Pixel 9 Pro"]
       }
-    }
-    Returns the reservation dict (with "device" key) or None.
+    }}
+
+    Returns {"device": "name"} or {"devices": ["name1", "name2"]} or None.
     """
     from . import state as _state
     config_path = _state.config_dir() / "config.json"
@@ -268,8 +272,18 @@ def get_reservation(agent: str, platform: str) -> dict | None:
         config = json.loads(config_path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+
+    # Check pool format first (more specific)
+    pools = config.get("reservation_pools", {})
+    agent_pool = pools.get(agent, {})
+    pool_key = f"{platform}-{form_factor}"
+    if pool_key in agent_pool:
+        devices = agent_pool[pool_key]
+        if isinstance(devices, list) and devices:
+            return {"devices": devices}
+
+    # Fall back to simple format
     reservations = config.get("reservations", {})
-    # Check by agent name (e.g. "sitches", "fitkind")
     agent_res = reservations.get(agent, {})
     return agent_res.get(platform)
 
@@ -347,16 +361,25 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
             )
         candidates = filtered
 
-    # Check for permanent reservation
+    # Check for permanent reservation (simple or pool)
     agent = os.environ.get("SIMEMU_AGENT", "")
-    reservation = get_reservation(agent, platform) if agent else None
-    reserved_device_name = reservation.get("device", "") if reservation else ""
+    reservation = get_reservation(agent, platform, spec.form_factor) if agent else None
+    reserved_device_names: list[str] = []
+    if reservation:
+        if "devices" in reservation:
+            reserved_device_names = reservation["devices"]
+        elif "device" in reservation:
+            reserved_device_names = [reservation["device"]]
 
     # Score candidates
     def _score(sim: SimulatorInfo) -> tuple:
         """Lower score = better match. Returns tuple for sorting."""
         # Permanent reservation match is highest priority
-        reserved_score = 0 if (reserved_device_name and reserved_device_name in sim.device_name) else 1
+        reserved_score = 1
+        for rname in reserved_device_names:
+            if rname in sim.device_name:
+                reserved_score = 0
+                break
 
         # Prefer booted devices (saves boot time)
         booted_score = 0 if sim.booted else 1
