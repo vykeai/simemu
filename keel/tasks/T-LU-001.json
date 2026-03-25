@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:09:21.421Z",
+      "by": "human",
+      "text": "Schema versioning with auto-migration pipeline. Current version 2. v1→v2 adds provenance and claim spec fields. Auto-migrates on read, stamps on write. 4 tests."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:38.800Z",
-  "updatedAt": "2026-03-25T21:09:21.301Z",
+  "updatedAt": "2026-03-25T21:09:21.421Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
