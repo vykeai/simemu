@@ -547,6 +547,32 @@ class TestBiometrics(unittest.TestCase):
         mock_adb.assert_called_once_with("MyAVD", "emu", "finger", "touch", "2")
 
 
+class TestStopOtherApps(unittest.TestCase):
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_stops_third_party_apps_except_keep(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="package:app.sitches.dev\npackage:ai.vivii.dev\npackage:com.example.other\n",
+            stderr="",
+        )
+        stopped = android.stop_other_apps("TestAVD", keep="app.sitches.dev")
+        self.assertIn("ai.vivii.dev", stopped)
+        self.assertIn("com.example.other", stopped)
+        self.assertNotIn("app.sitches.dev", stopped)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_keeps_multiple_packages(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="package:app.a\npackage:app.b\npackage:app.c\n",
+            stderr="",
+        )
+        stopped = android.stop_other_apps("TestAVD", keep=["app.a", "app.b"])
+        self.assertEqual(stopped, ["app.c"])
+
+
 class TestDismissSystemDialogs(unittest.TestCase):
     @patch("simemu.android.subprocess.run")
     @patch("simemu.android.wait_until_ready", return_value="emulator-5554")

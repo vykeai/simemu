@@ -831,10 +831,19 @@ end tell'''
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.launch(sim_id, bundle, extra)
         else:
+            expected_pkg = bundle.split("/", 1)[0]
+            # Isolate: force-stop other third-party apps before launch
+            stopped = android.stop_other_apps(sim_id, keep=expected_pkg)
+            if stopped:
+                import sys as _sys
+                print(json.dumps({
+                    "diagnostic": "android_isolation",
+                    "stopped_count": len(stopped),
+                    "stopped": stopped[:10],
+                }), file=_sys.stderr, flush=True)
             android.launch(sim_id, bundle, extra)
             # Verify the right package is foregrounded
             actual_fg = android.foreground_app(sim_id)
-            expected_pkg = bundle.split("/", 1)[0]
             if actual_fg and actual_fg != expected_pkg:
                 import sys as _sys
                 print(json.dumps({

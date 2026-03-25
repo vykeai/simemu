@@ -552,6 +552,38 @@ def list_apps(avd_name: str) -> list[dict]:
     return sorted(apps, key=lambda x: x["package"])
 
 
+def stop_other_apps(avd_name: str, keep: str | list[str] | None = None) -> list[str]:
+    """Force-stop all third-party packages except those in keep.
+
+    Used to isolate the device for proof capture — prevents other agents'
+    apps from intercepting deep links or appearing in foreground.
+    Returns the list of packages that were stopped.
+    """
+    serial = wait_until_ready(avd_name)
+    keep_set = set()
+    if isinstance(keep, str):
+        keep_set.add(keep)
+    elif keep:
+        keep_set.update(keep)
+
+    # List third-party packages
+    result = subprocess.run(
+        ["adb", "-s", serial, "shell", "pm", "list", "packages", "-3"],
+        capture_output=True, text=True, check=False, timeout=15,
+    )
+    stopped = []
+    for line in result.stdout.splitlines():
+        pkg = line.replace("package:", "").strip()
+        if not pkg or pkg in keep_set:
+            continue
+        subprocess.run(
+            ["adb", "-s", serial, "shell", "am", "force-stop", pkg],
+            capture_output=True, check=False, timeout=5,
+        )
+        stopped.append(pkg)
+    return stopped
+
+
 def launch(avd_name: str, package_activity: str, args: list[str] | None = None) -> None:
     wait_until_ready(avd_name)
     """
