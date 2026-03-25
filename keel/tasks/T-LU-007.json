@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:17:34.959Z",
+      "by": "human",
+      "text": "Shell completions for zsh and bash. Dynamic session ID completion. 50+ do sub-commands. Platform aliases."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:39.923Z",
-  "updatedAt": "2026-03-25T21:17:34.817Z",
+  "updatedAt": "2026-03-25T21:17:34.960Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
