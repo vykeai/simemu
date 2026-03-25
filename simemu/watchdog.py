@@ -8,10 +8,8 @@ with actionable recovery hints.
 import json
 import os
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 
 def check_api_server(host: str = "127.0.0.1", port: int = 8765, timeout: float = 2.0) -> dict:
