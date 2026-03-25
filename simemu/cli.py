@@ -209,12 +209,25 @@ def _autostart_server_if_needed() -> None:
 # ── v2 session-based command handlers ────────────────────────────────────────
 
 def cmd_claim(args):
-    """Claim a device session."""
+    """Claim a device session. Supports aliases (iphone, ipad, pixel, watch)."""
+    from .claim_policy import resolve_alias, apply_defaults
+
+    # Resolve alias → platform + defaults
+    resolved = resolve_alias(args.platform)
+    platform = resolved.get("platform", args.platform)
+
+    # User-provided flags override alias defaults
+    form_factor = getattr(args, "form_factor", None) or resolved.get("form_factor") or "phone"
+    version = getattr(args, "version", None) or resolved.get("version")
     visible = getattr(args, "visible", False)
+
+    # Apply per-platform defaults from policy config
+    spec_dict = apply_defaults(platform, {"version": version, "form_factor": form_factor})
+
     spec = ClaimSpec(
-        platform=args.platform,
-        form_factor=getattr(args, "form_factor", None) or "phone",
-        os_version=getattr(args, "version", None),
+        platform=platform,
+        form_factor=spec_dict.get("form_factor") or "phone",
+        os_version=spec_dict.get("version"),
         real_device=getattr(args, "real", False),
         label=getattr(args, "label", None) or "",
         visible=visible,
@@ -2060,7 +2073,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # claim
     claim_p = sub.add_parser("claim", help="Claim a device session (v2 API)")
-    claim_p.add_argument("platform", choices=["ios", "android", "macos"])
+    claim_p.add_argument("platform",
+                         help="Platform or alias: ios, android, macos, iphone, ipad, pixel, watch, tv, vision, mac")
     claim_p.add_argument("--version", help="OS version (e.g. 26, 18, 15)")
     claim_p.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
                          default="phone", help="Device form factor (default: phone)")
