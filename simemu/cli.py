@@ -382,6 +382,128 @@ def cmd_completions(args):
         print(bash_completion())
 
 
+def cmd_doctor(args):
+    """Diagnose simemu setup issues and suggest fixes."""
+    from .watchdog import full_health_check
+    import shutil
+
+    output_json = getattr(args, "json", False)
+    issues: list[dict] = []
+    ok_items: list[str] = []
+
+    # 1. Python version
+    import sys as _sys
+    py_ver = f"{_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro}"
+    if _sys.version_info >= (3, 11):
+        ok_items.append(f"Python {py_ver}")
+    else:
+        issues.append({"component": "python", "severity": "critical",
+                       "message": f"Python {py_ver} — requires 3.11+",
+                       "fix": "brew install python"})
+
+    # 2. simemu on PATH
+    simemu_bin = shutil.which("simemu")
+    if simemu_bin:
+        ok_items.append(f"simemu binary: {simemu_bin}")
+    else:
+        issues.append({"component": "simemu", "severity": "critical",
+                       "message": "simemu not on PATH",
+                       "fix": "pip install -e . && hash -r"})
+
+    # 3. Xcode tools
+    if shutil.which("xcrun"):
+        ok_items.append("Xcode CLI tools")
+    else:
+        issues.append({"component": "xcode", "severity": "high",
+                       "message": "xcrun not found — iOS simulators unavailable",
+                       "fix": "xcode-select --install"})
+
+    # 4. adb (optional)
+    if shutil.which("adb"):
+        ok_items.append("Android SDK (adb)")
+    else:
+        issues.append({"component": "android", "severity": "low",
+                       "message": "adb not found — Android emulators unavailable",
+                       "fix": "Install Android Studio or: brew install android-platform-tools"})
+
+    # 5. Health checks
+    health = full_health_check()
+    if health["api_server"]["status"] == "healthy":
+        ok_items.append("API server running")
+    else:
+        issues.append({"component": "server", "severity": "medium",
+                       "message": "API server not reachable",
+                       "fix": "simemu serve"})
+
+    if health["monitor"]["status"] == "running":
+        ok_items.append("Monitor agent running")
+    else:
+        issues.append({"component": "monitor", "severity": "medium",
+                       "message": f"Monitor: {health['monitor']['status']}",
+                       "fix": "bash install.sh"})
+
+    if health["state_files"]["status"] == "ok":
+        ok_items.append("State files healthy")
+    else:
+        for issue in health["state_files"].get("issues", []):
+            issues.append({"component": "state", "severity": "high",
+                           "message": issue,
+                           "fix": "Will auto-recover on next read"})
+
+    if health["sessions"]["status"] == "stale":
+        count = health["sessions"]["stale_count"]
+        issues.append({"component": "sessions", "severity": "low",
+                       "message": f"{count} stale session(s) idle >2h",
+                       "fix": "simemu sessions — review and release idle sessions"})
+
+    # 6. Guard hook
+    guard = Path.home() / ".claude" / "simemu-guard.py"
+    if guard.exists():
+        ok_items.append("Guard hook installed")
+    else:
+        issues.append({"component": "guard", "severity": "medium",
+                       "message": "Guard hook not installed — agents can bypass simemu",
+                       "fix": "bash install.sh"})
+
+    # 7. Data directory
+    data_dir = state.state_dir()
+    if data_dir.exists() and os.access(data_dir, os.W_OK):
+        ok_items.append(f"Data dir: {data_dir}")
+    else:
+        issues.append({"component": "data_dir", "severity": "high",
+                       "message": f"Data dir not writable: {data_dir}",
+                       "fix": f"mkdir -p {data_dir} && chmod 755 {data_dir}"})
+
+    if output_json:
+        _print_json({"ok": ok_items, "issues": issues,
+                      "healthy": len([i for i in issues if i["severity"] in ("critical", "high")]) == 0})
+        return
+
+    # Human output
+    print("simemu doctor")
+    print("─" * 40)
+    print()
+    for item in ok_items:
+        print(f"  \u2713 {item}")
+    print()
+    if issues:
+        critical = [i for i in issues if i["severity"] == "critical"]
+        high = [i for i in issues if i["severity"] == "high"]
+        medium = [i for i in issues if i["severity"] == "medium"]
+        low = [i for i in issues if i["severity"] == "low"]
+        for severity_label, group in [("CRITICAL", critical), ("HIGH", high), ("MEDIUM", medium), ("LOW", low)]:
+            for i in group:
+                print(f"  \u26a0 [{severity_label}] {i['message']}")
+                print(f"    Fix: {i['fix']}")
+        print()
+        if critical or high:
+            print("Run the suggested fixes, then re-run: simemu doctor")
+        else:
+            print("No critical issues. simemu is operational.")
+    else:
+        print("  All checks passed. simemu is healthy.")
+
+
 def cmd_sessions(args):
     """List all v2 sessions."""
     sessions = session_module.get_active_sessions()
@@ -2187,6 +2309,11 @@ def build_parser() -> argparse.ArgumentParser:
     comp_p.add_argument("shell", choices=["zsh", "bash"], help="Shell type")
     comp_p.set_defaults(func=cmd_completions)
 
+    # doctor
+    doc_p = sub.add_parser("doctor", help="Diagnose simemu setup issues and suggest fixes")
+    doc_p.add_argument("--json", action="store_true", help="Output as JSON")
+    doc_p.set_defaults(func=cmd_doctor)
+
     # sessions
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
     sess_p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -2858,11 +2985,11 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar", "cmd_completions"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar", "cmd_completions", "cmd_doctor"}
 
 # v2 + admin commands — everything else is legacy and rejected
 _V2_COMMANDS = {
-    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config", "cmd_completions",
+    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config", "cmd_completions", "cmd_doctor",
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
     "cmd_list", "cmd_list_devices",  # discovery is still useful
