@@ -842,10 +842,12 @@ end tell'''
                     "expected": expected_pkg,
                     "actual": actual_fg,
                 }), file=_sys.stderr, flush=True)
+        launched_pkg = bundle.split("/", 1)[0]
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
-                data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
+                data["sessions"][session_id]["last_app"] = launched_pkg
                 save(data)
+        update_provenance(session_id, last_app=launched_pkg, last_launch_args=extra[:3])
         return {"status": "launched", "app": bundle}
 
     elif command == "tap":
@@ -907,6 +909,7 @@ end tell'''
             ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
         else:
             android.screenshot(sim_id, output)
+        update_provenance(session_id, last_screenshot=output)
         return {"status": "captured", "path": output}
 
     elif command == "maestro":
@@ -994,6 +997,7 @@ end tell'''
                         f"Foreground: '{actual_fg}'. Another app may have intercepted the URL.\n"
                         f"Diagnostics: {json.dumps(diag)}"
                     )
+        update_provenance(session_id, last_url=url, last_deep_link=url)
         return {"status": "opened", "url": url}
 
     elif command == "terminate":
@@ -2275,6 +2279,34 @@ def get_command_history(session_id: str) -> list[str]:
     if not log_file.exists():
         return []
     return log_file.read_text().strip().splitlines()
+
+
+# ── T-LU-019: Session provenance ────────────────────────────────────────────
+
+def update_provenance(session_id: str, **fields) -> None:
+    """Update proof provenance metadata for a session.
+
+    Stored fields: last_app, last_url, last_screenshot, last_build,
+    last_deep_link, render_wait_ms, proof_metadata (arbitrary dict).
+
+    Provenance survives normal session writes and recovery.
+    """
+    with _locked_sessions() as (data, save):
+        session_data = data["sessions"].get(session_id)
+        if not session_data:
+            return
+        provenance = session_data.setdefault("provenance", {})
+        provenance["updated_at"] = _now_iso()
+        for key, value in fields.items():
+            provenance[key] = value
+        save(data)
+
+
+def get_provenance(session_id: str) -> dict:
+    """Return the current proof provenance for a session."""
+    data = _read_sessions_raw()
+    session_data = data["sessions"].get(session_id, {})
+    return session_data.get("provenance", {})
 
 
 # ── T-29: Safe android serial helper ─────────────────────────────────────────

@@ -946,6 +946,62 @@ class TestDoClipboard(DoCommandBase):
         self.assertEqual(result["status"], "unsupported")
 
 
+# ── provenance ──────────────────────────────────────────────────────────────
+
+
+class TestProvenance(DoCommandBase):
+    @patch("simemu.session.ios.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_launch_records_provenance(self, mock_serial, mock_launch) -> None:
+        from simemu.session import get_provenance
+        do_command("s-test01", "launch", ["com.example.app"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_app"], "com.example.app")
+        self.assertIn("updated_at", prov)
+
+    @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_url_records_provenance(self, mock_serial, mock_complete, mock_url) -> None:
+        from simemu.session import get_provenance
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        do_command("s-test01", "url", ["myapp://deep/link"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_url"], "myapp://deep/link")
+        self.assertEqual(prov["last_deep_link"], "myapp://deep/link")
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_records_provenance(self, mock_serial, mock_ss) -> None:
+        from simemu.session import get_provenance
+        result = do_command("s-test01", "screenshot", ["-o", "/tmp/proof.png"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_screenshot"], "/tmp/proof.png")
+
+    def test_get_provenance_empty_session(self) -> None:
+        from simemu.session import get_provenance
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov, {})
+
+    def test_get_provenance_nonexistent_session(self) -> None:
+        from simemu.session import get_provenance
+        prov = get_provenance("s-nonexistent")
+        self.assertEqual(prov, {})
+
+    @patch("simemu.session.ios.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_provenance_survives_multiple_updates(self, mock_serial, mock_launch) -> None:
+        from simemu.session import get_provenance, update_provenance
+        do_command("s-test01", "launch", ["com.first.app"])
+        update_provenance("s-test01", custom_field="custom_value")
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_app"], "com.first.app")
+        self.assertEqual(prov["custom_field"], "custom_value")
+
+
 # ── build ───────────────────────────────────────────────────────────────────
 
 
