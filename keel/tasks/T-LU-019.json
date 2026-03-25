@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T13:08:42.999Z",
+      "by": "human",
+      "text": "update_provenance() and get_provenance() added. launch/url/screenshot record provenance. Survives writes and recovery. 6 new tests. 344 pass."
+    }
+  ],
   "acceptanceCriteria": [
     "session history stores app, URL, screenshot path, and proof metadata",
     "provenance survives normal writes and recovery",
@@ -42,7 +48,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:41.432Z",
-  "updatedAt": "2026-03-25T13:08:42.725Z",
+  "updatedAt": "2026-03-25T13:08:42.999Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
