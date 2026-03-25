@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:15:25.634Z",
+      "by": "human",
+      "text": "Claim policy with builtin aliases (iphone/ipad/pixel/watch/mac), config defaults, user alias overrides. 13 tests."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:39.520Z",
-  "updatedAt": "2026-03-25T21:15:25.514Z",
+  "updatedAt": "2026-03-25T21:15:25.634Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
