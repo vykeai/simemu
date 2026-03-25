@@ -1,0 +1,25 @@
+# Canonical keel/execution.yaml snippet for simemu integration.
+# Copy to your project's keel/execution.yaml and customize.
+
+# Build variants — maps cross-platform variant names to platform-specific build commands.
+# Agents use: simemu do $SESSION build --variant <name>
+buildVariants:
+  mock:
+    ios:
+      scheme: MyApp-mock
+      project: MyApp.xcodeproj
+      configuration: Debug
+    android:
+      task: assembleLocalDebug
+  dev:
+    ios:
+      scheme: MyApp-local
+      configuration: Debug
+    android:
+      task: assembleDevDebug
+  release:
+    ios:
+      scheme: MyApp
+      configuration: Release
+    android:
+      task: assembleRelease
