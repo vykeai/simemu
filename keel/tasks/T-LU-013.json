@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:48:01.766Z",
+      "by": "human",
+      "text": "Installer checks: xcrun, adb, guard hook functional test, data dir perms. Actionable warnings."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.491Z",
-  "updatedAt": "2026-03-25T21:48:01.588Z",
+  "updatedAt": "2026-03-25T21:48:01.766Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
