@@ -1,26 +1,35 @@
 {
   "id": "T-LU-017",
   "title": "Android launch/url verification in server and CLI surfaces — reject proof when another app is foreground",
-  "description": "",
+  "description": "Push Android proof targeting checks all the way through the server and top-level CLI so simemu refuses proof when a different package is foreground.\n\nAcceptance criteria:\n- server v2 responses expose the verified foreground package after launch/url steps\n- CLI proof flows fail when another app or system surface is foreground\n- proof commands record the expected and actual Android package in diagnostics\n- tests cover contamination by another installed app",
   "product": null,
   "lane": null,
   "wave": "wave-2",
   "space": "space-core",
-  "status": "todo",
+  "status": "active",
   "priority": "high",
   "platform": "android",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "server v2 exposes verified foreground package state",
+    "CLI proof flows fail when another app is foreground",
+    "diagnostics record expected and actual Android packages",
+    "tests cover wrong-app contamination"
+  ],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:41.109Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T12:58:22.601Z"
     }
   ],
   "attachments": [],
@@ -29,7 +38,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:41.108Z",
-  "updatedAt": "2026-03-24T22:00:41.108Z",
+  "updatedAt": "2026-03-25T12:58:22.587Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
