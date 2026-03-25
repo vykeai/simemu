@@ -1116,6 +1116,89 @@ class TestDoBuild(DoCommandBase):
         self.assertIn("xcodebuild", str(ctx.exception))
 
 
+# ── proof ───────────────────────────────────────────────────────────────────
+
+
+class TestDoProof(DoCommandBase):
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_ios_normalizes_and_captures(self, mock_serial, mock_alert,
+                                                mock_fg, mock_status, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        self.assertEqual(result["status"], "proved")
+        self.assertEqual(result["path"], "/tmp/proof.png")
+        self.assertIn("status_bar:9:41", result["steps"])
+        self.assertIn("dismiss_alerts", result["steps"])
+        mock_ss.assert_called_once()
+        mock_status.assert_called_once()
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.android.dismiss_system_dialogs", return_value=False)
+    @patch("simemu.session.android.stop_other_apps", return_value=["ai.vivii.dev"])
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_android_isolates_and_captures(self, mock_serial, mock_stop,
+                                                  mock_dismiss, mock_fg, mock_ss) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        self.assertEqual(result["status"], "proved")
+        mock_stop.assert_called_once()
+        self.assertIn("isolate:com.example.app", result["steps"])
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.foreground_app", return_value="com.wrong.app")
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_fails_on_foreground_mismatch(self, mock_serial, mock_alert,
+                                                 mock_fg, mock_status, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.expected.app"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "not trustworthy"):
+            do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        mock_ss.assert_not_called()  # screenshot never taken
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.set_appearance")
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_with_appearance_flag(self, mock_serial, mock_alert, mock_fg,
+                                        mock_appear, mock_status, mock_ss) -> None:
+        result = do_command("s-test01", "proof", ["--appearance", "dark", "--wait", "0.1", "-o", "/tmp/p.png"])
+        self.assertEqual(result["status"], "proved")
+        mock_appear.assert_called_once_with("AAA-111", "dark")
+        self.assertIn("appearance:dark", result["steps"])
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_stores_provenance(self, mock_serial, mock_alert, mock_fg,
+                                      mock_status, mock_ss) -> None:
+        from simemu.session import get_provenance
+        result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1", "--label", "test"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_screenshot"], "/tmp/proof.png")
+        self.assertIn("last_proof", prov)
+        self.assertEqual(prov["last_proof"]["label"], "test")
+
+
 class TestParseVariants(unittest.TestCase):
     def test_parse_simple_yaml(self) -> None:
         from simemu.session import _parse_build_variants

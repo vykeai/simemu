@@ -500,6 +500,7 @@ _COMMAND_HELP: dict[str, str] = {
     # Capture & proof
     "screenshot":       "Take a screenshot (-o path, --max-size px)",
     "deeplink-proof":   "Open URL + wait 3s + screenshot in one command",
+    "proof":            "Normalize device state + capture verified screenshot with metadata",
     "wait-for-render":  "Wait N seconds then screenshot",
     "video-start":      "Start screen recording (-o path)",
     "video-stop":       "Stop screen recording (pass pid from video-start)",
@@ -680,7 +681,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
                      "is-running", "foreground-app"],
             "UI": ["a11y-tap", "tap", "swipe", "long-press", "scroll", "back", "home",
                    "key", "input", "type-submit", "shake"],
-            "Capture": ["screenshot", "deeplink-proof", "wait-for-render", "video-start",
+            "Capture": ["screenshot", "proof", "deeplink-proof", "wait-for-render", "video-start",
                         "video-stop", "log-crash"],
             "Navigate": ["url", "maestro"],
             "Alerts": ["dismiss-alert", "accept-alert", "deny-alert", "auto-dismiss"],
@@ -1409,6 +1410,9 @@ end tell'''
             android.screenshot(sim_id, output)
         return {"status": "captured", "url": url, "path": output}
 
+    elif command == "proof":
+        return _do_proof(session, sim_id, platform, is_real, session_id, args)
+
     elif command == "reset-app":
         if len(args) < 2:
             raise RuntimeError("Usage: simemu do <session> reset-app <bundle-or-package> <app-path>")
@@ -1852,6 +1856,179 @@ end tell'''
             f"notifications-clear, app-container, clone, siri, contacts-import, "
             f"font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
         )
+
+
+def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: str, args: list[str]) -> dict:
+    """Full proof capture: normalize → verify → screenshot → metadata.
+
+    Usage: simemu do <session> proof [-o output.png] [--url <deep-link>]
+           [--appearance light|dark] [--wait <seconds>] [--label <name>]
+    """
+    import subprocess as _sp
+    import time as _time
+
+    # Parse flags
+    output = None
+    url = None
+    appearance = None
+    wait_seconds = 2.0
+    label = ""
+    max_size = None
+    i = 0
+    while i < len(args):
+        if args[i] == "-o" and i + 1 < len(args):
+            output = args[i + 1]; i += 2
+        elif args[i] == "--url" and i + 1 < len(args):
+            url = args[i + 1]; i += 2
+        elif args[i] == "--appearance" and i + 1 < len(args):
+            appearance = args[i + 1]; i += 2
+        elif args[i] == "--wait" and i + 1 < len(args):
+            wait_seconds = float(args[i + 1]); i += 2
+        elif args[i] == "--label" and i + 1 < len(args):
+            label = args[i + 1]; i += 2
+        elif args[i] == "--max-size" and i + 1 < len(args):
+            max_size = int(args[i + 1]); i += 2
+        else:
+            i += 1
+
+    steps: list[str] = []
+    errors: list[str] = []
+
+    # ── Step 1: Dismiss system dialogs ──────────────────────────────────
+    if platform in ("ios", "watchos", "tvos", "visionos"):
+        try:
+            ios.accept_open_app_alert(sim_id, attempts=2, delay=0.2)
+            steps.append("dismiss_alerts")
+        except Exception:
+            pass
+    else:
+        try:
+            android.dismiss_system_dialogs(sim_id)
+            steps.append("dismiss_dialogs")
+        except Exception:
+            pass
+
+    # ── Step 2: Set appearance ──────────────────────────────────────────
+    if appearance:
+        try:
+            if platform in ("ios", "watchos", "tvos", "visionos"):
+                ios.set_appearance(sim_id, appearance)
+            else:
+                android.set_appearance(sim_id, appearance)
+            steps.append(f"appearance:{appearance}")
+        except Exception as e:
+            errors.append(f"appearance: {e}")
+
+    # ── Step 3: Clean status bar (iOS) ──────────────────────────────────
+    if platform in ("ios", "watchos", "tvos", "visionos") and not is_real:
+        try:
+            ios.status_bar(sim_id, time_str="9:41", battery=100, wifi=3, network="wifi")
+            steps.append("status_bar:9:41")
+        except Exception as e:
+            errors.append(f"status_bar: {e}")
+
+    # ── Step 4: Isolate (Android) ───────────────────────────────────────
+    if platform == "android":
+        expected_pkg = None
+        with _locked_sessions() as (data, save):
+            expected_pkg = data["sessions"].get(session_id, {}).get("last_app")
+        if expected_pkg:
+            try:
+                android.stop_other_apps(sim_id, keep=expected_pkg)
+                steps.append(f"isolate:{expected_pkg}")
+            except Exception:
+                pass
+
+    # ── Step 5: Open URL if provided ────────────────────────────────────
+    if url:
+        try:
+            if platform in ("ios", "watchos", "tvos", "visionos"):
+                ios.open_url(sim_id, url)
+                expected_bundle = None
+                with _locked_sessions() as (data, save):
+                    expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+                if expected_bundle:
+                    if not ios.complete_open_url_handoff(sim_id, expected_bundle):
+                        actual = ios.foreground_app(sim_id)
+                        errors.append(f"url_handoff: expected {expected_bundle}, got {actual}")
+            else:
+                expected_pkg_url = None
+                with _locked_sessions() as (data, save):
+                    expected_pkg_url = data["sessions"].get(session_id, {}).get("last_app")
+                android.open_url(sim_id, url, expected_package=expected_pkg_url)
+            steps.append(f"url:{url[:60]}")
+        except Exception as e:
+            errors.append(f"url: {e}")
+
+    # ── Step 6: Wait for render ─────────────────────────────────────────
+    _time.sleep(wait_seconds)
+    steps.append(f"wait:{wait_seconds}s")
+
+    # ── Step 7: Verify foreground ───────────────────────────────────────
+    expected_app = None
+    with _locked_sessions() as (data, save):
+        expected_app = data["sessions"].get(session_id, {}).get("last_app")
+
+    actual_fg = None
+    if expected_app:
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            actual_fg = ios.foreground_app(sim_id)
+        else:
+            actual_fg = android.foreground_app(sim_id)
+        if actual_fg and actual_fg != expected_app:
+            errors.append(f"foreground_mismatch: expected={expected_app} actual={actual_fg}")
+
+    # ── Step 8: Fail if critical errors ─────────────────────────────────
+    critical = [e for e in errors if "foreground_mismatch" in e or "url_handoff" in e]
+    if critical:
+        raise RuntimeError(
+            f"Proof capture aborted — device state is not trustworthy.\n"
+            f"Errors: {'; '.join(critical)}\n"
+            f"Steps completed: {', '.join(steps)}"
+        )
+
+    # ── Step 9: Capture screenshot ──────────────────────────────────────
+    if not output:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(os.environ.get("SIMEMU_OUTPUT_DIR",
+                       os.environ.get("PROJECT_SCREENSHOT_DIR", Path.home() / ".simemu")))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        suffix = f"_{label}" if label else ""
+        output = str(out_dir / f"{session_id}_proof{suffix}_{ts}.png")
+
+    if is_real and platform == "ios":
+        device.ios_screenshot(sim_id, output, max_size=max_size)
+    elif platform in ("ios", "watchos", "tvos", "visionos"):
+        ios.screenshot(sim_id, output, max_size=max_size)
+    else:
+        android.screenshot(sim_id, output)
+    steps.append(f"screenshot:{output}")
+
+    # ── Step 10: Store provenance ───────────────────────────────────────
+    proof_metadata = {
+        "steps": steps,
+        "url": url,
+        "appearance": appearance,
+        "wait_seconds": wait_seconds,
+        "label": label,
+        "foreground_app": actual_fg,
+        "expected_app": expected_app,
+        "warnings": [e for e in errors if "foreground_mismatch" not in e],
+    }
+    update_provenance(
+        session_id,
+        last_screenshot=output,
+        last_url=url,
+        last_proof=proof_metadata,
+    )
+
+    return {
+        "status": "proved",
+        "path": output,
+        "steps": steps,
+        "warnings": errors,
+        "metadata": proof_metadata,
+    }
 
 
 def _do_build(session, sim_id: str, platform: str, is_real: bool, args: list[str]) -> dict:
