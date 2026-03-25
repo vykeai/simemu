@@ -627,6 +627,7 @@ _COMMAND_HELP: dict[str, str] = {
     "a11y-tree":        "Dump accessibility hierarchy (Android)",
     # Info
     "env":              "Show device info (UDID, serial, OS version)",
+    "trace":            "Export debug trace bundle (session + health + history)",
     "help":             "Show this help",
 }
 
@@ -1395,6 +1396,18 @@ end tell'''
         result["device_name"] = session.device_name
         result["os_version"] = session.resolved_os_version or session.os_version
         return result
+
+    elif command == "trace":
+        from .trace import export_trace, export_trace_to_file
+        output = None
+        if "-o" in args:
+            idx = args.index("-o")
+            if idx + 1 < len(args):
+                output = args[idx + 1]
+        if output:
+            path = export_trace_to_file(session_id, output)
+            return {"status": "exported", "path": path}
+        return export_trace(session_id)
 
     # ── high-impact commands ─────────────────────────────────────────────────
 
