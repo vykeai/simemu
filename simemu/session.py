@@ -408,6 +408,30 @@ def get_session(session_id: str) -> Session | None:
     return _session_from_dict(raw)
 
 
+def _is_effectively_expired(session: Session) -> bool:
+    """Return True when a session's expiry deadline has already passed.
+
+    We still run a lifecycle monitor, but session reads must be defensive in
+    case the monitor/daemon is delayed or started with a bad environment.
+    """
+    if session.status in ("expired", "released"):
+        return session.status == "expired"
+    if not session.expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(session.expires_at)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) >= expires
+
+
+def _mark_expired(session_id: str) -> None:
+    with _locked_sessions() as (data, save):
+        if session_id in data["sessions"] and data["sessions"][session_id].get("status") not in ("expired", "released"):
+            data["sessions"][session_id]["status"] = "expired"
+            save(data)
+
+
 def require_session(session_id: str) -> Session:
     """Return a session by ID, or raise with actionable error."""
     session = get_session(session_id)
@@ -416,6 +440,14 @@ def require_session(session_id: str) -> Session:
             error="session_not_found",
             session=session_id,
             hint=f"Session '{session_id}' does not exist. Claim a new device with: simemu claim <platform>",
+        )
+    if _is_effectively_expired(session):
+        _mark_expired(session_id)
+        raise SessionError(
+            error="session_expired",
+            session=session_id,
+            hint=f"Session expired after inactivity. Re-claim with: {session.reclaim_command()}",
+            expired_at=session.expires_at,
         )
     if session.status == "expired":
         raise SessionError(
@@ -471,8 +503,9 @@ def touch(session_id: str) -> Session:
                 pass
         elif session.platform == "android":
             # Android real device — check adb
-            serial = android.get_android_serial(session.sim_id, retries=2, delay=0.5)
-            if serial is None:
+            from . import device as real_device
+            connected = any(d.device_id == session.sim_id for d in real_device.list_android_devices())
+            if not connected:
                 raise RuntimeError(
                     f"Real Android device '{session.device_name}' is no longer connected via adb.\n"
                     f"Reconnect and retry, or re-claim: {session.reclaim_command()}"
@@ -566,7 +599,7 @@ def get_active_sessions() -> dict[str, Session]:
     """Return only active/idle/parked sessions."""
     return {
         sid: s for sid, s in get_all_sessions().items()
-        if s.status in ("active", "idle", "parked")
+        if s.status in ("active", "idle", "parked") and not _is_effectively_expired(s)
     }
 
 

@@ -412,15 +412,15 @@ class TestRealDeviceRecovery(unittest.TestCase):
             }
         }})
 
-    @patch("simemu.session.android.get_android_serial", return_value=None)
-    def test_touch_raises_when_real_android_disconnected(self, mock_serial) -> None:
+    @patch("simemu.session.device.list_android_devices", return_value=[])
+    def test_touch_raises_when_real_android_disconnected(self, mock_list_devices) -> None:
         self._seed_real_session(platform="android")
         with self.assertRaises(RuntimeError) as ctx:
             touch("s-real01")
         self.assertIn("no longer connected", str(ctx.exception))
 
-    @patch("simemu.session.android.get_android_serial", return_value="SERIAL123")
-    def test_touch_succeeds_when_real_android_connected(self, mock_serial) -> None:
+    @patch("simemu.session.device.list_android_devices", return_value=[MagicMock(device_id="REAL-UDID-001")])
+    def test_touch_succeeds_when_real_android_connected(self, mock_list_devices) -> None:
         self._seed_real_session(platform="android")
         session = touch("s-real01")
         self.assertEqual(session.status, "active")
@@ -630,18 +630,19 @@ class TestGetActiveSessions(unittest.TestCase):
             "claim_label": "",
         }
         sf = Path(self.tmpdir.name) / "sessions.json"
+        fresh_expires_at = _compute_expires_at("active", now)
         data = {
             "sessions": {
                 "s-active": {**base, "session_id": "s-active", "status": "active",
-                             "expires_at": now},
+                             "expires_at": fresh_expires_at},
                 "s-idle": {**base, "session_id": "s-idle", "status": "idle",
-                           "sim_id": "BBB-222", "expires_at": now},
+                           "sim_id": "BBB-222", "expires_at": _compute_expires_at("idle", now)},
                 "s-expired": {**base, "session_id": "s-expired", "status": "expired",
                               "sim_id": "CCC-333", "expires_at": now},
                 "s-released": {**base, "session_id": "s-released", "status": "released",
                                "sim_id": "DDD-444", "expires_at": now},
                 "s-parked": {**base, "session_id": "s-parked", "status": "parked",
-                             "sim_id": "EEE-555", "expires_at": now},
+                             "sim_id": "EEE-555", "expires_at": _compute_expires_at("parked", now)},
             }
         }
         sf.write_text(json.dumps(data))
@@ -652,6 +653,87 @@ class TestGetActiveSessions(unittest.TestCase):
         self.assertIn("s-parked", active)
         self.assertNotIn("s-expired", active)
         self.assertNotIn("s-released", active)
+
+    def test_excludes_effectively_expired_active_sessions(self) -> None:
+        now = _now_iso()
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        base = {
+            "platform": "ios",
+            "form_factor": "phone",
+            "os_version": None,
+            "real_device": False,
+            "label": "",
+            "sim_id": "AAA-111",
+            "device_name": "iPhone 16 Pro",
+            "agent": "test",
+            "created_at": now,
+            "heartbeat_at": now,
+            "resolved_os_version": "iOS 26.2",
+            "claim_platform": "ios",
+            "claim_form_factor": "phone",
+            "claim_os_version": None,
+            "claim_real_device": False,
+            "claim_label": "",
+        }
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        sf.write_text(json.dumps({
+            "sessions": {
+                "s-active-fresh": {
+                    **base,
+                    "session_id": "s-active-fresh",
+                    "status": "active",
+                    "expires_at": _compute_expires_at("active", now),
+                },
+                "s-active-stale": {
+                    **base,
+                    "session_id": "s-active-stale",
+                    "status": "active",
+                    "sim_id": "BBB-222",
+                    "expires_at": expired_at,
+                },
+            }
+        }))
+
+        active = get_active_sessions()
+        self.assertIn("s-active-fresh", active)
+        self.assertNotIn("s-active-stale", active)
+
+    def test_require_session_marks_effectively_expired_session(self) -> None:
+        now = _now_iso()
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        sf.write_text(json.dumps({
+            "sessions": {
+                "s-expiring": {
+                    "session_id": "s-expiring",
+                    "platform": "ios",
+                    "form_factor": "phone",
+                    "os_version": None,
+                    "real_device": False,
+                    "label": "",
+                    "status": "active",
+                    "sim_id": "AAA-111",
+                    "device_name": "iPhone 16 Pro",
+                    "agent": "test",
+                    "created_at": now,
+                    "heartbeat_at": now,
+                    "expires_at": expired_at,
+                    "resolved_os_version": "iOS 26.2",
+                    "claim_platform": "ios",
+                    "claim_form_factor": "phone",
+                    "claim_os_version": None,
+                    "claim_real_device": False,
+                    "claim_label": "",
+                }
+            }
+        }))
+
+        with self.assertRaises(SessionError) as ctx:
+            require_session("s-expiring")
+        self.assertEqual(ctx.exception.error_type, "session_expired")
+
+        data = json.loads(sf.read_text())
+        self.assertEqual(data["sessions"]["s-expiring"]["status"], "expired")
 
 
 class TestLifecycleTick(unittest.TestCase):

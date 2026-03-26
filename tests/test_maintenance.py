@@ -143,25 +143,27 @@ class NoAutoBootTests(unittest.TestCase):
     def test_android_ensure_booted_raises_not_spawns(self) -> None:
         """Without maintenance, _ensure_booted should still raise (not boot)."""
         with patch("simemu.android.get_android_serial", return_value=None):
-            with self.assertRaisesRegex(RuntimeError, "Boot it explicitly"):
-                android._ensure_booted("test-avd")
+            with patch("simemu.android.real_device.list_android_devices", return_value=[]):
+                with self.assertRaisesRegex(RuntimeError, "not connected or adb-ready"):
+                    android._ensure_booted("test-avd")
 
     def test_ios_ensure_booted_raises_not_spawns(self) -> None:
         with patch("simemu.ios._is_booted", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "Boot it explicitly"):
+            with self.assertRaisesRegex(RuntimeError, "session API first"):
                 ios._ensure_booted("SIM-001")
 
     def test_android_ensure_booted_no_subprocess_call(self) -> None:
         """Verify no subprocess is spawned at all."""
         with patch("simemu.android.get_android_serial", return_value=None):
-            with patch("subprocess.Popen") as popen_mock:
-                with patch("subprocess.run") as run_mock:
-                    try:
-                        android._ensure_booted("test-avd")
-                    except RuntimeError:
-                        pass
-                    popen_mock.assert_not_called()
-                    run_mock.assert_not_called()
+            with patch("simemu.android.real_device.list_android_devices", return_value=[]):
+                with patch("subprocess.Popen") as popen_mock:
+                    with patch("subprocess.run") as run_mock:
+                        try:
+                            android._ensure_booted("test-avd")
+                        except RuntimeError:
+                            pass
+                        popen_mock.assert_not_called()
+                        run_mock.assert_not_called()
 
 
 if __name__ == "__main__":

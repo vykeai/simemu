@@ -21,11 +21,12 @@ def _mock_get_android_serial(avd_name: str) -> str:
 
 class TestSerial(unittest.TestCase):
 
+    @patch("simemu.android.real_device.list_android_devices", return_value=[])
     @patch("simemu.android.get_android_serial", return_value=None)
-    def test_raises_when_not_running(self, mock_gas: MagicMock) -> None:
+    def test_raises_when_not_running(self, mock_gas: MagicMock, mock_real_devices: MagicMock) -> None:
         with self.assertRaises(RuntimeError) as ctx:
             android._serial("MyAVD")
-        self.assertIn("not running", str(ctx.exception))
+        self.assertIn("not connected or adb-ready", str(ctx.exception))
         self.assertIn("MyAVD", str(ctx.exception))
 
     @patch("simemu.android.get_android_serial", return_value="emulator-5554")

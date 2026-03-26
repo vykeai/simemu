@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from .discover import get_android_serial
+from . import device as real_device
 
 # Android screenrecord hard cap (3 minutes); warn agents approaching this
 SCREENRECORD_MAX_SECONDS = 180
@@ -102,12 +103,22 @@ def _sidecar_dir() -> Path:
     return Path(tempfile.gettempdir()) / f"simemu-{os.getuid()}"
 
 
+def _resolve_serial(avd_name: str, retries: int = 6, delay: float = 0.5) -> Optional[str]:
+    serial = get_android_serial(avd_name, retries=retries, delay=delay)
+    if serial is not None:
+        return serial
+    connected_real_ids = {device.device_id for device in real_device.list_android_devices()}
+    if avd_name in connected_real_ids:
+        return avd_name
+    return None
+
+
 def _serial(avd_name: str) -> str:
-    serial = get_android_serial(avd_name, retries=6, delay=0.5)
+    serial = _resolve_serial(avd_name, retries=6, delay=0.5)
     if serial is None:
         raise RuntimeError(
-            f"Android emulator '{avd_name}' is not running. "
-            f"Wake it through the session API: simemu do <session> boot"
+            f"Android device '{avd_name}' is not connected or adb-ready. "
+            f"Re-claim the device or reconnect it, then retry."
         )
     return serial
 
@@ -118,13 +129,13 @@ def get_serial(avd_name: str) -> str:
 
 
 def _ensure_booted(avd_name: str) -> None:
-    """Check emulator is running. Raises instead of auto-booting to prevent runaway spawns."""
+    """Check emulator/device is adb-reachable. Raises instead of auto-booting runaway spawns."""
     from . import state
     state.check_maintenance()
-    if get_android_serial(avd_name, retries=6, delay=0.5) is None:
+    if _resolve_serial(avd_name, retries=6, delay=0.5) is None:
         raise RuntimeError(
-            f"Android emulator '{avd_name}' is not running.\n"
-            f"Wake it through the session API first: simemu do <session> boot"
+            f"Android device '{avd_name}' is not connected or adb-ready.\n"
+            f"Re-claim the device or reconnect it, then retry."
         )
 
 
