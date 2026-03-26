@@ -263,38 +263,81 @@ def _wait_for_launcher_ready(serial: str, timeout: float = 15.0) -> None:
 
 def _adb(avd_name: str, *args, capture: bool = False, check: bool = True,
          timeout: int = 60) -> Optional[str]:
+    """Run an adb command against the device. Retries once with fresh serial on connection errors."""
+    return _adb_with_retry(avd_name, list(args), capture=capture, check=check, timeout=timeout)
+
+
+def _adb_with_retry(avd_name: str, args: list[str], *, capture: bool, check: bool,
+                     timeout: int, _retried: bool = False) -> Optional[str]:
     serial = _serial(avd_name)
-    cmd = ["adb", "-s", serial] + list(args)
+    cmd = ["adb", "-s", serial] + args
     try:
         if capture:
             result = subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=timeout)
-            return result.stdout.strip()
+            output = result.stdout.strip()
+            # Detect stale connection — adb returns but device is gone
+            if result.returncode != 0 and not _retried:
+                err = (result.stderr or "").lower()
+                if "device" in err and ("not found" in err or "offline" in err):
+                    time.sleep(1)
+                    return _adb_with_retry(avd_name, args, capture=capture, check=check,
+                                           timeout=timeout, _retried=True)
+            return output
         else:
             subprocess.run(cmd, check=check, timeout=timeout)
             return None
+    except subprocess.CalledProcessError as exc:
+        if not _retried:
+            err = str(exc).lower()
+            if "device" in err and ("not found" in err or "offline" in err):
+                time.sleep(1)
+                return _adb_with_retry(avd_name, args, capture=capture, check=check,
+                                       timeout=timeout, _retried=True)
+        raise
     except subprocess.TimeoutExpired:
+        if not _retried:
+            # Serial might be stale after an activity-alias restart — retry once
+            time.sleep(2)
+            return _adb_with_retry(avd_name, args, capture=capture, check=check,
+                                   timeout=timeout, _retried=True)
         raise RuntimeError(
-            f"adb command timed out after {timeout}s: {' '.join(cmd[:6])}...\n"
+            f"adb command timed out after {timeout}s (retried): {' '.join(cmd[:6])}...\n"
             f"The device may be unresponsive. Try: simemu do <session> reboot"
         )
 
 
-def foreground_app(avd_name: str) -> Optional[str]:
-    """Return the currently resumed Android package, if detectable."""
-    serial = wait_until_ready(avd_name)
-    result = subprocess.run(
-        ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-    for line in result.stdout.splitlines():
-        if "mResumedActivity" not in line and "ResumedActivity" not in line and "topResumedActivity" not in line:
-            continue
-        for part in line.split():
-            if "/" in part and "." in part:
-                return part.split("/")[0]
+def foreground_app(avd_name: str, retries: int = 2, delay: float = 1.0) -> Optional[str]:
+    """Return the currently resumed Android package, if detectable.
+
+    Retries briefly to handle transient launcher-bounce after activity-alias
+    switches — the OS kills the app process and briefly shows the launcher
+    before the app restarts.
+    """
+    for attempt in range(max(1, retries)):
+        try:
+            serial = _serial(avd_name)
+            result = subprocess.run(
+                ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
+                capture_output=True, text=True, check=False, timeout=15,
+            )
+            for line in result.stdout.splitlines():
+                if "mResumedActivity" not in line and "ResumedActivity" not in line and "topResumedActivity" not in line:
+                    continue
+                for part in line.split():
+                    if "/" in part and "." in part:
+                        pkg = part.split("/")[0]
+                        # If we got a real non-launcher package, return it
+                        lower = pkg.lower()
+                        if "launcher" not in lower and "home" not in lower:
+                            return pkg
+                        # Got launcher — might be transient bounce, retry
+                        if attempt < retries - 1:
+                            break
+                        return pkg
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+        if attempt < retries - 1:
+            time.sleep(delay)
     return None
 
 
@@ -428,30 +471,19 @@ def _repair_wipe_data_cycle(avd_name: str) -> None:
 
 
 def _probe_package_state(serial: str, package: str) -> PackageVerification:
-    pm_path = subprocess.run(
-        ["adb", "-s", serial, "shell", "pm", "path", package],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
-    resolved_launcher = subprocess.run(
-        [
-            "adb", "-s", serial, "shell", "cmd", "package", "resolve-activity",
-            "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", package,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
-    dumpsys = subprocess.run(
-        ["adb", "-s", serial, "shell", "dumpsys", "package", package],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
+    def _safe_run(cmd: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
+        """Run adb command with timeout, returning empty result on timeout instead of hanging."""
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="timed out")
+
+    pm_path = _safe_run(["adb", "-s", serial, "shell", "pm", "path", package])
+    resolved_launcher = _safe_run([
+        "adb", "-s", serial, "shell", "cmd", "package", "resolve-activity",
+        "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", package,
+    ])
+    dumpsys = _safe_run(["adb", "-s", serial, "shell", "dumpsys", "package", package])
 
     pm_path_text = pm_path.stdout.strip() or pm_path.stderr.strip()
     resolved_text = resolved_launcher.stdout.strip() or resolved_launcher.stderr.strip()
@@ -766,17 +798,31 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
     """Capture screenshot via adb exec-out screencap.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
     Automatically dismisses ANR/system dialogs before capture.
+    Retries once with fresh serial if the first capture fails.
     """
-    serial = wait_until_ready(avd_name)
-    # Dismiss any blocking system dialogs before capturing
     dismiss_system_dialogs(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        subprocess.run(
-            ["adb", "-s", serial, "exec-out", "screencap", "-p"],
-            stdout=f,
-            check=True,
-        )
+
+    for attempt in range(2):
+        serial = _serial(avd_name)
+        try:
+            with open(output_path, "wb") as f:
+                subprocess.run(
+                    ["adb", "-s", serial, "exec-out", "screencap", "-p"],
+                    stdout=f, check=True, timeout=15,
+                )
+            # Verify the file has content (not a zero-byte stale capture)
+            if Path(output_path).stat().st_size > 100:
+                break
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            raise RuntimeError(
+                f"Screenshot failed after retry. Device '{avd_name}' may be unresponsive.\n"
+                f"Try: simemu do <session> reboot"
+            )
+
     if max_size:
         subprocess.run(["sips", "-Z", str(max_size), output_path],
                        capture_output=True, check=False)

@@ -234,10 +234,10 @@ class TestForegroundVerification(unittest.TestCase):
         return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
 
     @patch("simemu.android.subprocess.run")
-    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android._serial", return_value="emulator-5554")
     def test_foreground_app_parses_resumed_package(
         self,
-        mock_ready: MagicMock,
+        mock_serial: MagicMock,
         mock_run: MagicMock,
     ) -> None:
         mock_run.return_value = self._result(

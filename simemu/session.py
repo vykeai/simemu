@@ -1693,8 +1693,15 @@ end tell'''
             try:
                 probe = android.verify_install(sim_id, bundle, timeout=15)
             except RuntimeError:
-                serial = android.wait_until_ready(sim_id)
-                probe = android._probe_package_state(serial, bundle)
+                try:
+                    serial = android._serial(sim_id)
+                    probe = android._probe_package_state(serial, bundle)
+                except RuntimeError:
+                    return {
+                        "status": "degraded",
+                        "app": bundle,
+                        "info": "Device temporarily unreachable after activity restart. Retry in a few seconds.",
+                    }
             return {"status": "ok", "app": bundle, "info": probe.format_report()}
 
     elif command == "verify-install":
