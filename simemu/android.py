@@ -222,6 +222,10 @@ def wait_until_ready(avd_name: str, timeout: int = 180) -> str:
             time.sleep(2)
             continue
         if pm_result.returncode == 0 and "package:" in pm_result.stdout:
+            # Post-boot settle: wait for the launcher to be the foreground activity.
+            # Without this, deep links opened immediately after boot can land on the
+            # OS startup/animation screen instead of the target app.
+            _wait_for_launcher_ready(serial)
             return serial
 
         last_detail = pm_result.stderr.strip() or pm_result.stdout.strip() or "package manager not ready"
@@ -232,15 +236,47 @@ def wait_until_ready(avd_name: str, timeout: int = 180) -> str:
     )
 
 
-def _adb(avd_name: str, *args, capture: bool = False, check: bool = True) -> Optional[str]:
+def _wait_for_launcher_ready(serial: str, timeout: float = 15.0) -> None:
+    """Wait until the Android launcher is the foreground activity after boot.
+
+    After sys.boot_completed=1, the home screen animation can still be playing.
+    This prevents commands issued immediately after boot from capturing the
+    boot animation instead of actual app content.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            result = subprocess.run(
+                ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                if "mResumedActivity" in line or "topResumedActivity" in line:
+                    lower = line.lower()
+                    if "launcher" in lower or "home" in lower or "trebuchet" in lower:
+                        return
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            pass
+        time.sleep(1)
+    # Timeout is non-fatal — the device may still work, just not fully settled
+
+
+def _adb(avd_name: str, *args, capture: bool = False, check: bool = True,
+         timeout: int = 60) -> Optional[str]:
     serial = _serial(avd_name)
     cmd = ["adb", "-s", serial] + list(args)
-    if capture:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=check)
-        return result.stdout.strip()
-    else:
-        subprocess.run(cmd, check=check)
-        return None
+    try:
+        if capture:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=timeout)
+            return result.stdout.strip()
+        else:
+            subprocess.run(cmd, check=check, timeout=timeout)
+            return None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"adb command timed out after {timeout}s: {' '.join(cmd[:6])}...\n"
+            f"The device may be unresponsive. Try: simemu do <session> reboot"
+        )
 
 
 def foreground_app(avd_name: str) -> Optional[str]:
@@ -345,7 +381,7 @@ def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 12
     """Attempt escalating recovery for a package that installed into a bad PM state."""
     timeout = max(timeout, 120)
     serial = wait_until_ready(avd_name, timeout=max(timeout, 180))
-    subprocess.run(["adb", "-s", serial, "uninstall", package], capture_output=True, text=True, check=False)
+    subprocess.run(["adb", "-s", serial, "uninstall", package], capture_output=True, text=True, check=False, timeout=60)
 
     recovery_errors: list[str] = []
     recovery_steps = [
@@ -1142,7 +1178,7 @@ def reboot(avd_name: str) -> None:
     """Reboot the emulator and wait until it's fully back up."""
     _ensure_booted(avd_name)
     serial = _serial(avd_name)
-    subprocess.run(["adb", "-s", serial, "reboot"], check=False)
+    subprocess.run(["adb", "-s", serial, "reboot"], check=False, timeout=30)
     print("Rebooting...", flush=True)
     time.sleep(5)  # allow device to go offline before polling
     deadline = time.time() + 120
