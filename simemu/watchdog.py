@@ -133,6 +133,47 @@ def check_state_file_health() -> dict:
     }
 
 
+def check_memory_pressure() -> dict:
+    """Check for runaway qemu/emulator processes consuming excessive memory."""
+    threshold_mb = int(os.environ.get("SIMEMU_MEMORY_ALERT_MB", "4096"))
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid,rss,comm"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {"status": "unknown"}
+
+    offenders = []
+    total_emu_mb = 0
+    for line in result.stdout.splitlines():
+        if "qemu-system" not in line and "emulator" not in line.lower():
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            rss_mb = int(parts[1]) / 1024
+            total_emu_mb += rss_mb
+            if rss_mb > threshold_mb:
+                offenders.append({
+                    "pid": pid,
+                    "memory_mb": round(rss_mb),
+                    "process": parts[2][:40],
+                })
+        except ValueError:
+            continue
+
+    return {
+        "status": "alert" if offenders else "ok",
+        "total_emulator_mb": round(total_emu_mb),
+        "threshold_mb": threshold_mb,
+        "offenders": offenders,
+        "hint": f"Kill with: kill -9 {' '.join(str(o['pid']) for o in offenders)}" if offenders else None,
+    }
+
+
 def full_health_check() -> dict:
     """Run all watchdog checks and return a comprehensive health report."""
     return {
@@ -141,6 +182,7 @@ def full_health_check() -> dict:
         "menubar": check_menubar_app(),
         "sessions": check_stale_sessions(),
         "state_files": check_state_file_health(),
+        "memory": check_memory_pressure(),
     }
 
 

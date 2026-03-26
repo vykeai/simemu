@@ -463,9 +463,12 @@ def boot(avd_name: str, headless: bool = False) -> None:
     if get_android_serial(avd_name) is not None:
         return
 
-    cmd = ["emulator", "-avd", avd_name]
+    # Memory cap to prevent runaway qemu processes
+    memory_mb = int(os.environ.get("SIMEMU_ANDROID_MEMORY_MB", "2048"))
+
+    cmd = ["emulator", "-avd", avd_name, "-memory", str(memory_mb)]
     if headless:
-        cmd += ["-no-window", "-no-audio", "-no-boot-anim"]
+        cmd += ["-no-window", "-no-audio", "-no-boot-anim", "-gpu", "swiftshader_indirect"]
 
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -607,52 +610,72 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
         try:
             verify_install(avd_name, expected_package, timeout=15)
         except RuntimeError:
-            # Fall through to the existing launcher resolution path so the caller
-            # still gets the real foreground or package-manager error.
             pass
-        # Use am start with launcher category — monkey logs noisy "Error type 3"
-        # on apps with non-standard launcher activities.
+
+        # Strategy 1: monkey launch — most reliable for standard launcher activities
         try:
-            _adb(avd_name, "shell", "am", "start", "-a", "android.intent.action.MAIN",
-                 "-c", "android.intent.category.LAUNCHER", package_activity)
+            _adb(
+                avd_name,
+                "shell",
+                "monkey",
+                "-p", expected_package,
+                "-c", "android.intent.category.LAUNCHER",
+                "1",
+            )
             _wait_for_foreground_package(avd_name, expected_package)
             return
         except (subprocess.CalledProcessError, RuntimeError):
-            # Ask package manager for the real launcher component before falling
-            # back to hard-coded MainActivity guesses.
-            serial = wait_until_ready(avd_name)
-            probe = _probe_package_state(serial, package_activity)
-            resolved_lines = [line.strip() for line in probe.resolve_activity.splitlines() if line.strip()]
-            for component in reversed(resolved_lines):
-                if "/" not in component or component == "No activity found":
-                    continue
-                try:
-                    _adb(avd_name, "shell", "am", "start", "-n", component)
-                    _wait_for_foreground_package(avd_name, expected_package)
-                    return
-                except subprocess.CalledProcessError:
-                    pass
+            pass
 
-            base_package = package_activity
-            for suffix in (".dev", ".staging", ".prod", ".debug", ".release"):
-                if base_package.endswith(suffix):
-                    base_package = base_package[: -len(suffix)]
-                    break
+        # Strategy 2: resolve the real launcher component via package manager
+        serial = wait_until_ready(avd_name)
+        probe = _probe_package_state(serial, expected_package)
+        resolved_lines = [line.strip() for line in probe.resolve_activity.splitlines() if line.strip()]
+        for component in reversed(resolved_lines):
+            if "/" not in component or component == "No activity found":
+                continue
+            try:
+                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []))
+                _wait_for_foreground_package(avd_name, expected_package)
+                return
+            except (subprocess.CalledProcessError, RuntimeError):
+                pass
 
-            candidates = (
-                f"{package_activity}/.app.MainActivity",
-                f"{package_activity}/{base_package}.app.MainActivity",
+        # Strategy 3: explicit am start with package name
+        try:
+            _adb(
+                avd_name, "shell", "am", "start",
+                "-a", "android.intent.action.MAIN",
+                "-c", "android.intent.category.LAUNCHER",
+                "-n", f"{expected_package}/.MainActivity",
+                *(args or []),
             )
-            last_error: subprocess.CalledProcessError | None = None
-            for component in candidates:
-                try:
-                    _adb(avd_name, "shell", "am", "start", "-n", component)
-                    _wait_for_foreground_package(avd_name, expected_package)
-                    return
-                except subprocess.CalledProcessError as exc:
-                    last_error = exc
-            if last_error is not None:
-                raise last_error
+            _wait_for_foreground_package(avd_name, expected_package)
+            return
+        except (subprocess.CalledProcessError, RuntimeError):
+            pass
+
+        # Strategy 4: common activity name patterns
+        base_package = expected_package
+        for suffix in (".dev", ".staging", ".prod", ".debug", ".release"):
+            if base_package.endswith(suffix):
+                base_package = base_package[: -len(suffix)]
+                break
+
+        candidates = (
+            f"{expected_package}/.app.MainActivity",
+            f"{expected_package}/{base_package}.app.MainActivity",
+        )
+        last_error: subprocess.CalledProcessError | None = None
+        for component in candidates:
+            try:
+                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []))
+                _wait_for_foreground_package(avd_name, expected_package)
+                return
+            except subprocess.CalledProcessError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
     else:
         cmd = ["shell", "am", "start", "-n", package_activity] + (args or [])
         _adb(avd_name, *cmd)
