@@ -113,7 +113,18 @@ def _resolve_serial(avd_name: str, retries: int = 6, delay: float = 0.5) -> Opti
     return None
 
 
-def _serial(avd_name: str) -> str:
+def _serial(avd_name: str, pinned: Optional[str] = None) -> str:
+    """Resolve the adb serial for an AVD. If pinned is provided, validate it first.
+
+    This prevents cross-session contamination when multiple emulators are running:
+    the pinned serial ensures we always talk to the same emulator that was claimed.
+    """
+    if pinned:
+        # Validate the pinned serial still belongs to this AVD
+        if validate_serial(pinned, avd_name):
+            return pinned
+        # Pinned serial is stale — fall through to full resolution
+
     serial = _resolve_serial(avd_name, retries=6, delay=0.5)
     if serial is None:
         raise RuntimeError(
@@ -121,6 +132,25 @@ def _serial(avd_name: str) -> str:
             f"Re-claim the device or reconnect it, then retry."
         )
     return serial
+
+
+def validate_serial(serial: str, expected_avd: str) -> bool:
+    """Check that a serial (e.g. emulator-5554) belongs to the expected AVD.
+
+    Returns False if the serial is offline, doesn't exist, or belongs to a
+    different AVD. This is the core session isolation check.
+    """
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "emu", "avd", "name"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if result.returncode != 0:
+            return False
+        actual_name = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
+        return actual_name == expected_avd
+    except (subprocess.TimeoutExpired, IndexError, OSError):
+        return False
 
 
 def get_serial(avd_name: str) -> str:
@@ -262,14 +292,16 @@ def _wait_for_launcher_ready(serial: str, timeout: float = 15.0) -> None:
 
 
 def _adb(avd_name: str, *args, capture: bool = False, check: bool = True,
-         timeout: int = 60) -> Optional[str]:
+         timeout: int = 60, pinned_serial: Optional[str] = None) -> Optional[str]:
     """Run an adb command against the device. Retries once with fresh serial on connection errors."""
-    return _adb_with_retry(avd_name, list(args), capture=capture, check=check, timeout=timeout)
+    return _adb_with_retry(avd_name, list(args), capture=capture, check=check,
+                           timeout=timeout, pinned_serial=pinned_serial)
 
 
 def _adb_with_retry(avd_name: str, args: list[str], *, capture: bool, check: bool,
-                     timeout: int, _retried: bool = False) -> Optional[str]:
-    serial = _serial(avd_name)
+                     timeout: int, pinned_serial: Optional[str] = None,
+                     _retried: bool = False) -> Optional[str]:
+    serial = _serial(avd_name, pinned=pinned_serial)
     cmd = ["adb", "-s", serial] + args
     try:
         if capture:
@@ -306,7 +338,8 @@ def _adb_with_retry(avd_name: str, args: list[str], *, capture: bool, check: boo
         )
 
 
-def foreground_app(avd_name: str, retries: int = 2, delay: float = 1.0) -> Optional[str]:
+def foreground_app(avd_name: str, retries: int = 2, delay: float = 1.0,
+                   pinned_serial: Optional[str] = None) -> Optional[str]:
     """Return the currently resumed Android package, if detectable.
 
     Retries briefly to handle transient launcher-bounce after activity-alias
@@ -315,7 +348,7 @@ def foreground_app(avd_name: str, retries: int = 2, delay: float = 1.0) -> Optio
     """
     for attempt in range(max(1, retries)):
         try:
-            serial = _serial(avd_name)
+            serial = _serial(avd_name, pinned=pinned_serial)
             result = subprocess.run(
                 ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
                 capture_output=True, text=True, check=False, timeout=15,
@@ -865,7 +898,8 @@ def dismiss_system_dialogs(avd_name: str) -> bool:
     return False
 
 
-def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) -> None:
+def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
+               pinned_serial: Optional[str] = None) -> None:
     """Capture screenshot via adb exec-out screencap.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
     Automatically dismisses ANR/system dialogs before capture.
@@ -878,7 +912,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
     max_attempts = 4
     for attempt in range(max_attempts):
         try:
-            serial = _serial(avd_name)
+            serial = _serial(avd_name, pinned=pinned_serial)
         except RuntimeError:
             if attempt < max_attempts - 1:
                 # Device went offline — wait for adb recovery instead of failing

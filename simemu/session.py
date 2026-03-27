@@ -84,6 +84,10 @@ class Session:
     expires_at: str | None = None        # ISO timestamp (computed)
     resolved_os_version: str | None = None  # actual OS version of assigned device
 
+    # Pinned adb serial for Android session isolation — set at claim time,
+    # validated before every command to prevent cross-session contamination
+    pinned_serial: str | None = None
+
     # Stored claim spec for error recovery messages
     claim_platform: str = ""
     claim_form_factor: str = "phone"
@@ -142,7 +146,7 @@ def _compute_expires_at(status: str, heartbeat_at: str) -> str:
 
 # ── state persistence ────────────────────────────────────────────────────────
 
-SCHEMA_VERSION = 2  # Current schema version
+SCHEMA_VERSION = 3  # Current schema version
 
 
 def _sessions_file() -> Path:
@@ -172,6 +176,12 @@ def _migrate_schema(data: dict) -> dict:
             session.setdefault("resolved_os_version", None)
             session.setdefault("last_build_artifact", None)
         data["schema_version"] = 2
+
+    if version < 3:
+        # v2 → v3: Add pinned_serial for Android session isolation
+        for sid, session in data.get("sessions", {}).items():
+            session.setdefault("pinned_serial", None)
+        data["schema_version"] = 3
 
     return data
 
@@ -358,6 +368,11 @@ def claim(spec: ClaimSpec) -> Session:
         except Exception:
             pass  # window management is best-effort
 
+    # Pin the adb serial at claim time for Android session isolation
+    pinned_serial: str | None = None
+    if spec.platform == "android" and not sim.real_device:
+        pinned_serial = android.get_android_serial(sim.sim_id, retries=4, delay=1.0)
+
     # Create the session
     session = Session(
         session_id=session_id,
@@ -373,6 +388,7 @@ def claim(spec: ClaimSpec) -> Session:
         created_at=now,
         heartbeat_at=now,
         resolved_os_version=sim.runtime,
+        pinned_serial=pinned_serial,
         claim_platform=spec.platform,
         claim_form_factor=spec.form_factor,
         claim_os_version=spec.os_version,
@@ -486,16 +502,27 @@ def touch(session_id: str) -> Session:
     ):
         serial = android.get_android_serial(session.sim_id, retries=2, delay=0.5)
         if serial is None:
-            # adb offline — try reconnecting before resorting to full reboot
+            # adb offline — try reconnecting THIS device's serial only
+            # (not `adb reconnect offline` which reconnects ALL devices and causes
+            # cross-session contamination when multiple emulators are running)
             try:
                 import subprocess as _sp
-                _sp.run(["adb", "reconnect", "offline"],
-                        capture_output=True, timeout=10, check=False)
+                if session.pinned_serial:
+                    # Reconnect only the pinned serial
+                    _sp.run(["adb", "-s", session.pinned_serial, "reconnect"],
+                            capture_output=True, timeout=10, check=False)
                 import time as _time
                 _time.sleep(2)
                 serial = android.get_android_serial(session.sim_id, retries=4, delay=1.0)
             except Exception:
                 serial = None
+            if serial is not None and session.pinned_serial and serial != session.pinned_serial:
+                # Serial changed after reconnect — update pinned serial
+                with _locked_sessions() as (data, save):
+                    if session_id in data["sessions"]:
+                        data["sessions"][session_id]["pinned_serial"] = serial
+                        save(data)
+                session.pinned_serial = serial
             if serial is None:
                 reboot_needed = True
 
@@ -937,6 +964,37 @@ end tell'''
     sim_id = session.sim_id
     platform = session.platform
     is_real = session.real_device
+
+    # Android session isolation: validate the pinned serial still resolves to this AVD.
+    # This prevents cross-session contamination when multiple emulators are running.
+    _pinned = session.pinned_serial if (platform == "android" and not is_real) else None
+    if _pinned:
+        current_serial = android.get_android_serial(sim_id, retries=2, delay=0.5)
+        if current_serial and current_serial != _pinned:
+            # Serial changed — the emulator restarted on a new port. Update pin.
+            _pinned = current_serial
+            with _locked_sessions() as (data, save):
+                if session_id in data["sessions"]:
+                    data["sessions"][session_id]["pinned_serial"] = current_serial
+                    save(data)
+            session.pinned_serial = current_serial
+
+    # Monkey-patch the android module's _serial resolution for this command dispatch
+    # so ALL android calls within do_command use the pinned serial automatically.
+    _orig_serial = android._serial
+    if _pinned:
+        def _pinned_serial_fn(avd_name, pinned=None):
+            return _orig_serial(avd_name, pinned=_pinned)
+        android._serial = _pinned_serial_fn
+    try:
+        return _do_command_dispatch(session_id, session, sim_id, platform, is_real, command, args)
+    finally:
+        android._serial = _orig_serial
+
+
+def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
+                         is_real: bool, command: str, args: list[str]):
+    """Inner dispatch for do_command — separated so the serial pin can wrap it."""
 
     # Update HUD — only for visible sessions (hidden = no overlay needed)
     _is_visible = False

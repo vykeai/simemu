@@ -604,5 +604,43 @@ class TestRepairInstallFastPath(unittest.TestCase):
         self.assertTrue(result.ok)
 
 
+class TestSessionIsolation(unittest.TestCase):
+    """Test that pinned serial prevents cross-session contamination."""
+
+    @patch("simemu.android.subprocess.run")
+    def test_validate_serial_correct_avd(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Sitches_Phone_API35\nOK\n", stderr=""
+        )
+        self.assertTrue(android.validate_serial("emulator-5554", "Sitches_Phone_API35"))
+
+    @patch("simemu.android.subprocess.run")
+    def test_validate_serial_wrong_avd(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Fitkind_Phone_API35\nOK\n", stderr=""
+        )
+        self.assertFalse(android.validate_serial("emulator-5554", "Sitches_Phone_API35"))
+
+    @patch("simemu.android.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5))
+    def test_validate_serial_timeout(self, mock_run) -> None:
+        self.assertFalse(android.validate_serial("emulator-5554", "MyAVD"))
+
+    @patch("simemu.android._resolve_serial", return_value="emulator-5554")
+    @patch("simemu.android.validate_serial", return_value=True)
+    def test_serial_uses_pinned_when_valid(self, mock_validate, mock_resolve) -> None:
+        result = android._serial("MyAVD", pinned="emulator-5554")
+        self.assertEqual(result, "emulator-5554")
+        mock_validate.assert_called_once_with("emulator-5554", "MyAVD")
+        mock_resolve.assert_not_called()
+
+    @patch("simemu.android._resolve_serial", return_value="emulator-5556")
+    @patch("simemu.android.validate_serial", return_value=False)
+    def test_serial_falls_back_when_pinned_invalid(self, mock_validate, mock_resolve) -> None:
+        result = android._serial("MyAVD", pinned="emulator-5554")
+        self.assertEqual(result, "emulator-5556")
+        mock_validate.assert_called_once_with("emulator-5554", "MyAVD")
+        mock_resolve.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
