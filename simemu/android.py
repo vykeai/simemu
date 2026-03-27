@@ -899,15 +899,22 @@ def dismiss_system_dialogs(avd_name: str) -> bool:
 
 
 def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
-               pinned_serial: Optional[str] = None) -> None:
+               pinned_serial: Optional[str] = None,
+               settle_ms: int = 500) -> None:
     """Capture screenshot via adb exec-out screencap.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
+    settle_ms: wait this long before capturing to let the UI finish animating.
     Automatically dismisses ANR/system dialogs before capture.
     Waits for adb recovery on transient device-offline (e.g. after deep-link open
     triggers an activity-alias switch or app restart).
+    Uses a temp file + rename to avoid leaving zero-byte files on timeout.
     """
     dismiss_system_dialogs(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Let the UI settle after route-open / activity transitions before capturing
+    if settle_ms > 0:
+        time.sleep(settle_ms / 1000.0)
 
     max_attempts = 4
     for attempt in range(max_attempts):
@@ -915,7 +922,6 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
             serial = _serial(avd_name, pinned=pinned_serial)
         except RuntimeError:
             if attempt < max_attempts - 1:
-                # Device went offline — wait for adb recovery instead of failing
                 time.sleep(2 * (attempt + 1))
                 continue
             raise RuntimeError(
@@ -923,23 +929,36 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                 f"Re-claim or reboot: simemu do <session> reboot"
             )
 
+        # Write to temp file, then rename — prevents leaving zero-byte files on timeout
+        tmp_path = output_path + ".tmp"
         try:
-            with open(output_path, "wb") as f:
+            with open(tmp_path, "wb") as f:
                 subprocess.run(
                     ["adb", "-s", serial, "exec-out", "screencap", "-p"],
-                    stdout=f, check=True, timeout=15,
+                    stdout=f, check=True, timeout=10,
                 )
-            # Verify the file has content (not a zero-byte stale capture)
-            if Path(output_path).stat().st_size > 100:
+            size = Path(tmp_path).stat().st_size
+            if size > 100:
+                Path(tmp_path).replace(output_path)
                 break
+            # Zero/tiny file — screencap returned but screen wasn't ready
+            Path(tmp_path).unlink(missing_ok=True)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-            if attempt < max_attempts - 1:
-                time.sleep(2 * (attempt + 1))
-                continue
-            raise RuntimeError(
-                f"Screenshot failed after {max_attempts} attempts. Device '{avd_name}' may be unresponsive.\n"
-                f"Try: simemu do <session> reboot"
-            )
+            # Clean up partial temp file
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        if attempt < max_attempts - 1:
+            # Wait longer on each retry — the screen may still be transitioning
+            time.sleep(1 + attempt)
+            continue
+
+        raise RuntimeError(
+            f"Screenshot failed after {max_attempts} attempts. Device '{avd_name}' may be unresponsive.\n"
+            f"Try: simemu do <session> reboot"
+        )
 
     if max_size:
         subprocess.run(["sips", "-Z", str(max_size), output_path],

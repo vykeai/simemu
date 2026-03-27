@@ -1134,7 +1134,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
         else:
-            android.screenshot(sim_id, output)
+            android.screenshot(sim_id, output, max_size=max_size)
         update_provenance(session_id, last_screenshot=output)
         return {"status": "captured", "path": output}
 
@@ -2236,7 +2236,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
     elif platform in ("ios", "watchos", "tvos", "visionos"):
         ios.screenshot(sim_id, output, max_size=max_size)
     else:
-        android.screenshot(sim_id, output)
+        android.screenshot(sim_id, output, max_size=max_size, settle_ms=800)
     steps.append(f"screenshot:{output}")
 
     # ── Step 10: Store provenance ───────────────────────────────────────
