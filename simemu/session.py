@@ -399,10 +399,23 @@ def claim(spec: ClaimSpec) -> Session:
 
     # Persist session — check for duplicate sim_id under lock
     with _locked_sessions() as (data, save):
-        # Reject if another active session already has this device
-        for existing_id, existing in data["sessions"].items():
+        # Check if another active session already has this device
+        for existing_id, existing in list(data["sessions"].items()):
             if (existing.get("sim_id") == sim.sim_id
                     and existing.get("status") in ("active", "idle", "parked")):
+                # Is the existing session's emulator actually running?
+                if existing.get("platform") == "android" and not existing.get("real_device"):
+                    existing_serial = android.get_android_serial(sim.sim_id, retries=1, delay=0.3)
+                    if existing_serial is None:
+                        # Emulator is dead — expire the zombie session
+                        data["sessions"][existing_id]["status"] = "expired"
+                        data["sessions"][existing_id]["expires_at"] = _now_iso()
+                        print(
+                            f"[simemu-session] Expired zombie session '{existing_id}' "
+                            f"(emulator '{sim.sim_id}' not running) to allow new claim",
+                            flush=True, file=_sys.stderr,
+                        )
+                        continue
                 raise SessionError(
                     error="device_already_claimed",
                     session=existing_id,
@@ -557,6 +570,10 @@ def touch(session_id: str) -> Session:
                 ios.boot(session.sim_id)
             else:
                 android.boot(session.sim_id, headless=True)
+                # Re-pin serial after boot — emulator gets a new port
+                new_serial = android.get_android_serial(session.sim_id, retries=6, delay=1.0)
+                if new_serial and new_serial != session.pinned_serial:
+                    session.pinned_serial = new_serial
 
     # Update state
     with _locked_sessions() as (data, save):
@@ -564,6 +581,9 @@ def touch(session_id: str) -> Session:
             data["sessions"][session_id]["heartbeat_at"] = now
             data["sessions"][session_id]["status"] = "active"
             data["sessions"][session_id]["expires_at"] = _compute_expires_at("active", now)
+            # Persist updated pinned serial
+            if session.pinned_serial:
+                data["sessions"][session_id]["pinned_serial"] = session.pinned_serial
             save(data)
 
     session.heartbeat_at = now
@@ -2576,6 +2596,36 @@ def lifecycle_tick() -> list[str]:
                     f"(idle {idle_seconds / 60:.0f}m)",
                     flush=True,
                 )
+
+        # Orphan detection: expire Android sessions whose emulator is dead.
+        # This prevents zombie sessions from competing for emulator ports when
+        # a new claim boots an emulator on the same port as a dead session.
+        for sid, raw in list(data["sessions"].items()):
+            if raw.get("status") not in ("active", "idle", "parked"):
+                continue
+            if raw.get("platform") != "android" or raw.get("real_device"):
+                continue
+            sim_id = raw.get("sim_id", "")
+            pinned = raw.get("pinned_serial")
+            # Check if this session's emulator is reachable
+            serial = android.get_android_serial(sim_id, retries=1, delay=0.3)
+            if serial is not None:
+                # Emulator is running — also verify pinned serial matches
+                if pinned and serial != pinned:
+                    data["sessions"][sid]["pinned_serial"] = serial
+                    dirty = True
+                continue
+            # No emulator found for this AVD — expire the session
+            old_status = raw.get("status")
+            data["sessions"][sid]["status"] = "expired"
+            data["sessions"][sid]["expires_at"] = _now_iso()
+            dirty = True
+            changed.append(sid)
+            print(
+                f"[simemu-session] '{sid}' {old_status} → expired "
+                f"(orphan: emulator '{sim_id}' not running)",
+                flush=True,
+            )
 
         if dirty:
             save(data)
