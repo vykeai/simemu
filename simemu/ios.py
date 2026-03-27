@@ -210,6 +210,29 @@ def screenshot(udid: str, output_path: str, fmt: Optional[str] = None,
                        capture_output=True, check=False)
 
 
+def tvos_screenshot(udid: str, output_path: str, fmt: Optional[str] = None,
+                    max_size: Optional[int] = None) -> None:
+    """Take a screenshot of a tvOS simulator. Uses --display external for TV output."""
+    _ensure_booted(udid)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["io", udid, "screenshot", "--display", "external"]
+    if fmt:
+        cmd += ["--type", fmt]
+    cmd.append(output_path)
+    try:
+        _simctl(*cmd)
+    except (subprocess.CalledProcessError, RuntimeError):
+        # Fallback: try without --display external (older Xcode versions)
+        cmd_fallback = ["io", udid, "screenshot"]
+        if fmt:
+            cmd_fallback += ["--type", fmt]
+        cmd_fallback.append(output_path)
+        _simctl(*cmd_fallback)
+    if max_size:
+        subprocess.run(["sips", "-Z", str(max_size), output_path],
+                       capture_output=True, check=False)
+
+
 def record_start(udid: str, output_path: str, codec: Optional[str] = None) -> int:
     _ensure_booted(udid)
     """
@@ -578,6 +601,9 @@ _IOS_DEVICE_LOGICAL_SIZE: dict[str, tuple[int, int]] = {
     "iPadAir11":       (820, 1180),
     "iPadMini":        (744, 1133),
     "iPad":            (810, 1080),
+    # Apple TV — display output resolution (not touch coordinates)
+    "AppleTV4K":       (1920, 1080),
+    "AppleTV":         (1920, 1080),
 }
 
 
@@ -1614,7 +1640,11 @@ def rotate(udid: str, orientation: str) -> None:
 
 
 # Named key → (virtual key code, modifier names, description)
-_VK_V = 9   # v
+_VK_V = 9       # v
+_VK_UP = 126    # Arrow Up
+_VK_DOWN = 125  # Arrow Down
+_VK_ESCAPE = 53 # Escape
+_VK_SPACE = 49  # Space
 
 _IOS_KEYS: dict[str, tuple[int, tuple[str, ...], str]] = {
     "home":       (_VK_H, ("command down", "shift down"), "Go to home screen (Cmd+Shift+H)"),
@@ -1624,13 +1654,62 @@ _IOS_KEYS: dict[str, tuple[int, tuple[str, ...], str]] = {
     "enter":      (_VK_RETURN, (), "Press Return / default action"),
     "return":     (_VK_RETURN, (), "Press Return / default action"),
     "paste":      (_VK_V, ("command down",), "Paste clipboard (Cmd+V)"),
+    # tvOS Siri Remote
+    "remote-up":         (_VK_UP, (), "Focus up (Arrow Up) — tvOS Siri Remote"),
+    "remote-down":       (_VK_DOWN, (), "Focus down (Arrow Down) — tvOS Siri Remote"),
+    "remote-left":       (_VK_LEFT, (), "Focus left (Arrow Left) — tvOS Siri Remote"),
+    "remote-right":      (_VK_RIGHT, (), "Focus right (Arrow Right) — tvOS Siri Remote"),
+    "remote-select":     (_VK_RETURN, (), "Select / click (Return) — tvOS Siri Remote"),
+    "remote-menu":       (_VK_ESCAPE, (), "Menu / back (Escape) — tvOS Siri Remote"),
+    "remote-play-pause": (_VK_SPACE, (), "Play/Pause (Space) — tvOS Siri Remote"),
 }
+
+
+def focus_move(udid: str, direction: str) -> None:
+    """Move focus on tvOS simulator. direction: up, down, left, right.
+
+    Maps to arrow keys via System Events — equivalent to swiping
+    the Siri Remote trackpad.
+    """
+    key_map = {"up": "remote-up", "down": "remote-down",
+               "left": "remote-left", "right": "remote-right"}
+    k = key_map.get(direction.lower())
+    if not k:
+        raise RuntimeError(f"Invalid focus direction '{direction}'. Use: up, down, left, right")
+    key(udid, k)
+
+
+def focus_select(udid: str) -> None:
+    """Press select on tvOS simulator — equivalent to clicking the Siri Remote trackpad."""
+    key(udid, "remote-select")
+
+
+def remote_button(udid: str, button: str) -> None:
+    """Press a Siri Remote button on tvOS simulator.
+
+    Supported: up, down, left, right, select, menu, play-pause, home
+    """
+    button_map = {
+        "up": "remote-up", "down": "remote-down",
+        "left": "remote-left", "right": "remote-right",
+        "select": "remote-select", "menu": "remote-menu",
+        "play-pause": "remote-play-pause", "playpause": "remote-play-pause",
+        "home": "home",
+    }
+    k = button_map.get(button.lower())
+    if not k:
+        raise RuntimeError(
+            f"Unknown remote button '{button}'. "
+            f"Supported: {', '.join(button_map)}"
+        )
+    key(udid, k)
 
 
 def key(udid: str, key_name: str) -> None:
     """Press a named hardware key on the simulator.
 
-    Supported: home, lock, siri, screenshot, enter
+    Supported: home, lock, siri, screenshot, enter, paste
+    tvOS remote: remote-up/down/left/right, remote-select, remote-menu, remote-play-pause
     Briefly acquires focus and restores the previously frontmost app.
     """
     _ensure_booted(udid)

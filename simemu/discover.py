@@ -239,6 +239,12 @@ def _classify_form_factor(sim: SimulatorInfo) -> str | None:
     """Infer a coarse form factor from a discovered device name."""
     name = sim.device_name.lower()
 
+    if any(hint in name for hint in ("apple tv", "appletv")):
+        return "tv"
+    if any(hint in name for hint in ("apple watch", "watch")):
+        return "watch"
+    if any(hint in name for hint in ("apple vision", "vision pro")):
+        return "vision"
     if any(hint in name for hint in ("ipad", "tablet")):
         return "tablet"
     if any(hint in name for hint in ("iphone", "pixel", "galaxy", "phone", "nexus")):

@@ -15,7 +15,7 @@ SESSION_SCHEMA = {
     "required": ["session", "platform", "form_factor", "status"],
     "properties": {
         "session":     {"type": "string", "pattern": "^s-[0-9a-f]{6}$"},
-        "platform":    {"type": "string", "enum": ["ios", "android", "macos"]},
+        "platform":    {"type": "string", "enum": ["ios", "android", "macos", "tvos", "watchos", "visionos"]},
         "form_factor": {"type": "string", "enum": ["phone", "tablet", "watch", "tv", "vision", "desktop"]},
         "os_version":  {"type": "string"},
         "status":      {"type": "string", "enum": ["active", "idle", "parked", "expired", "released"]},

@@ -231,7 +231,7 @@ class TestDoScreenshot(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "screenshot", ["-o", "/tmp/droid.png"])
-        mock_screenshot.assert_called_once_with("Pixel_7", "/tmp/droid.png")
+        mock_screenshot.assert_called_once_with("Pixel_7", "/tmp/droid.png", max_size=None)
 
 
 # ── maestro ──────────────────────────────────────────────────────────────────

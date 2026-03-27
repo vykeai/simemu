@@ -36,6 +36,9 @@ _simemu() {
         'ipad:iOS tablet (alias)'
         'pixel:Android phone (alias)'
         'watch:watchOS (alias)'
+        'tv:tvOS Apple TV (alias)'
+        'appletv:tvOS Apple TV (alias)'
+        'vision:visionOS (alias)'
         'mac:macOS (alias)'
     )
 
@@ -56,6 +59,8 @@ _simemu() {
         'video-start:Start recording' 'video-stop:Stop recording'
         'present:Present simulator' 'stabilize:Stabilize for interaction'
         'verify-install:Verify Android install' 'repair-install:Repair install'
+        'focus-move:Move focus (tvOS)' 'focus-select:Select focused (tvOS)'
+        'remote:Siri Remote button (tvOS)'
     )
 
     local -a config_commands
@@ -129,8 +134,8 @@ def bash_completion() -> str:
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     commands="claim do sessions status config serve daemon maintenance menubar create idle-shutdown"
-    platforms="ios android macos iphone ipad pixel watch mac"
-    do_commands="install launch terminate uninstall reset-app tap swipe long-press key input a11y-tap screenshot proof url maestro appearance rotate status-bar boot show hide done renew help build env dismiss-alert accept-alert video-start video-stop present stabilize verify-install repair-install"
+    platforms="ios android macos iphone ipad pixel watch tv appletv vision mac"
+    do_commands="install launch terminate uninstall reset-app tap swipe long-press key input a11y-tap screenshot proof url maestro appearance rotate status-bar boot show hide done renew help build env dismiss-alert accept-alert video-start video-stop present stabilize verify-install repair-install focus-move focus-select remote"
 
     case "${COMP_CWORD}" in
         1)

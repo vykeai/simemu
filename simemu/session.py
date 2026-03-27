@@ -740,6 +740,10 @@ _COMMAND_HELP: dict[str, str] = {
     "reduce-motion":    "Toggle reduce motion / animations (Android)",
     "notifications-clear": "Clear notification center (Android)",
     "a11y-tree":        "Dump accessibility hierarchy (Android)",
+    # tvOS Siri Remote
+    "focus-move":       "Move focus: up, down, left, right (tvOS only)",
+    "focus-select":     "Press select / click trackpad (tvOS only)",
+    "remote":           "Press Siri Remote button: up/down/left/right/select/menu/play-pause/home (tvOS only)",
     # Info
     "env":              "Show device info (UDID, serial, OS version)",
     "trace":            "Export debug trace bundle (session + health + history)",
@@ -895,6 +899,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
             "Files": ["push", "pull", "add-media", "contacts-import"],
             "System": ["keychain-reset", "icloud-sync", "clone", "font-size",
                        "reduce-motion", "notifications-clear", "a11y-tree", "env"],
+            "tvOS Remote": ["focus-move", "focus-select", "remote"],
         }
         result: dict = {"commands": {}}
         for cat, cmds in categories.items():
@@ -1097,10 +1102,17 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         return {"status": "launched", "app": bundle}
 
     elif command == "tap":
+        if platform == "tvos":
+            raise RuntimeError(
+                "tvOS does not support tap — use focus navigation instead:\n"
+                "  simemu do <session> focus-move up/down/left/right\n"
+                "  simemu do <session> focus-select\n"
+                "  simemu do <session> remote <button>"
+            )
         if len(args) < 2:
             raise RuntimeError("Usage: simemu do <session> tap <x> <y>")
         x, y = float(args[0]), float(args[1])
-        if platform in ("ios", "watchos", "tvos", "visionos"):
+        if platform in ("ios", "watchos", "visionos"):
             ios.tap(sim_id, x, y)
         else:
             android.tap(sim_id, x, y)
@@ -1151,7 +1163,9 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
 
         if is_real and platform == "ios":
             device.ios_screenshot(sim_id, output, max_size=max_size)
-        elif platform in ("ios", "watchos", "tvos", "visionos"):
+        elif platform == "tvos":
+            ios.tvos_screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
+        elif platform in ("ios", "watchos", "visionos"):
             ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
         else:
             android.screenshot(sim_id, output, max_size=max_size)
@@ -1326,6 +1340,31 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         else:
             android.key(sim_id, key_name)
         return {"status": "key_pressed", "key": key_name}
+
+    elif command == "focus-move":
+        if platform != "tvos":
+            raise RuntimeError("focus-move is tvOS only. Use tap/swipe for other platforms.")
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> focus-move <up|down|left|right>")
+        ios.focus_move(sim_id, args[0])
+        return {"status": "moved", "direction": args[0]}
+
+    elif command == "focus-select":
+        if platform != "tvos":
+            raise RuntimeError("focus-select is tvOS only. Use tap for other platforms.")
+        ios.focus_select(sim_id)
+        return {"status": "selected"}
+
+    elif command == "remote":
+        if platform != "tvos":
+            raise RuntimeError("remote is tvOS only.")
+        if not args:
+            raise RuntimeError(
+                "Usage: simemu do <session> remote <button>\n"
+                "Buttons: up, down, left, right, select, menu, play-pause, home"
+            )
+        ios.remote_button(sim_id, args[0])
+        return {"status": "pressed", "button": args[0]}
 
     elif command == "appearance":
         if not args:
@@ -1927,7 +1966,14 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if direction not in swipe_map:
             raise RuntimeError(f"Unknown scroll direction '{direction}'. Use: up, down, left, right")
         x1, y1, x2, y2 = swipe_map[direction]
-        if platform in ("ios", "watchos", "tvos", "visionos"):
+        if platform == "tvos":
+            # tvOS: scroll = repeated focus moves in that direction
+            for _ in range(3):
+                ios.focus_move(sim_id, direction)
+                import time as _time
+                _time.sleep(0.15)
+            return {"status": "scrolled", "direction": direction, "method": "focus_move"}
+        elif platform in ("ios", "watchos", "visionos"):
             ios.swipe(sim_id, x1, y1, x2, y2, duration=0.3)
         else:
             android.swipe(sim_id, x1, y1, x2, y2, duration=300)
@@ -1935,7 +1981,11 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
 
     elif command == "back":
         import subprocess as _sp
-        if platform in ("ios", "watchos", "tvos", "visionos"):
+        if platform == "tvos":
+            # tvOS: Menu button = back
+            ios.remote_button(sim_id, "menu")
+            return {"status": "back", "method": "remote_menu"}
+        elif platform in ("ios", "watchos", "visionos"):
             # iOS: swipe from left edge to go back
             ios.swipe(sim_id, 5, 400, 300, 400, duration=0.3)
             return {"status": "back", "method": "edge_swipe"}

@@ -32,6 +32,8 @@ _BUILTIN_ALIASES: dict[str, dict[str, str]] = {
     "pixel": {"platform": "android", "form_factor": "phone"},
     "watch": {"platform": "ios", "form_factor": "watch"},
     "tv": {"platform": "ios", "form_factor": "tv"},
+    "appletv": {"platform": "ios", "form_factor": "tv"},
+    "apple-tv": {"platform": "ios", "form_factor": "tv"},
     "vision": {"platform": "ios", "form_factor": "vision"},
     "mac": {"platform": "macos", "form_factor": "desktop"},
 }
