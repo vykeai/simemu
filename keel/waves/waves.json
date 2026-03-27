@@ -8,6 +8,33 @@
       "target": null,
       "gates": [],
       "checkpoints": []
+    },
+    {
+      "id": "wave-2",
+      "name": "Proof Reliability",
+      "goal": "Make proof capture and app-target validation deterministic across iOS, Android, and the menu bar app",
+      "status": "planned",
+      "target": null,
+      "gates": [],
+      "checkpoints": []
+    },
+    {
+      "id": "wave-3",
+      "name": "Productization",
+      "goal": "Turn simemu into a stable installable tool with reservations, packaging, and operator-grade ergonomics",
+      "status": "planned",
+      "target": null,
+      "gates": [],
+      "checkpoints": []
+    },
+    {
+      "id": "wave-4",
+      "name": "Ops Hardening",
+      "goal": "Harden session state, diagnostics, APIs, and recovery paths for long-running shared-desktop use",
+      "status": "planned",
+      "target": null,
+      "gates": [],
+      "checkpoints": []
     }
   ]
 }

@@ -7,4 +7,19 @@
 ## Wave 1: v2 Polish `active` ← ACTIVE
 **Goal:** Complete simemu v2 session API, add build wrapper, cross-platform naming
 
-`░░░░░░░░░░░░░░░░░░░░` 0%  (0/1 tasks)
+`████████████████████` 100%  (5/5 tasks)
+
+## Wave 2: Proof Reliability `planned`
+**Goal:** Make proof capture and app-target validation deterministic across iOS, Android, and the menu bar app
+
+`████████████████████` 100%  (7/7 tasks)
+
+## Wave 3: Productization `planned`
+**Goal:** Turn simemu into a stable installable tool with reservations, packaging, and operator-grade ergonomics
+
+`████████████████████` 100%  (7/7 tasks)
+
+## Wave 4: Ops Hardening `planned`
+**Goal:** Harden session state, diagnostics, APIs, and recovery paths for long-running shared-desktop use
+
+`████████████████████` 100%  (7/7 tasks)

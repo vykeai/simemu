@@ -1,6 +1,7 @@
+<!-- version: f823fe5a2488 | generated: 2026-03-27 -->
 # simemu
 
-Simulator and emulator allocation manager for multi-agent iOS/Android development.
+
 
 ---
 
@@ -14,6 +15,11 @@ mkdir -p "$PROJECT_SCREENSHOT_DIR"
 ```
 
 Do not keep proof or review screenshots in `/tmp`.
+**Prove deliverables with screenshots — never verbal claims.**
+For every change, gather fresh proof and explicitly analyse the result before
+calling the work done. "It looks correct" is not proof. A screenshot IS proof.
+When the change affects UI, capture a fresh screenshot from the actual
+simulator/device and review it visually before marking the task done.
 
 ---
 
@@ -38,20 +44,36 @@ ROADMAP.md, or similar tracking files.**
 
 ---
 
-## Execution — Cloudy
+## Autonomous Execution
 
-Use **cloudy** ([vykeai/cloudy](https://github.com/vykeai/cloudy)) for multi-task orchestration.
+This project uses **AUTONOMOUS_EXECUTION.md** for continuous execution rules.
+If the file exists, read it — it contains the full execution mandate, quality
+gates (13 gates), task loop, and conventions.
 
+If it doesn't exist yet, run:
 ```bash
-cloudy plan --spec ./docs/spec.md          # decompose spec → task graph
-cloudy run --execution-model sonnet        # execute all tasks
-cloudy check                               # re-validate completed tasks
+keel render:install-profiles   # install shared templates
+keel render:auto               # generate AUTONOMOUS_EXECUTION.md
 ```
 
-**From inside Claude Code sessions** — unset nesting vars:
-```bash
-env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT cloudy run --spec spec.md
-```
+**Key files for execution:**
+- `AUTONOMOUS_EXECUTION.md` — the execution playbook (generated, do not edit)
+- `ONE_OFF.md` — ad-hoc tasks (human adds, agent executes + cleans up)
+- `keel/execution.yaml` — build commands, variants, platforms
+
+## Required Reading Order
+
+When landing in this repo, read in order before starting work:
+
+1. `AGENTS.md` (this file) — project identity, conventions
+2. `AUTONOMOUS_EXECUTION.md` — how to execute without stopping
+3. `views/roadmap.md` — current wave state
+4. `views/tasks.md` — all tasks with dependencies
+
+Interpretation:
+- `AGENTS.md` = what the project is and how to work in it
+- `AUTONOMOUS_EXECUTION.md` = the execution loop, quality gates, all rules
+- `views/` = generated current state, never edit directly
 
 ---
 
@@ -74,93 +96,82 @@ env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT cloudy run --spec spec.md
 
 ## Python Conventions
 
-- **Python 3.11+** — use modern syntax (match/case, type unions with `|`, etc.)
-- **Type hints everywhere** — all function signatures, return types, and class attributes
-- **Pydantic v2** for data validation and settings where applicable
+- **Python 3.11+** — use modern syntax (match/case, type unions with `|`)
+- **Type hints everywhere** — all function signatures, return types, class attributes
+- **Pydantic v2** for data validation where applicable
 - **async/await** for I/O-bound code — never block the event loop
 - **No bare `except:`** — always catch specific exceptions
-- **f-strings** for string formatting — never `.format()` or `%` interpolation
+- **f-strings** for formatting — never `.format()` or `%`
 - **pathlib.Path** over `os.path` for file operations
 - **`if __name__ == "__main__":`** guard on all executable modules
-
----
-
-## Project Structure
-
-```
-simemu/
-├── simemu/     # or src/ — main package
-│   ├── __init__.py
-│   └── ...
-├── tests/
-│   ├── test_*.py       # or simemu/tests/
-│   └── conftest.py
-├── pyproject.toml       # package metadata + dependencies
-└── README.md
-```
 
 ---
 
 ## Key Commands
 
 ```bash
-# Virtual environment
 python3 -m venv .venv && source .venv/bin/activate
-
-# Install
 pip install -e ".[dev]"     # or: pip install -r requirements.txt
-
-# Test
-pytest                      # or: python -m pytest
-pytest -x                   # stop on first failure
-pytest -k "test_name"       # run specific test
-
-# Type check
-mypy .                      # or: pyright
-
-# Lint
-ruff check .
-ruff format .
+pytest                      # run tests
+ruff check .                # lint
+ruff format .               # format
 ```
 
 ---
 
 ## Testing (pytest)
 
-- Test files: `tests/test_*.py` or `tests/**/test_*.py`
-- Use `pytest` fixtures for setup/teardown
-- Use `pytest.mark.asyncio` for async tests
+- Test files: `tests/test_*.py`
+- Use pytest fixtures for setup/teardown
 - Mock external services — never hit real APIs in tests
-- Aim for meaningful coverage, not 100% line coverage
-
----
-
-## FastAPI Patterns (if applicable)
-
-- All routes prefixed `/api/v1`
-- CRUD: GET (list/get), POST (create), PATCH (update), DELETE
-- Use Pydantic models for request/response schemas
-- Async locking for concurrent file/DB writes
-- Health check endpoint: `GET /health`
 
 ---
 
 ## Git Conventions
 
-- Commit after every meaningful chunk of work
-- Concise messages: `feat:`, `fix:`, `refactor:`
-- Never commit `.env`, credentials, `__pycache__/`, or `.venv/`
+- Commit after every meaningful chunk of work — do not accumulate changes
+- Concise messages in imperative mood: `feat:`, `fix:`, `refactor:`, `docs:`
+- Never commit `.env`, credentials, or secrets
+- Progressive commits: after each file in multi-file tasks, not all at the end
+
+---
+
+## Critical Agent Safety Rules
+
+### NEVER delete prototype UI to "make honest"
+When a task says "make honest", "make real", or "align to launch scope", the correct approach is:
+- Wire real APIs behind the existing UI
+- Keep stub/mock data as offline fallback
+- Replace hardcoded data with API calls that fall back to mocks on failure
+
+The WRONG approach (which has caused significant code loss) is:
+- Deleting rich UI and replacing with empty placeholders
+- Stripping navigation items because they use mock data
+- Removing features because they aren't "real" yet
+- Interpreting "launch scope" as "delete everything except the minimum"
+
+**If a screen has mock data, the mock data IS the design spec.** The agent's job is to make it real, not delete it.
+
+### NEVER strip navigation items during scope narrowing
+When narrowing scope:
+- Comment out or feature-flag — never delete
+- All routes, tabs, and menu items must remain in code (can be gated behind feature flags)
+- If a feature is "not in launch scope", hide it behind a flag, don't remove it
+
+### Evidence of past failures
+- FitKind: 25 "make honest" commits deleted 3,314 lines of prototype UI across 13 files
+- Univiirse: "launch scope" commits stripped Social tab, Worlds, Codex, Leaderboard, and Library smart sections
+- Both cases required restoration from worktrees or git history
 
 ---
 
 ## Do Not
 
+- Blame "pre-existing" issues — if the build is broken, fix it. If tests fail, fix them. Your end state must be building, tested software.
 - Use `os.path` when `pathlib.Path` works
-- Use bare `except:` — always catch specific exceptions
+- Use bare `except:`
 - Use mutable default arguments (`def f(x=[])`)
-- Import from `__pycache__` or `.pyc` files
-- Use `print()` for logging — use the `logging` module or structured output
-- Leave debug `print()` statements in shipped code
+- Use `print()` for logging — use the `logging` module
 - Use `subprocess.run(shell=True)` without sanitizing input
 
 ---
@@ -170,7 +181,6 @@ ruff format .
 - [ ] All tests pass (`pytest`)
 - [ ] Type checks pass (`mypy` or `pyright`) if configured
 - [ ] No lint errors (`ruff check .`)
-- [ ] `/review-self` passed — no obvious issues in diff
-- [ ] Changes committed (frequent, progressive — not batched at end)
+- [ ] `/review-self` passed
+- [ ] Changes committed (frequent, progressive)
 - [ ] Keel task updated: `keel_update_task { status: "done" }` + `keel_add_note`
-- [ ] If using cloudy: all three validation phases pass

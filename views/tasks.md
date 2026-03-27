@@ -11,7 +11,56 @@
 
 | ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
 |----|-------|--------|----------|---------|------|----------|------------|
-| T-001 | Build wrapper: simemu do $SESSION build --variant | todo | high | — | — | all | — |
+| T-001 | Build wrapper: simemu do $SESSION build --variant | done | high | — | — | all | — |
+| T-034 | Shared-desktop reliability — brief focus acquisition, user app restoration after interactions | done | high | — | — | all | — |
+| T-035 | Permanent device reservations per product — sitches-ios, fitkind-ios slug-based allocation | done | medium | — | — | all | — |
+| T-036 | Integrate Scouty desktop lease API for multi-tool focus management | done | medium | — | — | all | T-033, T-034 |
+| T-037 | pip publish simemu package and install.sh improvements | done | medium | — | — | all | — |
+
+## Wave 2: Proof Reliability
+
+
+### Core
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-LU-008 | Live visibility reconciliation — derive visible/headless from actual simulator/emulator window state | done | high | — | — | all | — |
+| T-LU-011 | Proof mode command — normalize appearance/status bar/render waits and capture an artifact bundle | done | high | — | — | all | T-LU-008, T-LU-014, T-LU-017, T-LU-019 |
+| T-LU-014 | iOS URL handoff hardening — avoid sticky Open in app confirmation sheets and emit diagnostics | done | high | — | — | ios | — |
+| T-LU-017 | Android launch/url verification in server and CLI surfaces — reject proof when another app is foreground | done | high | — | — | android | — |
+| T-LU-019 | Session provenance — persist launched app, deep link, artifact path, and proof metadata per command | done | medium | — | — | all | — |
+| T-LU-020 | Menubar live refresh — watch sessions.json changes instead of polling | done | medium | — | — | all | T-LU-008 |
+| T-LU-021 | Server v2 parity for present, stabilize, verify-install, and repair-install | done | medium | — | — | all | T-LU-014, T-LU-017 |
+
+## Wave 3: Productization
+
+
+### Core
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-LU-003 | Permanent reservation pools per product and form factor with config-backed policy | done | high | — | — | all | — |
+| T-LU-005 | Claim policy config file — aliases, defaults, and per-product device preferences | done | medium | — | — | all | — |
+| T-LU-007 | CLI shell completions and command-surface polish | done | medium | — | — | all | — |
+| T-LU-010 | Package publishing — pipx and PyPI distribution with reproducible release flow | done | medium | — | — | all | — |
+| T-LU-013 | Installer hardening — repair PATH, wrapper, monitor, and menu bar installation | done | medium | — | — | all | — |
+| T-LU-016 | Runecode/doctor integration — detect broken simemu setup and suggest fixes | done | medium | — | — | all | — |
+| T-LU-018 | Project integration kit — canonical keel/execution.yaml and simemu snippets for downstream repos | done | low | — | — | all | — |
+
+## Wave 4: Ops Hardening
+
+
+### Core
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-LU-001 | Session store schema versioning and migrations | done | high | — | — | all | — |
+| T-LU-002 | Crash-safe atomic writes and corruption recovery for sessions.json and history logs | done | high | — | — | all | — |
+| T-LU-004 | Monitor and menu bar watchdog — detect dead daemons and guide recovery | done | medium | — | — | all | — |
+| T-LU-006 | Structured trace bundle export for transcript-backed debugging | done | medium | — | — | all | — |
+| T-LU-009 | Real-device parity — claim/do/recovery coverage for iPhone and Android hardware | done | medium | — | — | all | — |
+| T-LU-012 | Server auth and rate limiting for multi-user deployments | done | medium | — | — | all | — |
+| T-LU-015 | JSON schema contract for sessions, commands, and server responses | done | medium | — | — | all | — |
 
 ## Unassigned
 
@@ -26,7 +75,7 @@
 | T-008 | Add Hide All / Show All buttons to panel footer | done | medium | — | — |
 | T-009 | Add per-tile context menu: focus, hide, park, release | done | low | — | — |
 | T-010 | Read actual memory from monitor instead of estimate | done | low | — | — |
-| T-011 | Remove dead legacy command handler code from cli.py | active | medium | — | — |
+| T-011 | Remove dead legacy command handler code from cli.py | done | medium | — | — |
 | T-012 | Add simemu do help command — list all 50+ commands with descriptions | done | high | — | — |
 | T-013 | Rewrite test_cli.py for v2 commands (claim, do, sessions, config) | done | high | — | — |
 | T-014 | Session recovery after reboot — detect stale sessions on monitor startup | done | high | — | — |
@@ -47,9 +96,5 @@
 | T-029 | Fix android get_serial None checks in all new commands | done | high | — | — |
 | T-030 | Verify crash_log and clear_data function signatures | done | high | — | — |
 | T-031 | Add session claim rate limiting — max 5 active per agent | done | low | — | — |
-| T-032 | Menubar app macOS 26 compatibility — fix SwiftUI rendering issues on macOS 26 | todo | high | — | — |
-| T-033 | Desktop lease coordination — simemu present command for canonical window placement and focus management | todo | high | — | — |
-| T-034 | Shared-desktop reliability — brief focus acquisition, user app restoration after interactions | todo | high | — | — |
-| T-035 | Permanent device reservations per product — sitches-ios, fitkind-ios slug-based allocation | todo | medium | — | — |
-| T-036 | Scouty integration — desktop lease coordination with scouty for multi-tool focus management | todo | medium | — | — |
-| T-037 | pip publish simemu package and install.sh improvements | todo | medium | — | — |
+| T-032 | Menubar app macOS 26 compatibility — fix SwiftUI rendering issues on macOS 26 | done | high | — | — |
+| T-033 | Desktop lease coordination — simemu present command for canonical window placement and focus management | done | high | — | — |

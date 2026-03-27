@@ -248,5 +248,35 @@ class CliHandlerTests(unittest.TestCase):
         self.assertIn("Window mode set to: hidden", stdout.getvalue())
 
 
+class CliInvocationWarningTests(unittest.TestCase):
+    def test_warns_for_module_invocation(self) -> None:
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", ["cli.py"]):
+            with redirect_stderr(stderr):
+                cli._warn_if_module_invocation()
+        self.assertIn("python -m simemu.cli", stderr.getvalue())
+
+    def test_no_warning_for_public_cli(self) -> None:
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", ["simemu"]):
+            with redirect_stderr(stderr):
+                cli._warn_if_module_invocation()
+        self.assertEqual("", stderr.getvalue())
+
+
+class CliDoHelpTests(unittest.TestCase):
+    def test_do_help_prints_subcommand_help(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", ["simemu", "do", "help"]):
+            with patch("simemu.cli._autostart_server_if_needed"):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as exc:
+                        cli.main()
+        self.assertEqual(exc.exception.code, 0)
+        self.assertIn("usage: simemu do", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

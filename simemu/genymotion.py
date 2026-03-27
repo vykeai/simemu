@@ -125,7 +125,8 @@ def list_hwprofiles() -> list[dict]:
         if "license" in str(e).lower():
             raise RuntimeError(
                 "Listing hardware profiles requires a Genymotion license.\n"
-                "Create VMs in the Genymotion UI, then use 'simemu list android' to find them."
+                "Create VMs in the Genymotion UI, then use "
+                "'simemu claim android --device \"<vm-name>\"'."
             ) from None
         raise
     return data.get("hw_profiles", []) if isinstance(data, dict) else []
@@ -139,7 +140,8 @@ def list_osimages() -> list[dict]:
         if "license" in str(e).lower():
             raise RuntimeError(
                 "Listing OS images requires a Genymotion license.\n"
-                "Create VMs in the Genymotion UI, then use 'simemu list android' to find them."
+                "Create VMs in the Genymotion UI, then use "
+                "'simemu claim android --device \"<vm-name>\"'."
             ) from None
         raise
     return data.get("os_images", []) if isinstance(data, dict) else []
@@ -231,7 +233,7 @@ def create(hwprofile: str, osimage: str, vm_name: str) -> str:
             raise RuntimeError(
                 "Creating VMs via CLI requires a Genymotion license.\n"
                 "Create the VM in the Genymotion UI instead, then use:\n"
-                "  simemu acquire android <slug> --device \"<vm-name>\""
+                "  simemu claim android --device \"<vm-name>\""
             ) from None
         raise
     uuid = data.get("uuid", "") if isinstance(data, dict) else ""
@@ -243,7 +245,7 @@ def create(hwprofile: str, osimage: str, vm_name: str) -> str:
             return vm["uuid"]
     raise RuntimeError(
         f"Genymotion VM '{vm_name}' created but UUID not found.\n"
-        f"Run 'simemu list android' to find it."
+        f"Run 'simemu claim android --device \"{vm_name}\"' to use it."
     )
 
 
