@@ -342,35 +342,80 @@ def foreground_app(avd_name: str, retries: int = 2, delay: float = 1.0,
                    pinned_serial: Optional[str] = None) -> Optional[str]:
     """Return the currently resumed Android package, if detectable.
 
+    Uses multiple detection strategies:
+    1. mResumedActivity / topResumedActivity from dumpsys activity
+    2. mFocusedApp from dumpsys window (catches dialogs/sheets)
+    3. mCurrentFocus from dumpsys window (catches overlay fragments)
+
     Retries briefly to handle transient launcher-bounce after activity-alias
-    switches — the OS kills the app process and briefly shows the launcher
-    before the app restarts.
+    switches.
     """
     for attempt in range(max(1, retries)):
         try:
             serial = _serial(avd_name, pinned=pinned_serial)
-            result = subprocess.run(
-                ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
-                capture_output=True, text=True, check=False, timeout=15,
-            )
-            for line in result.stdout.splitlines():
-                if "mResumedActivity" not in line and "ResumedActivity" not in line and "topResumedActivity" not in line:
-                    continue
-                for part in line.split():
-                    if "/" in part and "." in part:
-                        pkg = part.split("/")[0]
-                        # If we got a real non-launcher package, return it
-                        lower = pkg.lower()
-                        if "launcher" not in lower and "home" not in lower:
-                            return pkg
-                        # Got launcher — might be transient bounce, retry
-                        if attempt < retries - 1:
-                            break
-                        return pkg
+
+            # Strategy 1: dumpsys activity — the standard approach
+            pkg = _detect_foreground_from_activity(serial)
+            if pkg:
+                lower = pkg.lower()
+                if "launcher" not in lower and "home" not in lower:
+                    return pkg
+                # Got launcher — might be transient, try other methods before retrying
+                pass
+
+            # Strategy 2: dumpsys window — catches dialogs, sheets, overlays
+            pkg = _detect_foreground_from_window(serial)
+            if pkg:
+                lower = pkg.lower()
+                if "launcher" not in lower and "home" not in lower:
+                    return pkg
+
+            # If we got launcher from strategy 1, return it on the last attempt
+            if attempt >= retries - 1:
+                pkg = _detect_foreground_from_activity(serial) or _detect_foreground_from_window(serial)
+                return pkg
+
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
         if attempt < retries - 1:
             time.sleep(delay)
+    return None
+
+
+def _detect_foreground_from_activity(serial: str) -> Optional[str]:
+    """Detect foreground app from dumpsys activity activities."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if "mResumedActivity" not in line and "ResumedActivity" not in line and "topResumedActivity" not in line:
+                continue
+            for part in line.split():
+                if "/" in part and "." in part:
+                    return part.split("/")[0]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def _detect_foreground_from_window(serial: str) -> Optional[str]:
+    """Detect foreground app from dumpsys window — catches dialogs and sheets."""
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "dumpsys", "window"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        # Check mFocusedApp and mCurrentFocus
+        for line in result.stdout.splitlines():
+            if "mFocusedApp" not in line and "mCurrentFocus" not in line:
+                continue
+            for part in line.split():
+                if "/" in part and "." in part:
+                    return part.split("/")[0]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
     return None
 
 
@@ -929,29 +974,41 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                 f"Re-claim or reboot: simemu do <session> reboot"
             )
 
-        # Write to temp file, then rename — prevents leaving zero-byte files on timeout
+        # Write to temp file, then rename — prevents leaving zero-byte files on timeout.
+        # Use Popen for explicit process control — subprocess.run can leave adb
+        # exec-out hanging when screencap stalls on a GPU buffer lock.
         tmp_path = output_path + ".tmp"
+        captured = False
         try:
             with open(tmp_path, "wb") as f:
-                subprocess.run(
+                proc = subprocess.Popen(
                     ["adb", "-s", serial, "exec-out", "screencap", "-p"],
-                    stdout=f, check=True, timeout=10,
+                    stdout=f, stderr=subprocess.DEVNULL,
                 )
-            size = Path(tmp_path).stat().st_size
-            if size > 100:
-                Path(tmp_path).replace(output_path)
-                break
-            # Zero/tiny file — screencap returned but screen wasn't ready
-            Path(tmp_path).unlink(missing_ok=True)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-            # Clean up partial temp file
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+                try:
+                    proc.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+
+            if proc.returncode == 0:
+                size = Path(tmp_path).stat().st_size
+                if size > 100:
+                    Path(tmp_path).replace(output_path)
+                    captured = True
+        except OSError:
+            pass
+        finally:
+            if not captured:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        if captured:
+            break
 
         if attempt < max_attempts - 1:
-            # Wait longer on each retry — the screen may still be transitioning
             time.sleep(1 + attempt)
             continue
 
