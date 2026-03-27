@@ -477,15 +477,27 @@ def touch(session_id: str) -> Session:
         reboot_needed = False
 
     # Android session claims can occasionally outlive the underlying emulator
-    # process. If the session is still marked active/idle but the VM is gone,
-    # heal by booting it again before dispatching the next command.
+    # process, or the adb connection can go temporarily offline after an
+    # activity-alias switch (app restart). Try to recover before giving up.
     if (
         not reboot_needed
         and not session.real_device
         and session.platform == "android"
-        and android.get_android_serial(session.sim_id, retries=2, delay=0.5) is None
     ):
-        reboot_needed = True
+        serial = android.get_android_serial(session.sim_id, retries=2, delay=0.5)
+        if serial is None:
+            # adb offline — try reconnecting before resorting to full reboot
+            try:
+                import subprocess as _sp
+                _sp.run(["adb", "reconnect", "offline"],
+                        capture_output=True, timeout=10, check=False)
+                import time as _time
+                _time.sleep(2)
+                serial = android.get_android_serial(session.sim_id, retries=4, delay=1.0)
+            except Exception:
+                serial = None
+            if serial is None:
+                reboot_needed = True
 
     # Real device connectivity check — verify the device is still connected
     if session.real_device:

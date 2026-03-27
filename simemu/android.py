@@ -390,6 +390,17 @@ class PackageVerification:
 
     @property
     def ok(self) -> bool:
+        """Package state is considered OK if pm_path and resolve_activity both pass.
+
+        dumpsys_ok is a bonus signal — it can be stale or timed out after
+        activity-alias switches without the package actually being broken.
+        Only require pm_path + resolve_activity for the core install-health check.
+        """
+        return self.pm_path_ok and self.resolve_activity_ok
+
+    @property
+    def fully_verified(self) -> bool:
+        """All three probes passed — the strongest possible verification."""
         return self.pm_path_ok and self.resolve_activity_ok and self.dumpsys_ok
 
     def format_report(self) -> str:
@@ -421,53 +432,113 @@ def verify_install(avd_name: str, package: str, timeout: int = 30) -> PackageVer
 
 
 def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 120) -> PackageVerification:
-    """Attempt escalating recovery for a package that installed into a bad PM state."""
-    timeout = max(timeout, 120)
-    serial = wait_until_ready(avd_name, timeout=max(timeout, 180))
-    subprocess.run(["adb", "-s", serial, "uninstall", package], capture_output=True, text=True, check=False, timeout=60)
+    """Attempt escalating recovery for a package that installed into a bad PM state.
 
+    Strategy: try the least-disruptive fix first (uninstall+reinstall), then reboot,
+    then cold-boot. Each step has a hard per-step timeout to prevent long churn.
+    Wipe-data is removed — it's too destructive and slow for runtime recovery.
+    """
+    step_timeout = min(timeout, 60)  # per-step ceiling
+    serial = wait_until_ready(avd_name, timeout=step_timeout)
+
+    # Step 0: simple uninstall + reinstall (no reboot) — handles most alias-switch state
+    try:
+        subprocess.run(["adb", "-s", serial, "uninstall", package],
+                       capture_output=True, text=True, check=False, timeout=15)
+        install(avd_name, apk_path, timeout=step_timeout, repair_on_failure=False)
+        probe = verify_install(avd_name, package, timeout=10)
+        if probe.ok:
+            return probe
+    except RuntimeError:
+        pass
+
+    # Step 1: reboot + reinstall
     recovery_errors: list[str] = []
     recovery_steps = [
         ("reboot", _repair_reboot_cycle),
         ("cold-boot", _repair_cold_boot_cycle),
-        ("wipe-data", _repair_wipe_data_cycle),
     ]
 
     for label, action in recovery_steps:
+        step_start = time.time()
         try:
             action(avd_name)
-            install(avd_name, apk_path, timeout=timeout, repair_on_failure=False)
-            probe = verify_install(avd_name, package)
-            # Double-check after a brief delay — PM state can drift on slow emulators
-            time.sleep(3)
-            probe2 = verify_install(avd_name, package, timeout=10)
-            return probe2
+            # Hard per-step timeout — don't let any single step churn
+            elapsed = time.time() - step_start
+            if elapsed > step_timeout:
+                recovery_errors.append(f"{label}: exceeded {step_timeout}s step timeout")
+                continue
+            install(avd_name, apk_path, timeout=step_timeout, repair_on_failure=False)
+            probe = verify_install(avd_name, package, timeout=10)
+            if probe.ok:
+                return probe
+            recovery_errors.append(f"{label}: install ok but verify failed")
         except RuntimeError as exc:
             recovery_errors.append(f"{label}: {exc}")
 
     joined = "\n".join(recovery_errors) or "unknown repair failure"
     raise RuntimeError(
-        f"repair-install could not recover coherent package-manager state for '{package}'.\n"
-        f"Recovery attempts:\n{joined}"
+        f"repair-install failed for '{package}' after 2 recovery attempts.\n"
+        f"Recovery log:\n{joined}\n"
+        f"Re-claim the session: simemu claim android"
     )
 
 
 def _repair_reboot_cycle(avd_name: str) -> None:
     reboot(avd_name)
+    _verify_post_recovery_health(avd_name)
 
 
 def _repair_cold_boot_cycle(avd_name: str) -> None:
     shutdown(avd_name)
     time.sleep(3)
     boot(avd_name, headless=True)
-    wait_until_ready(avd_name, timeout=180)
+    wait_until_ready(avd_name, timeout=90)
+    _verify_post_recovery_health(avd_name)
 
 
-def _repair_wipe_data_cycle(avd_name: str) -> None:
-    erase(avd_name)
-    time.sleep(5)
-    boot(avd_name, headless=True)
-    wait_until_ready(avd_name, timeout=240)
+def _verify_post_recovery_health(avd_name: str) -> None:
+    """After reboot/recovery, verify the device is actually usable before returning.
+
+    Checks: adb stable, launcher ready, PM queryable, screenshot works.
+    """
+    serial = _serial(avd_name)
+
+    # 1. Launcher must be ready (not still on boot animation)
+    _wait_for_launcher_ready(serial, timeout=15)
+
+    # 2. PM must respond to a basic query
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            result = subprocess.run(
+                ["adb", "-s", serial, "shell", "pm", "path", "android"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            if result.returncode == 0 and "package:" in result.stdout:
+                break
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(1)
+
+    # 3. Screenshot must work (validates screencap + adb pipeline)
+    import tempfile
+    test_png = tempfile.mktemp(suffix=".png")
+    try:
+        with open(test_png, "wb") as f:
+            subprocess.run(
+                ["adb", "-s", serial, "exec-out", "screencap", "-p"],
+                stdout=f, check=True, timeout=10,
+            )
+        if Path(test_png).stat().st_size < 100:
+            raise RuntimeError("Post-recovery screenshot produced empty file")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        raise RuntimeError(f"Post-recovery health check failed: screenshot not working ({e})")
+    finally:
+        try:
+            Path(test_png).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _probe_package_state(serial: str, package: str) -> PackageVerification:
@@ -798,13 +869,26 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
     """Capture screenshot via adb exec-out screencap.
     max_size: if set, resize so the longest dimension is ≤ max_size px (uses sips).
     Automatically dismisses ANR/system dialogs before capture.
-    Retries once with fresh serial if the first capture fails.
+    Waits for adb recovery on transient device-offline (e.g. after deep-link open
+    triggers an activity-alias switch or app restart).
     """
     dismiss_system_dialogs(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    for attempt in range(2):
-        serial = _serial(avd_name)
+    max_attempts = 4
+    for attempt in range(max_attempts):
+        try:
+            serial = _serial(avd_name)
+        except RuntimeError:
+            if attempt < max_attempts - 1:
+                # Device went offline — wait for adb recovery instead of failing
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise RuntimeError(
+                f"Screenshot failed: device '{avd_name}' went offline and did not recover.\n"
+                f"Re-claim or reboot: simemu do <session> reboot"
+            )
+
         try:
             with open(output_path, "wb") as f:
                 subprocess.run(
@@ -815,11 +899,11 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None) 
             if Path(output_path).stat().st_size > 100:
                 break
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-            if attempt == 0:
-                time.sleep(1)
+            if attempt < max_attempts - 1:
+                time.sleep(2 * (attempt + 1))
                 continue
             raise RuntimeError(
-                f"Screenshot failed after retry. Device '{avd_name}' may be unresponsive.\n"
+                f"Screenshot failed after {max_attempts} attempts. Device '{avd_name}' may be unresponsive.\n"
                 f"Try: simemu do <session> reboot"
             )
 

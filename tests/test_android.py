@@ -133,46 +133,8 @@ class TestPackageVerification(unittest.TestCase):
         self.assertIn("pkg=null", msg)
         self.assertIn("repair-install", msg)
 
-    @patch("simemu.android.verify_install", return_value=android.PackageVerification(
-        package="app.sitches.dev",
-        pm_path="package:/data/app/app.sitches.dev/base.apk",
-        resolve_activity="app.sitches.dev/.MainActivity",
-        dumpsys="Package [app.sitches.dev]",
-        pm_path_ok=True,
-        resolve_activity_ok=True,
-        dumpsys_ok=True,
-    ))
-    @patch("simemu.android.install")
-    @patch("simemu.android.reboot")
-    @patch("simemu.android.subprocess.run")
-    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
-    def test_repair_install_reboots_and_reinstalls(
-        self,
-        mock_ready: MagicMock,
-        mock_run: MagicMock,
-        mock_reboot: MagicMock,
-        mock_install: MagicMock,
-        mock_verify: MagicMock,
-    ) -> None:
-        probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
-        self.assertTrue(probe.ok)
-        mock_run.assert_called_once()
-        mock_reboot.assert_called_once_with("MyAVD")
-        mock_install.assert_called_once_with("MyAVD", "/tmp/app.apk", timeout=120, repair_on_failure=False)
-        # verify_install called twice: initial + delayed recheck
-        self.assertEqual(mock_verify.call_count, 2)
-
     @patch("simemu.android.verify_install", side_effect=[
-        RuntimeError("soft reboot still bad"),  # reboot attempt: initial verify fails
-        # cold-boot attempt: initial verify passes
-        android.PackageVerification(
-            package="app.sitches.dev",
-            pm_path="package:/data/app/app.sitches.dev/base.apk",
-            resolve_activity="app.sitches.dev/.MainActivity",
-            dumpsys="Package [app.sitches.dev]",
-            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
-        ),
-        # cold-boot attempt: delayed recheck also passes
+        # step 0: simple reinstall — verify succeeds immediately
         android.PackageVerification(
             package="app.sitches.dev",
             pm_path="package:/data/app/app.sitches.dev/base.apk",
@@ -182,7 +144,33 @@ class TestPackageVerification(unittest.TestCase):
         ),
     ])
     @patch("simemu.android.install")
-    @patch("simemu.android._repair_wipe_data_cycle")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_simple_reinstall_succeeds(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertTrue(probe.ok)
+        # Only 1 install call (step 0), no reboot needed
+        self.assertEqual(mock_install.call_count, 1)
+
+    @patch("simemu.android.verify_install", side_effect=[
+        RuntimeError("step0 reinstall bad"),  # step 0: simple reinstall verify fails
+        RuntimeError("reboot still bad"),     # step 1: reboot verify fails
+        # step 2: cold-boot verify passes
+        android.PackageVerification(
+            package="app.sitches.dev",
+            pm_path="package:/data/app/app.sitches.dev/base.apk",
+            resolve_activity="app.sitches.dev/.MainActivity",
+            dumpsys="Package [app.sitches.dev]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        ),
+    ])
+    @patch("simemu.android.install")
     @patch("simemu.android._repair_cold_boot_cycle")
     @patch("simemu.android._repair_reboot_cycle")
     @patch("simemu.android.subprocess.run")
@@ -193,7 +181,6 @@ class TestPackageVerification(unittest.TestCase):
         mock_run: MagicMock,
         mock_reboot_cycle: MagicMock,
         mock_cold_boot_cycle: MagicMock,
-        mock_wipe_cycle: MagicMock,
         mock_install: MagicMock,
         mock_verify: MagicMock,
     ) -> None:
@@ -201,12 +188,11 @@ class TestPackageVerification(unittest.TestCase):
         self.assertTrue(probe.ok)
         mock_reboot_cycle.assert_called_once_with("MyAVD")
         mock_cold_boot_cycle.assert_called_once_with("MyAVD")
-        mock_wipe_cycle.assert_not_called()
-        self.assertEqual(2, mock_install.call_count)
+        # 3 installs: step0 + reboot + cold-boot
+        self.assertEqual(3, mock_install.call_count)
 
     @patch("simemu.android.verify_install", side_effect=RuntimeError("still broken"))
     @patch("simemu.android.install")
-    @patch("simemu.android._repair_wipe_data_cycle")
     @patch("simemu.android._repair_cold_boot_cycle")
     @patch("simemu.android._repair_reboot_cycle")
     @patch("simemu.android.subprocess.run")
@@ -217,16 +203,14 @@ class TestPackageVerification(unittest.TestCase):
         mock_run: MagicMock,
         mock_reboot_cycle: MagicMock,
         mock_cold_boot_cycle: MagicMock,
-        mock_wipe_cycle: MagicMock,
         mock_install: MagicMock,
         mock_verify: MagicMock,
     ) -> None:
         with self.assertRaises(RuntimeError) as ctx:
             android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
-        self.assertIn("repair-install could not recover", str(ctx.exception))
+        self.assertIn("repair-install failed", str(ctx.exception))
         self.assertIn("reboot:", str(ctx.exception))
         self.assertIn("cold-boot:", str(ctx.exception))
-        self.assertIn("wipe-data:", str(ctx.exception))
 
 
 class TestForegroundVerification(unittest.TestCase):
@@ -601,14 +585,13 @@ class TestDismissSystemDialogs(unittest.TestCase):
         mock_run.assert_called_once()
 
 
-class TestRepairInstallDelayedVerify(unittest.TestCase):
+class TestRepairInstallFastPath(unittest.TestCase):
     @patch("simemu.android.verify_install")
     @patch("simemu.android.install")
-    @patch("simemu.android._repair_reboot_cycle")
     @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.android.subprocess.run")
-    def test_repair_does_delayed_recheck(self, mock_sub, mock_ready, mock_reboot,
-                                          mock_install, mock_verify) -> None:
+    def test_repair_step0_returns_on_first_success(self, mock_sub, mock_ready,
+                                                     mock_install, mock_verify) -> None:
         probe = android.PackageVerification(
             package="com.test", pm_path="package:/data/app/com.test",
             resolve_activity="com.test/.Main", dumpsys="Package [com.test]",
@@ -616,8 +599,8 @@ class TestRepairInstallDelayedVerify(unittest.TestCase):
         )
         mock_verify.return_value = probe
         result = android.repair_install("TestAVD", "com.test", "/tmp/app.apk")
-        # verify_install called twice: initial + delayed recheck
-        self.assertEqual(mock_verify.call_count, 2)
+        # Step 0 succeeds immediately — verify called once, no reboot
+        self.assertEqual(mock_verify.call_count, 1)
         self.assertTrue(result.ok)
 
 
