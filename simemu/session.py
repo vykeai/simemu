@@ -1209,20 +1209,37 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             with _locked_sessions() as (data, save):
                 expected_package = data["sessions"].get(session_id, {}).get("last_app")
             android.open_url(sim_id, url, expected_package=expected_package)
-            # Verify foreground after URL open
+            # Post-URL settle — deep link handlers (dialogs, sheets) need time to render
+            import time as _time
+            _time.sleep(1.0)
+            # Verify foreground after URL open — retry to handle dialog transitions
             if expected_package:
-                actual_fg = android.foreground_app(sim_id)
-                if actual_fg and actual_fg != expected_package:
-                    diag = {
-                        "expected": expected_package,
-                        "actual_foreground": actual_fg,
-                        "url": url,
-                    }
-                    raise RuntimeError(
-                        f"URL opened but '{expected_package}' is not foreground on Android. "
-                        f"Foreground: '{actual_fg}'. Another app may have intercepted the URL.\n"
-                        f"Diagnostics: {json.dumps(diag)}"
-                    )
+                actual_fg = android.foreground_app(sim_id, retries=3, delay=1.0)
+                if actual_fg is None:
+                    # null foreground after URL open — app may have a sheet/dialog
+                    # that doesn't register as a resumed activity. Don't error — the
+                    # URL may have succeeded, just can't confirm foreground.
+                    pass
+                elif actual_fg != expected_package:
+                    lower = actual_fg.lower()
+                    if "launcher" in lower or "home" in lower:
+                        # Launcher — app probably crashed on the deep link
+                        raise RuntimeError(
+                            f"URL opened but app crashed — launcher is foreground instead of '{expected_package}'.\n"
+                            f"URL: {url}\n"
+                            f"The app may not handle this deep link route."
+                        )
+                    else:
+                        diag = {
+                            "expected": expected_package,
+                            "actual_foreground": actual_fg,
+                            "url": url,
+                        }
+                        raise RuntimeError(
+                            f"URL opened but '{expected_package}' is not foreground on Android. "
+                            f"Foreground: '{actual_fg}'. Another app may have intercepted the URL.\n"
+                            f"Diagnostics: {json.dumps(diag)}"
+                        )
         update_provenance(session_id, last_url=url, last_deep_link=url)
         return {"status": "opened", "url": url}
 

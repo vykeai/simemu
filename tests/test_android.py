@@ -248,16 +248,18 @@ class TestForegroundVerification(unittest.TestCase):
         mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev")
 
     @patch("simemu.android._wait_for_foreground_package")
-    @patch("simemu.android._adb")
-    @patch("simemu.android._ensure_booted")
+    @patch("simemu.android._adb", return_value="Starting: Intent { act=android.intent.action.VIEW }")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android.time.sleep")
     def test_open_url_verifies_expected_package_when_provided(
         self,
-        mock_booted: MagicMock,
+        mock_sleep: MagicMock,
+        mock_ready: MagicMock,
         mock_adb: MagicMock,
         mock_wait_foreground: MagicMock,
     ) -> None:
         android.open_url("MyAVD", "fitkind://debug/vault/template-detail-proof", expected_package="app.fitkind.dev")
-        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev")
+        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev", timeout=5.0)
 
 
 class TestKey(unittest.TestCase):

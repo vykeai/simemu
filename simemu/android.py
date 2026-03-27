@@ -1081,23 +1081,62 @@ def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = 
 
 
 def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) -> None:
-    _ensure_booted(avd_name)
-    _adb(
-        avd_name,
-        "shell",
-        "am",
-        "start",
-        "-a",
-        "android.intent.action.VIEW",
-        "-c",
-        "android.intent.category.DEFAULT",
-        "-c",
-        "android.intent.category.BROWSABLE",
-        "-d",
-        url,
-    )
-    if expected_package:
-        _wait_for_foreground_package(avd_name, expected_package)
+    """Open a URL/deep-link on the device.
+
+    Tries multiple intent strategies to handle apps that register deep links
+    with different category combinations (DEFAULT, BROWSABLE, or none).
+    Retries on transient adb offline errors.
+    """
+    wait_until_ready(avd_name)
+
+    # Brief settle after any prior command — prevents racing with app process restart
+    time.sleep(0.3)
+
+    last_error: Exception | None = None
+    strategies = [
+        # Strategy 1: VIEW + BROWSABLE (standard deep link)
+        ["shell", "am", "start", "-a", "android.intent.action.VIEW",
+         "-c", "android.intent.category.BROWSABLE", "-d", url],
+        # Strategy 2: VIEW only (no category — catches debug/internal routes)
+        ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url],
+        # Strategy 3: VIEW + DEFAULT (some apps register with DEFAULT only)
+        ["shell", "am", "start", "-a", "android.intent.action.VIEW",
+         "-c", "android.intent.category.DEFAULT", "-d", url],
+    ]
+
+    for strategy in strategies:
+        for attempt in range(2):
+            try:
+                result = _adb(avd_name, *strategy, capture=True, check=False, timeout=15)
+                # Check if am start reported an error
+                if result and "unable to resolve" in result.lower():
+                    last_error = RuntimeError(f"Intent not resolved: {result.strip()}")
+                    break  # Try next strategy
+                if result and "error" in result.lower() and "type 3" in result.lower():
+                    last_error = RuntimeError(f"Activity not found: {result.strip()}")
+                    break  # Try next strategy
+                # Success — verify foreground if expected
+                if expected_package:
+                    time.sleep(0.5)  # Let the intent handler start
+                    _wait_for_foreground_package(avd_name, expected_package, timeout=5.0)
+                return
+            except RuntimeError as e:
+                err_str = str(e).lower()
+                if "device offline" in err_str or "not found" in err_str or "timed out" in err_str:
+                    if attempt == 0:
+                        time.sleep(2)
+                        continue
+                last_error = e
+                break  # Try next strategy
+
+    # All strategies failed
+    if last_error:
+        raise RuntimeError(
+            f"Failed to open URL '{url[:80]}' on device '{avd_name}'.\n"
+            f"Last error: {last_error}\n"
+            f"The app may not handle this deep link scheme, or the device is unresponsive."
+        )
+    raise RuntimeError(f"Failed to open URL '{url[:80]}' — all intent strategies exhausted.")
 
 
 def push(avd_name: str, local_path: str, remote_path: str) -> None:
