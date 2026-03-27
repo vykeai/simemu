@@ -1191,13 +1191,21 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
 
     elif command == "url":
         if not args:
-            raise RuntimeError("Usage: simemu do <session> url <url>")
+            raise RuntimeError("Usage: simemu do <session> url <url> [--expect-package <pkg>]")
         url = args[0]
+        # Parse --expect-package override
+        explicit_expect = None
+        if "--expect-package" in args:
+            idx = args.index("--expect-package")
+            if idx + 1 < len(args):
+                explicit_expect = args[idx + 1]
+
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
-            expected_bundle = None
-            with _locked_sessions() as (data, save):
-                expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+            expected_bundle = explicit_expect
+            if not expected_bundle:
+                with _locked_sessions() as (data, save):
+                    expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
             if expected_bundle:
                 handoff_ok = ios.complete_open_url_handoff(sim_id, expected_bundle)
                 if not handoff_ok:
@@ -1225,9 +1233,10 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                             f"Diagnostics: {json.dumps(diag)}"
                         )
         else:
-            expected_package = None
-            with _locked_sessions() as (data, save):
-                expected_package = data["sessions"].get(session_id, {}).get("last_app")
+            expected_package = explicit_expect
+            if not expected_package:
+                with _locked_sessions() as (data, save):
+                    expected_package = data["sessions"].get(session_id, {}).get("last_app")
             android.open_url(sim_id, url, expected_package=expected_package)
             # Post-URL settle — deep link handlers (dialogs, sheets) need time to render
             import time as _time
@@ -1837,12 +1846,24 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     "hint": "iOS accessibility hierarchy is not available via simctl. "
                             "Use XCUITest or Maestro for accessibility inspection."}
         else:
-            serial = android.get_serial(sim_id)
-            result = _sp.run(
-                ["adb", "-s", serial, "shell", "uiautomator", "dump", "/dev/tty"],
-                capture_output=True, text=True, check=False,
-            )
-            return {"status": "ok", "tree": result.stdout.strip()}
+            if is_real:
+                serial = sim_id
+            else:
+                serial = android._serial(sim_id, pinned=session.pinned_serial)
+            # Dump to a file on device, then cat it back — /dev/tty doesn't capture to stdout
+            remote_path = "/sdcard/window_dump.xml"
+            _sp.run(["adb", "-s", serial, "shell", "uiautomator", "dump", remote_path],
+                    capture_output=True, text=True, check=False, timeout=15)
+            result = _sp.run(["adb", "-s", serial, "shell", "cat", remote_path],
+                             capture_output=True, text=True, check=False, timeout=10)
+            # Clean up
+            _sp.run(["adb", "-s", serial, "shell", "rm", "-f", remote_path],
+                    capture_output=True, check=False, timeout=5)
+            tree = result.stdout.strip()
+            if not tree or "ERROR" in tree:
+                return {"status": "failed",
+                        "hint": "uiautomator dump failed — the app may not expose accessibility nodes."}
+            return {"status": "ok", "tree": tree}
 
     elif command == "a11y-tap":
         if not args:
@@ -1859,10 +1880,10 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if platform in ("ios", "watchos", "tvos", "visionos"):
                 device_id = sim_id
             else:
-                from .discover import get_android_serial
-                device_id = get_android_serial(sim_id)
-                if not device_id:
-                    raise RuntimeError("Android emulator is not running.")
+                if is_real:
+                    device_id = sim_id
+                else:
+                    device_id = android._serial(sim_id, pinned=session.pinned_serial)
             result = _sp.run(["maestro", "--device", device_id, "test", flow_path],
                               capture_output=True, text=True, check=False)
             success = result.returncode == 0

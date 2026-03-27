@@ -829,7 +829,26 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
         except RuntimeError:
             pass
 
-        # Strategy 1: monkey launch — most reliable for standard launcher activities
+        # Strategy 1: resolve the real launcher component via package manager.
+        # This is the most reliable approach — uses the actual registered launcher
+        # activity (e.g. MainActivityPepperAlias) instead of guessing .MainActivity.
+        serial = wait_until_ready(avd_name)
+        probe = _probe_package_state(serial, expected_package)
+        resolved_lines = [line.strip() for line in probe.resolve_activity.splitlines() if line.strip()]
+        for component in resolved_lines:
+            if "/" not in component or "No activity found" in component:
+                continue
+            # Validate it looks like a component: package/activity
+            if not component.startswith(expected_package):
+                continue
+            try:
+                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []))
+                _wait_for_foreground_package(avd_name, expected_package)
+                return
+            except (subprocess.CalledProcessError, RuntimeError):
+                pass
+
+        # Strategy 2: monkey launch — reliable for standard launcher activities
         try:
             _adb(
                 avd_name,
@@ -843,20 +862,6 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
             return
         except (subprocess.CalledProcessError, RuntimeError):
             pass
-
-        # Strategy 2: resolve the real launcher component via package manager
-        serial = wait_until_ready(avd_name)
-        probe = _probe_package_state(serial, expected_package)
-        resolved_lines = [line.strip() for line in probe.resolve_activity.splitlines() if line.strip()]
-        for component in reversed(resolved_lines):
-            if "/" not in component or component == "No activity found":
-                continue
-            try:
-                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []))
-                _wait_for_foreground_package(avd_name, expected_package)
-                return
-            except (subprocess.CalledProcessError, RuntimeError):
-                pass
 
         # Strategy 3: explicit am start with package name
         try:
@@ -1115,10 +1120,19 @@ def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) ->
                 if result and "error" in result.lower() and "type 3" in result.lower():
                     last_error = RuntimeError(f"Activity not found: {result.strip()}")
                     break  # Try next strategy
-                # Success — verify foreground if expected
+                # Intent dispatched — verify it actually landed in the right app
+                time.sleep(0.5)
                 if expected_package:
-                    time.sleep(0.5)  # Let the intent handler start
-                    _wait_for_foreground_package(avd_name, expected_package, timeout=5.0)
+                    try:
+                        _wait_for_foreground_package(avd_name, expected_package, timeout=5.0)
+                    except RuntimeError:
+                        # Wrong app foregrounded — this strategy didn't work
+                        actual = foreground_app(avd_name, retries=1)
+                        last_error = RuntimeError(
+                            f"URL dispatched but wrong app is foreground: "
+                            f"expected={expected_package}, actual={actual}"
+                        )
+                        break  # Try next strategy
                 return
             except RuntimeError as e:
                 err_str = str(e).lower()
