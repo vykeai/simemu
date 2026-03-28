@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-031",
+  "title": "[GATE] All tests pass with zero failures and zero timeouts — pytest exits 0",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-5",
+  "space": null,
+  "status": "todo",
+  "priority": "critical",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-28T19:05:48.885Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-28T19:05:48.884Z",
+  "updatedAt": "2026-03-28T19:05:48.884Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
