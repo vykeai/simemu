@@ -109,9 +109,13 @@ class TestDoInstall(DoCommandBase):
 
     @patch("simemu.session.device.ios_install")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_install_real_ios(self, mock_serial, mock_install) -> None:
+    @patch("simemu.discover.list_real_ios")
+    def test_do_install_real_ios(self, mock_list_real_ios, mock_serial, mock_install) -> None:
         self._seed("s-real01", platform="ios", sim_id="UDID-REAL",
                     device_name="iPhone 15 (real)", real_device=True)
+        mock_device = MagicMock()
+        mock_device.sim_id = "UDID-REAL"
+        mock_list_real_ios.return_value = [mock_device]
         result = do_command("s-real01", "install", ["/path/to/App.ipa"])
         mock_install.assert_called_once_with("UDID-REAL", "/path/to/App.ipa")
         self.assertEqual(result["status"], "installed")

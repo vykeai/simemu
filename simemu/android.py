@@ -1160,6 +1160,28 @@ def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = 
         pass
 
 
+def log_tail(
+    avd_name: str,
+    tag: Optional[str] = None,
+    level: Optional[str] = None,
+    tail_lines: int = 200,
+) -> str:
+    """Return recent logcat lines as text."""
+    _ensure_booted(avd_name)
+    serial = _serial(avd_name)
+    cmd = ["adb", "-s", serial, "logcat", "-d"]
+    if tag:
+        tag_level = level or "V"
+        cmd = ["adb", "-s", serial, "logcat", "-d", f"{tag}:{tag_level}", "*:S"]
+    elif level:
+        cmd = ["adb", "-s", serial, "logcat", "-d", f"*:{level}"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+    lines = result.stdout.splitlines()
+    if tail_lines > 0:
+        lines = lines[-tail_lines:]
+    return "\n".join(lines)
+
+
 def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) -> None:
     """Open a URL/deep-link on the device.
 
@@ -1657,34 +1679,85 @@ def reset_app(avd_name: str, package: str, launch: bool = True) -> None:
 
 
 def crash_log(avd_name: str, package: Optional[str] = None, since_minutes: int = 60) -> Optional[str]:
-    """Return recent crash/fatal log lines from logcat.
+    """Return recent Android crash or launch-failure lines from logcat.
 
-    Pulls logcat since since_minutes ago, filtering for fatal exceptions and ANRs.
-    If package is given, only returns crashes from that process.
-    Returns formatted crash text, or None if no crashes found.
+    Prefer the dedicated crash buffer, then fall back to recent package-related
+    lines from the main log buffer. This catches:
+    - normal FATAL EXCEPTION crashes
+    - ANRs / force-finishing activity lines
+    - startup failures where the process dies before AndroidRuntime emits a
+      conventional Java stack trace
     """
     _ensure_booted(avd_name)
     serial = _serial(avd_name)
-
-    # logcat -t <seconds>s dumps logs from last N seconds
     seconds = since_minutes * 60
-    cmd = ["adb", "-s", serial, "logcat", "-d", "-t", f"{seconds}s",
-           "AndroidRuntime:E", "ActivityManager:E", "*:F"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    lines = result.stdout.splitlines()
 
+    def _run(cmd: list[str]) -> list[str]:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        return result.stdout.splitlines()
+
+    def _with_context(lines: list[str], indices: list[int], radius: int = 2) -> list[str]:
+        if not indices:
+            return []
+        keep: list[str] = []
+        seen: set[int] = set()
+        for idx in indices:
+            start = max(0, idx - radius)
+            end = min(len(lines), idx + radius + 1)
+            for pos in range(start, end):
+                if pos in seen:
+                    continue
+                seen.add(pos)
+                keep.append(lines[pos])
+        return keep
+
+    crash_markers = (
+        "FATAL EXCEPTION",
+        "AndroidRuntime",
+        "Caused by:",
+        "ANR in",
+        "Process:",
+        "Shutting down VM",
+        "java.",
+        "kotlin.",
+        " at ",
+    )
+    launch_failure_markers = (
+        "Force finishing activity",
+        "Force stopping",
+        "Unable to start activity",
+        "Unable to resume activity",
+        "Unable to instantiate activity",
+        "Activity top resumed state loss timeout",
+        "Scheduling restart of crashed service",
+        "has crashed",
+        "isn't responding",
+        "ANR in",
+    )
+
+    crash_lines = _run(["adb", "-s", serial, "logcat", "-d", "-b", "crash"])
     if package:
-        # filter to lines mentioning the package
-        lines = [l for l in lines if package in l or "FATAL EXCEPTION" in l or "ANR" in l]
+        relevant = [i for i, line in enumerate(crash_lines) if package in line or any(marker in line for marker in crash_markers)]
+    else:
+        relevant = [i for i, line in enumerate(crash_lines) if any(marker in line for marker in crash_markers)]
+    excerpt = _with_context(crash_lines, relevant, radius=3)
+    if excerpt:
+        return "\n".join(excerpt)
 
-    # collapse to only the non-empty lines around crashes
-    crash_lines = [l for l in lines if any(k in l for k in (
-        "FATAL EXCEPTION", "AndroidRuntime", "Caused by:", "ANR in", "Process:", "java.", "kotlin.", "at "
-    ))]
-
-    if not crash_lines:
-        return None
-    return "\n".join(crash_lines)
+    main_lines = _run(["adb", "-s", serial, "logcat", "-d"])
+    if seconds > 0 and len(main_lines) > 4000:
+        main_lines = main_lines[-4000:]
+    relevant_indices: list[int] = []
+    for i, line in enumerate(main_lines):
+        if any(marker in line for marker in crash_markers + launch_failure_markers):
+            relevant_indices.append(i)
+            continue
+        if package and package in line:
+            relevant_indices.append(i)
+    excerpt = _with_context(main_lines, relevant_indices, radius=2)
+    if excerpt:
+        return "\n".join(excerpt[-120:])
+    return None
 
 
 def biometrics(avd_name: str, match: bool) -> None:

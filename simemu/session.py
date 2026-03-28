@@ -349,6 +349,13 @@ def claim(spec: ClaimSpec) -> Session:
     # Check memory budget before claiming
     _enforce_memory_budget_if_needed(spec.platform)
 
+    # Reconcile stale Android session pins before selecting a new device.
+    # This prevents fresh claims from reusing emulator ports still "owned" by
+    # dead or parked sessions in the session store.
+    with _locked_sessions() as (data, save):
+        if _reconcile_android_sessions_locked(data):
+            save(data)
+
     # Find best matching device
     sim = find_best_device(spec)
 
@@ -491,6 +498,62 @@ def _mark_expired(session_id: str) -> None:
             save(data)
 
 
+def _reconcile_android_sessions_locked(data: dict) -> list[str]:
+    """Normalize Android session pins while holding the session lock.
+
+    Rules:
+    - parked Android emulator sessions intentionally have no running device,
+      so their pinned adb serial must be cleared
+    - active/idle Android emulator sessions must either:
+      - keep a pin that still validates for their AVD, or
+      - re-pin to the current serial for that AVD, or
+      - expire if no emulator for that AVD is actually running
+    """
+    changed: list[str] = []
+
+    for sid, raw in list(data["sessions"].items()):
+        if raw.get("status") in ("expired", "released"):
+            continue
+        if raw.get("platform") != "android" or raw.get("real_device"):
+            continue
+
+        status = raw.get("status")
+        sim_id = raw.get("sim_id", "")
+        pinned = raw.get("pinned_serial")
+
+        if status == "parked":
+            if pinned is not None:
+                data["sessions"][sid]["pinned_serial"] = None
+                changed.append(sid)
+            continue
+
+        if status not in ("active", "idle"):
+            continue
+
+        if pinned and android.validate_serial(pinned, sim_id):
+            continue
+
+        serial = android.get_android_serial(sim_id, retries=1, delay=0.3)
+        if serial is not None:
+            if serial != pinned:
+                data["sessions"][sid]["pinned_serial"] = serial
+                changed.append(sid)
+            continue
+
+        old_status = raw.get("status")
+        data["sessions"][sid]["status"] = "expired"
+        data["sessions"][sid]["expires_at"] = _now_iso()
+        data["sessions"][sid]["pinned_serial"] = None
+        changed.append(sid)
+        print(
+            f"[simemu-session] '{sid}' {old_status} → expired "
+            f"(stale Android session: emulator '{sim_id}' not running)",
+            flush=True,
+        )
+
+    return changed
+
+
 def require_session(session_id: str) -> Session:
     """Return a session by ID, or raise with actionable error."""
     session = get_session(session_id)
@@ -599,6 +662,7 @@ def touch(session_id: str) -> Session:
             if session.platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.boot(session.sim_id)
             else:
+                session.pinned_serial = None
                 android.boot(session.sim_id, headless=True)
                 # Re-pin serial after boot — emulator gets a new port
                 new_serial = android.get_android_serial(session.sim_id, retries=6, delay=1.0)
@@ -2177,6 +2241,15 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             log = android.crash_log(sim_id, package=bundle)
         return {"status": "ok", "crash_log": log}
 
+    elif command == "log-tail":
+        tag = args[0] if args else None
+        level = args[1] if len(args) > 1 else None
+        tail_lines = int(args[2]) if len(args) > 2 else 200
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("log-tail is only supported on Android right now")
+        log = android.log_tail(sim_id, tag=tag, level=level, tail_lines=tail_lines)
+        return {"status": "ok", "log": log}
+
     elif command == "video-start":
         output = None
         if "-o" in args:
@@ -2698,35 +2771,10 @@ def lifecycle_tick() -> list[str]:
                     flush=True,
                 )
 
-        # Orphan detection: expire Android sessions whose emulator is dead.
-        # This prevents zombie sessions from competing for emulator ports when
-        # a new claim boots an emulator on the same port as a dead session.
-        for sid, raw in list(data["sessions"].items()):
-            if raw.get("status") not in ("active", "idle", "parked"):
-                continue
-            if raw.get("platform") != "android" or raw.get("real_device"):
-                continue
-            sim_id = raw.get("sim_id", "")
-            pinned = raw.get("pinned_serial")
-            # Check if this session's emulator is reachable
-            serial = android.get_android_serial(sim_id, retries=1, delay=0.3)
-            if serial is not None:
-                # Emulator is running — also verify pinned serial matches
-                if pinned and serial != pinned:
-                    data["sessions"][sid]["pinned_serial"] = serial
-                    dirty = True
-                continue
-            # No emulator found for this AVD — expire the session
-            old_status = raw.get("status")
-            data["sessions"][sid]["status"] = "expired"
-            data["sessions"][sid]["expires_at"] = _now_iso()
+        reconciled = _reconcile_android_sessions_locked(data)
+        if reconciled:
             dirty = True
-            changed.append(sid)
-            print(
-                f"[simemu-session] '{sid}' {old_status} → expired "
-                f"(orphan: emulator '{sim_id}' not running)",
-                flush=True,
-            )
+            changed.extend(reconciled)
 
         if dirty:
             save(data)

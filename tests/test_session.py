@@ -194,6 +194,39 @@ class TestClaim(unittest.TestCase):
             os.environ["SIMEMU_CONFIG_DIR"] = self._old_config
         self.tmpdir.cleanup()
 
+    def _seed_session(self, session_id: str, **overrides) -> None:
+        now = _now_iso()
+        session_data = {
+            "session_id": session_id,
+            "platform": "android",
+            "form_factor": "phone",
+            "os_version": None,
+            "real_device": False,
+            "label": "",
+            "status": "active",
+            "sim_id": "Pixel_API34",
+            "device_name": "Pixel API34",
+            "agent": "test",
+            "created_at": now,
+            "heartbeat_at": now,
+            "expires_at": _compute_expires_at("active", now),
+            "resolved_os_version": "API 34",
+            "claim_platform": "android",
+            "claim_form_factor": "phone",
+            "claim_os_version": None,
+            "claim_real_device": False,
+            "claim_label": "",
+            "pinned_serial": "emulator-5554",
+        }
+        session_data.update(overrides)
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        if sf.exists():
+            data = json.loads(sf.read_text())
+        else:
+            data = {"sessions": {}}
+        data["sessions"][session_id] = session_data
+        sf.write_text(json.dumps(data))
+
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.ios.boot")
     @patch("simemu.session.find_best_device")
@@ -284,6 +317,37 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(session.sim_id, "Pixel8_API34")
         self.assertEqual(mock_boot.call_args_list[0], call("Biscuit_API35", headless=True))
         self.assertEqual(mock_boot.call_args_list[1], call("Pixel8_API34", headless=True))
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.validate_serial", return_value=False)
+    @patch("simemu.session.android.get_android_serial")
+    @patch("simemu.session.find_best_device")
+    @patch("simemu.session.state.check_maintenance")
+    def test_claim_expires_stale_active_android_session_before_reusing_port(
+        self,
+        mock_maint,
+        mock_find,
+        mock_get_serial,
+        mock_validate,
+        mock_win,
+    ) -> None:
+        self._seed_session("s-old", sim_id="MedPhone_API34", pinned_serial="emulator-5554")
+        mock_find.return_value = _make_sim(
+            sim_id="Okra_API35",
+            platform="android",
+            device_name="Okra API35",
+            booted=True,
+            runtime="API 35",
+        )
+        mock_get_serial.side_effect = [None, "emulator-5554"]
+
+        session = claim(ClaimSpec(platform="android"))
+
+        self.assertEqual(session.sim_id, "Okra_API35")
+        self.assertEqual(session.pinned_serial, "emulator-5554")
+        stale = get_session("s-old")
+        self.assertEqual(stale.status, "expired")
+        self.assertIsNone(stale.pinned_serial)
 
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.ios.boot")
@@ -834,6 +898,59 @@ class TestLifecycleTick(unittest.TestCase):
         self._seed("s-test", "idle", IDLE_TIMEOUT + PARK_TIMEOUT + 60)
         lifecycle_tick()
         mock_shutdown.assert_called_once_with("SIM-s-test")
+
+    @patch("simemu.session.android.get_android_serial", return_value=None)
+    def test_keeps_parked_android_session_and_clears_stale_pin(self, mock_get_serial) -> None:
+        self._seed(
+            "s-android",
+            "parked",
+            60,
+        )
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-android"].update({
+            "platform": "android",
+            "sim_id": "Okra_API35",
+            "device_name": "Okra API35",
+            "resolved_os_version": "API 35",
+            "claim_platform": "android",
+            "pinned_serial": "emulator-5554",
+        })
+        sf.write_text(json.dumps(data))
+
+        changed = lifecycle_tick()
+
+        self.assertIn("s-android", changed)
+        session = get_session("s-android")
+        self.assertEqual(session.status, "parked")
+        self.assertIsNone(session.pinned_serial)
+
+    @patch("simemu.session.android.get_android_serial", return_value=None)
+    @patch("simemu.session.android.validate_serial", return_value=False)
+    def test_expires_active_android_session_when_pin_is_stale_and_avd_is_gone(
+        self,
+        mock_validate,
+        mock_get_serial,
+    ) -> None:
+        self._seed("s-android", "active", 60)
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-android"].update({
+            "platform": "android",
+            "sim_id": "MedPhone_API34",
+            "device_name": "MedPhone API34",
+            "resolved_os_version": "API 34",
+            "claim_platform": "android",
+            "pinned_serial": "emulator-5554",
+        })
+        sf.write_text(json.dumps(data))
+
+        changed = lifecycle_tick()
+
+        self.assertIn("s-android", changed)
+        session = get_session("s-android")
+        self.assertEqual(session.status, "expired")
+        self.assertIsNone(session.pinned_serial)
 
     def test_expires_old_sessions(self) -> None:
         self._seed("s-test", "active", EXPIRE_TIMEOUT + 60)
