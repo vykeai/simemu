@@ -73,7 +73,12 @@ def boot(udid: str, minimize: bool = False) -> None:
         if "current state: booted" not in msg and "unable to boot device in current state: booted" not in msg:
             raise
     try:
-        _simctl("bootstatus", udid, "-b")
+        # Redirect bootstatus output to stderr — it's verbose and contaminates
+        # stdout when agents parse JSON from `simemu claim`.
+        subprocess.run(
+            ["xcrun", "simctl", "bootstatus", udid, "-b"],
+            stdout=sys.stderr, check=True,
+        )
     except subprocess.CalledProcessError:
         # bootstatus can fail or stall even when the simulator is already usable.
         # Fall back to a short poll of simctl list instead of treating this as fatal.
