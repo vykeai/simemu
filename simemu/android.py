@@ -1137,8 +1137,8 @@ def record_stop(pid: int) -> Optional[str]:
 
     if sidecar.exists():
         serial, remote, local = sidecar.read_text().splitlines()
-        subprocess.run(["adb", "-s", serial, "pull", remote, local], check=False)
-        subprocess.run(["adb", "-s", serial, "shell", "rm", remote], check=False)
+        subprocess.run(["adb", "-s", serial, "pull", remote, local], check=False, timeout=30)
+        subprocess.run(["adb", "-s", serial, "shell", "rm", remote], check=False, timeout=10)
         sidecar.unlink()
         return local
     return None
@@ -1328,12 +1328,19 @@ def rename(avd_name: str, new_name: str) -> None:
                       f"avd.ini.displayname={new_name}", text)
         config.write_text(text)
 
+    # Preserve the target from the original .ini (don't hardcode android-35)
+    original_target = "android-35"
+    for line in old_ini.read_text().splitlines():
+        if line.startswith("target="):
+            original_target = line.split("=", 1)[1].strip()
+            break
+
     # Rewrite the .ini pointer file with new paths
     new_ini.write_text(
         f"avd.ini.encoding=UTF-8\n"
         f"path={new_dir}\n"
         f"path.rel=avd/{avd_id}.avd\n"
-        f"target=android-35\n"
+        f"target={original_target}\n"
     )
     old_ini.unlink()
 

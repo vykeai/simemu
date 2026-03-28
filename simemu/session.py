@@ -12,6 +12,7 @@ import json
 import os
 import platform as _platform_mod
 import secrets
+import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -857,7 +858,7 @@ def _do_macos_command(session: Session, command: str, args: list[str]) -> dict:
         app_path = args[0]
         # Copy .app bundle to staging area, or open it directly
         if app_path.endswith(".app"):
-            staging = Path("/tmp/simemu-apps")
+            staging = Path(tempfile.gettempdir()) / f"simemu-apps-{os.getuid()}"
             staging.mkdir(parents=True, exist_ok=True)
             _sp.run(["cp", "-R", app_path, str(staging)], check=True)
             return {"status": "installed", "app": app_path, "location": str(staging / Path(app_path).name)}
