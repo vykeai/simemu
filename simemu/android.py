@@ -666,9 +666,9 @@ def _dumpsys_has_real_package(text: str, package: str) -> bool:
     if not text or "pkg=null" in text:
         return False
     return (
-        f"Package [{package}]" in text or
-        f"pkg=Package{{" in text and package in text or
-        f"PackageSetting{{" in text and package in text
+        f"Package [{package}]" in text
+        or (f"pkg=Package{{" in text and package in text)
+        or (f"PackageSetting{{" in text and package in text)
     )
 
 
@@ -730,7 +730,7 @@ def boot(avd_name: str, headless: bool = False) -> None:
             while time.time() < deadline:
                 result = subprocess.run(
                     ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, timeout=15,
                 )
                 if result.stdout.strip() == "1":
                     try:
@@ -1105,11 +1105,11 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
 
 
 def record_start(avd_name: str, output_path: str) -> int:
-    serial = wait_until_ready(avd_name)
-    """
-    Start screenrecord in background. Returns PID.
+    """Start screenrecord in background. Returns PID.
+
     Note: Android screenrecord has a hard 3-minute limit.
     """
+    serial = wait_until_ready(avd_name)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     remote = "/sdcard/simemu_record.mp4"
     proc = subprocess.Popen(
@@ -1400,7 +1400,7 @@ def get_screen_size(avd_name: str) -> tuple[int, int]:
     serial = _serial(avd_name)
     result = subprocess.run(
         ["adb", "-s", serial, "shell", "wm", "size"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=10,
     )
     # Output: "Physical size: 1080x2400" (override line may also appear)
     for line in result.stdout.splitlines():
@@ -1567,22 +1567,21 @@ def status_bar_clear(avd_name: str) -> None:
 
 
 def reboot(avd_name: str) -> None:
-    """Reboot the emulator and wait until it's fully back up."""
+    """Reboot the emulator and wait until it's fully back up.
+
+    Re-resolves the adb serial after reboot since the emulator may come
+    back on a different port.
+    """
     _ensure_booted(avd_name)
     serial = _serial(avd_name)
     subprocess.run(["adb", "-s", serial, "reboot"], check=False, timeout=30)
     print("Rebooting...", flush=True)
     time.sleep(5)  # allow device to go offline before polling
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        result = subprocess.run(
-            ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
-            capture_output=True, text=True,
-        )
-        if result.stdout.strip() == "1":
-            return
-        time.sleep(3)
-    raise RuntimeError(f"Emulator '{avd_name}' did not complete reboot within 120s")
+    # Use wait_until_ready which re-resolves the serial and verifies PM
+    try:
+        wait_until_ready(avd_name, timeout=120)
+    except RuntimeError:
+        raise RuntimeError(f"Emulator '{avd_name}' did not complete reboot within 120s")
 
 
 def network(avd_name: str, mode: str) -> None:

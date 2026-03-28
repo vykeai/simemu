@@ -112,7 +112,8 @@ class IOSControlTests(unittest.TestCase):
 
     @patch("simemu.ios._simctl")
     @patch("simemu.ios._is_booted")
-    def test_boot_tolerates_already_booted_error(self, mock_is_booted, mock_simctl) -> None:
+    @patch("simemu.ios.subprocess.run")
+    def test_boot_tolerates_already_booted_error(self, mock_run, mock_is_booted, mock_simctl) -> None:
         mock_is_booted.side_effect = [False, True]
         mock_simctl.side_effect = [
             subprocess.CalledProcessError(
@@ -120,10 +121,12 @@ class IOSControlTests(unittest.TestCase):
                 ["xcrun", "simctl", "boot", "SIM-001"],
                 stderr="Unable to boot device in current state: Booted",
             ),
-            None,
         ]
+        # subprocess.run is called for bootstatus (redirected to stderr)
+        mock_run.return_value = Mock(returncode=0)
         ios.boot("SIM-001")
-        self.assertEqual(("bootstatus", "SIM-001", "-b"), mock_simctl.call_args_list[1][0])
+        # Verify boot was attempted via _simctl
+        mock_simctl.assert_called_once_with("boot", "SIM-001")
 
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")

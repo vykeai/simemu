@@ -132,20 +132,22 @@ class TestDoLaunch(DoCommandBase):
         mock_launch.assert_called_once_with("AAA-111", "com.example.App", [])
         self.assertEqual(result["status"], "launched")
 
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
     @patch("simemu.session.android.launch")
     @patch("simemu.session.android.foreground_app", return_value="com.example.app")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_launch_android(self, mock_serial, mock_fg, mock_launch) -> None:
+    def test_do_launch_android(self, mock_serial, mock_fg, mock_launch, mock_stop) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "launch", ["com.example.app/.MainActivity"])
         mock_launch.assert_called_once_with("Pixel_7", "com.example.app/.MainActivity", [])
         self.assertEqual(result["status"], "launched")
 
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
     @patch("simemu.session.android.launch")
     @patch("simemu.session.android.foreground_app", return_value="com.other.app")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_launch_android_warns_on_foreground_mismatch(self, mock_serial, mock_fg, mock_launch) -> None:
+    def test_do_launch_android_warns_on_foreground_mismatch(self, mock_serial, mock_fg, mock_launch, mock_stop) -> None:
         """Launch succeeds but emits diagnostic when wrong app is foreground."""
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
