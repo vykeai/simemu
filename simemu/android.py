@@ -611,7 +611,9 @@ def _verify_post_recovery_health(avd_name: str) -> None:
 
     # 3. Screenshot must work (validates screencap + adb pipeline)
     import tempfile
-    test_png = tempfile.mktemp(suffix=".png")
+    _tmp_f = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    test_png = _tmp_f.name
+    _tmp_f.close()
     try:
         with open(test_png, "wb") as f:
             subprocess.run(

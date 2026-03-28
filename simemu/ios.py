@@ -144,6 +144,11 @@ def _extract_ipa(ipa_path: Path) -> str:
     """Extract .ipa to a temp directory, return path to the .app bundle."""
     tmp_dir = Path(tempfile.mkdtemp(prefix="simemu_ipa_"))
     with zipfile.ZipFile(ipa_path) as z:
+        # Validate paths to prevent zip slip (path traversal)
+        for info in z.infolist():
+            target = (tmp_dir / info.filename).resolve()
+            if not str(target).startswith(str(tmp_dir.resolve())):
+                raise RuntimeError(f"Invalid .ipa: path traversal detected in {info.filename}")
         z.extractall(tmp_dir)
 
     payload = tmp_dir / "Payload"

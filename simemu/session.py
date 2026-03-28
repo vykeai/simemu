@@ -910,10 +910,14 @@ def _do_macos_command(session: Session, command: str, args: list[str]) -> dict:
         if not args:
             raise RuntimeError("Usage: simemu do <session> terminate <bundle-id>")
         bundle_id = args[0]
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9._-]+$', bundle_id):
+            raise RuntimeError(f"Invalid bundle identifier: {bundle_id}")
         # Graceful quit via osascript, fall back to pkill
+        safe_bid = bundle_id.replace("\\", "\\\\").replace('"', '\\"')
         result = _sp.run([
             "osascript", "-e",
-            f'tell application id "{bundle_id}" to quit',
+            f'tell application id "{safe_bid}" to quit',
         ], capture_output=True, text=True, check=False)
         if result.returncode != 0:
             _sp.run(["pkill", "-f", bundle_id], capture_output=True, check=False)
@@ -1098,22 +1102,16 @@ end tell'''
                     save(data)
             session.pinned_serial = current_serial
 
-    # Monkey-patch the android module's _serial resolution for this command dispatch
-    # so ALL android calls within do_command use the pinned serial automatically.
-    _orig_serial = android._serial
-    if _pinned:
-        def _pinned_serial_fn(avd_name, pinned=None):
-            return _orig_serial(avd_name, pinned=_pinned)
-        android._serial = _pinned_serial_fn
-    try:
-        return _do_command_dispatch(session_id, session, sim_id, platform, is_real, command, args)
-    finally:
-        android._serial = _orig_serial
+    # Pass pinned serial as a thread-safe parameter instead of monkey-patching.
+    # The monkey-patch approach was not thread-safe: concurrent do_command calls
+    # from the HTTP server could overwrite each other's serial binding.
+    return _do_command_dispatch(session_id, session, sim_id, platform, is_real, command, args, _pinned)
 
 
 def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
-                         is_real: bool, command: str, args: list[str]):
-    """Inner dispatch for do_command — separated so the serial pin can wrap it."""
+                         is_real: bool, command: str, args: list[str],
+                         pinned_serial: str | None = None):
+    """Inner dispatch for do_command. pinned_serial is thread-safe — no monkey-patching."""
 
     # Update HUD — only for visible sessions (hidden = no overlay needed)
     _is_visible = False
@@ -2005,7 +2003,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         import subprocess as _sp
         import tempfile as _tmp
         # Use a single-step Maestro flow — works headless
-        flow_content = f"appId: \"\"\n---\n- tapOn: \"{label_text}\"\n"
+        safe_label = label_text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+        flow_content = f"appId: \"\"\n---\n- tapOn: \"{safe_label}\"\n"
         with _tmp.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(flow_content)
             flow_path = f.name
@@ -2506,7 +2505,12 @@ def _do_build(session, sim_id: str, platform: str, is_real: bool, args: list[str
 
     # Raw mode — escape hatch
     if raw_cmd:
-        result = subprocess.run(raw_cmd, shell=True, capture_output=not verbose, text=True)
+        import shlex
+        try:
+            cmd_parts = shlex.split(raw_cmd)
+        except ValueError as e:
+            raise RuntimeError(f"Invalid build command: {e}")
+        result = subprocess.run(cmd_parts, capture_output=not verbose, text=True)
         if result.returncode != 0:
             err = result.stderr[:2000] if result.stderr else ""
             raise RuntimeError(f"Build failed (exit {result.returncode}):\n{raw_cmd}\n{err}")

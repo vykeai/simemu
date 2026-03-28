@@ -173,7 +173,8 @@ class AuthRateLimitMiddleware(BaseHTTPMiddleware):
         if _API_KEY and path not in _AUTH_EXEMPT:
             auth_header = request.headers.get("Authorization", "")
             token = auth_header.replace("Bearer ", "").strip()
-            if token != _API_KEY:
+            import hmac as _hmac
+            if not _hmac.compare_digest(token, _API_KEY):
                 return JSONResponse(
                     status_code=401,
                     content={"error": "unauthorized", "hint": "Set Authorization: Bearer $SIMEMU_API_KEY"},
@@ -183,8 +184,13 @@ class AuthRateLimitMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         now = _time.time()
         window = _rate_counters[client_ip]
-        # Prune old entries
+        # Prune old entries for this IP
         _rate_counters[client_ip] = [t for t in window if now - t < _RATE_LIMIT_WINDOW]
+        # Periodic cleanup: remove stale IPs to prevent memory exhaustion
+        if len(_rate_counters) > 1000:
+            stale = [ip for ip, ts in _rate_counters.items() if not ts or ts[-1] < now - _RATE_LIMIT_WINDOW * 2]
+            for ip in stale:
+                del _rate_counters[ip]
         if len(_rate_counters[client_ip]) >= _RATE_LIMIT_MAX:
             return JSONResponse(
                 status_code=429,
