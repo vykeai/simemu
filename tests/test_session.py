@@ -8,7 +8,7 @@ import unittest
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 # Set up temp state dir before importing session module
 _tmpdir = tempfile.mkdtemp(prefix="simemu-session-test-")
@@ -251,6 +251,39 @@ class TestClaim(unittest.TestCase):
         spec = ClaimSpec(platform="android")
         claim(spec)
         mock_boot.assert_called_once_with("Pixel_7", headless=True)
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5556")
+    @patch("simemu.session.android.boot")
+    @patch("simemu.session.find_matching_devices")
+    @patch("simemu.session.find_best_device")
+    @patch("simemu.session.state.check_maintenance")
+    def test_claim_falls_back_when_first_android_emulator_fails_to_boot(
+        self,
+        mock_maint,
+        mock_find,
+        mock_find_matching,
+        mock_boot,
+        mock_get_serial,
+        mock_win,
+    ) -> None:
+        bad = _make_sim(
+            sim_id="Biscuit_API35", platform="android", device_name="Biscuit API35",
+            booted=False, runtime="API 35",
+        )
+        good = _make_sim(
+            sim_id="Pixel8_API34", platform="android", device_name="Pixel8 API34",
+            booted=False, runtime="API 34",
+        )
+        mock_find.return_value = bad
+        mock_find_matching.return_value = [bad, good]
+        mock_boot.side_effect = [RuntimeError("snapshot pending"), None]
+
+        session = claim(ClaimSpec(platform="android"))
+
+        self.assertEqual(session.sim_id, "Pixel8_API34")
+        self.assertEqual(mock_boot.call_args_list[0], call("Biscuit_API35", headless=True))
+        self.assertEqual(mock_boot.call_args_list[1], call("Pixel8_API34", headless=True))
 
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.ios.boot")

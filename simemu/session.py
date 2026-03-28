@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import state, ios, android, device
-from .discover import find_best_device
+from .discover import find_best_device, find_matching_devices
 from . import window as window_mgr
 
 
@@ -352,14 +352,44 @@ def claim(spec: ClaimSpec) -> Session:
     # Find best matching device
     sim = find_best_device(spec)
 
-    # Boot the device if not already booted and not a real device
+    # Boot the device if not already booted and not a real device.
+    # Android gets one extra resilience layer: if the top-ranked emulator fails
+    # to boot, try the next ranked candidate instead of failing the whole claim.
     if not sim.real_device and not sim.booted:
-        print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
-        if sim.platform in ("ios", "watchos", "tvos", "visionos"):
-            ios.boot(sim.sim_id)
+        if sim.platform == "android":
+            print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
+            try:
+                android.boot(sim.sim_id, headless=True)
+                print(f"Ready.", file=_sys.stderr, flush=True)
+            except RuntimeError as exc:
+                boot_errors = [f"{sim.sim_id}: {exc}"]
+                for candidate in find_matching_devices(spec):
+                    if candidate.sim_id == sim.sim_id:
+                        continue
+                    if candidate.real_device or candidate.booted:
+                        sim = candidate
+                        break
+                    print(f"Booting {candidate.device_name}...", file=_sys.stderr, flush=True)
+                    try:
+                        android.boot(candidate.sim_id, headless=True)
+                        print(f"Ready.", file=_sys.stderr, flush=True)
+                        sim = candidate
+                        break
+                    except RuntimeError as fallback_exc:
+                        boot_errors.append(f"{candidate.sim_id}: {fallback_exc}")
+                        continue
+                else:
+                    raise RuntimeError(
+                        "No Android emulator could be booted for this claim.\n" +
+                        "\n".join(boot_errors)
+                    )
         else:
-            android.boot(sim.sim_id, headless=True)
-        print(f"Ready.", file=_sys.stderr, flush=True)
+            print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
+            if sim.platform in ("ios", "watchos", "tvos", "visionos"):
+                ios.boot(sim.sim_id)
+            else:
+                android.boot(sim.sim_id, headless=True)
+            print(f"Ready.", file=_sys.stderr, flush=True)
 
     # Apply window management — headless by default unless --visible
     if not sim.real_device and not spec.visible:

@@ -606,6 +606,44 @@ class TestRepairInstallFastPath(unittest.TestCase):
         self.assertTrue(result.ok)
 
 
+class TestBoot(unittest.TestCase):
+
+    @patch("simemu.android._read_log_excerpt")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.get_android_serial")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
+    @patch("simemu.state.check_maintenance")
+    def test_retries_without_snapshot_load_after_snapshot_failure(
+        self,
+        mock_maintenance: MagicMock,
+        mock_geny: MagicMock,
+        mock_popen: MagicMock,
+        mock_get_serial: MagicMock,
+        mock_run: MagicMock,
+        mock_read_log: MagicMock,
+    ) -> None:
+        first_proc = MagicMock()
+        first_proc.poll.return_value = 1
+        second_proc = MagicMock()
+        second_proc.poll.return_value = None
+        mock_popen.side_effect = [first_proc, second_proc]
+        mock_get_serial.side_effect = [None, None, "emulator-5554"]
+        mock_run.return_value = MagicMock(stdout="1\n", returncode=0)
+        mock_read_log.side_effect = [
+            "FATAL | A snapshot operation is pending and timeout has expired.",
+            "",
+        ]
+
+        android.boot("Biscuit_MedPhone_6.3in_API35", headless=True)
+
+        first_cmd = mock_popen.call_args_list[0].args[0]
+        second_cmd = mock_popen.call_args_list[1].args[0]
+        self.assertNotIn("-no-snapshot-load", first_cmd)
+        self.assertIn("-no-snapshot-load", second_cmd)
+        mock_run.assert_called_once()
+
+
 class TestSessionIsolation(unittest.TestCase):
     """Test that pinned serial prevents cross-session contamination."""
 

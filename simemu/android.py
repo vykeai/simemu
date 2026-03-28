@@ -20,6 +20,16 @@ from . import device as real_device
 SCREENRECORD_MAX_SECONDS = 180
 
 
+def _read_log_excerpt(log_path: Path, max_chars: int = 4000) -> str:
+    try:
+        content = log_path.read_text(errors="ignore")
+    except OSError:
+        return ""
+    if len(content) <= max_chars:
+        return content
+    return content[-max_chars:]
+
+
 def _window_info(avd_name: str) -> Optional[dict]:
     try:
         import importlib as _il
@@ -682,36 +692,101 @@ def boot(avd_name: str, headless: bool = False) -> None:
 
     # Memory cap to prevent runaway qemu processes
     memory_mb = int(os.environ.get("SIMEMU_ANDROID_MEMORY_MB", "2048"))
-
-    cmd = ["emulator", "-avd", avd_name, "-memory", str(memory_mb)]
+    base_cmd = ["emulator", "-avd", avd_name, "-memory", str(memory_mb)]
     if headless:
-        cmd += ["-no-window", "-no-audio", "-no-boot-anim", "-gpu", "swiftshader_indirect"]
+        base_cmd += ["-no-window", "-no-audio", "-no-boot-anim", "-gpu", "swiftshader_indirect"]
 
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    launch_variants = [base_cmd]
+    if "-no-snapshot-load" not in base_cmd:
+        launch_variants.append(base_cmd + ["-no-snapshot-load"])
 
-    print(f"Waiting for '{avd_name}' to boot...", flush=True)
-    deadline = time.time() + 300
-    serial = None
-    while time.time() < deadline:
-        serial = get_android_serial(avd_name)
-        if serial:
-            break
-        time.sleep(2)
-
-    if not serial:
-        raise RuntimeError(f"Emulator '{avd_name}' did not appear within 300s")
-
-    deadline = time.time() + 180
-    while time.time() < deadline:
-        result = subprocess.run(
-            ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
-            capture_output=True, text=True,
+    last_error = ""
+    for attempt, cmd in enumerate(launch_variants, start=1):
+        log_handle = tempfile.NamedTemporaryFile(
+            mode="w+b",
+            prefix=f"simemu-boot-{avd_name}-",
+            suffix=".log",
+            delete=False,
         )
-        if result.stdout.strip() == "1":
-            return
-        time.sleep(2)
+        log_path = Path(log_handle.name)
+        proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
+        log_handle.close()
 
-    raise RuntimeError(f"Emulator '{avd_name}' booted but system never became ready")
+        print(f"Waiting for '{avd_name}' to boot...", flush=True)
+        deadline = time.time() + 300
+        serial = None
+        while time.time() < deadline:
+            serial = get_android_serial(avd_name)
+            if serial:
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(2)
+
+        if serial:
+            deadline = time.time() + 180
+            while time.time() < deadline:
+                result = subprocess.run(
+                    ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
+                    capture_output=True, text=True,
+                )
+                if result.stdout.strip() == "1":
+                    try:
+                        log_path.unlink()
+                    except OSError:
+                        pass
+                    return
+                if proc.poll() is not None:
+                    break
+                time.sleep(2)
+
+        exit_code = proc.poll()
+        log_excerpt = _read_log_excerpt(log_path)
+        try:
+            if exit_code is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+        retryable_snapshot_failure = (
+            attempt == 1 and
+            "-no-snapshot-load" not in cmd and
+            "snapshot" in log_excerpt.lower()
+        )
+        if retryable_snapshot_failure:
+            last_error = (
+                f"Emulator '{avd_name}' failed with snapshot state corruption; "
+                f"retrying without snapshot load.\n{log_excerpt.strip()}"
+            )
+            try:
+                log_path.unlink()
+            except OSError:
+                pass
+            continue
+
+        if exit_code is not None:
+            last_error = (
+                f"Emulator '{avd_name}' exited before adb became ready "
+                f"(exit={exit_code}).\n{log_excerpt.strip()}"
+            )
+        elif serial:
+            last_error = (
+                f"Emulator '{avd_name}' got adb serial '{serial}' but never finished booting.\n"
+                f"{log_excerpt.strip()}"
+            )
+        else:
+            last_error = (
+                f"Emulator '{avd_name}' did not appear within 300s.\n{log_excerpt.strip()}"
+            )
+        try:
+            log_path.unlink()
+        except OSError:
+            pass
+        break
+
+    raise RuntimeError(last_error or f"Emulator '{avd_name}' failed to boot")
 
 
 def shutdown(avd_name: str) -> None:

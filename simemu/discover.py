@@ -5,6 +5,7 @@ and connected real devices, filtering out any already claimed in simemu sessions
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -102,9 +103,9 @@ def list_android(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
             if not avd or avd in allocated_ids:
                 continue
             runtime = "Android"
-            if "API_" in avd:
-                api = avd.split("API_")[-1].split("_")[0]
-                runtime = f"API {api}"
+            api_match = re.search(r"API[_-]?(\d+)", avd, re.IGNORECASE)
+            if api_match:
+                runtime = f"API {api_match.group(1)}"
             results.append(SimulatorInfo(
                 sim_id=avd,
                 platform="android",
@@ -294,10 +295,10 @@ def get_reservation(agent: str, platform: str, form_factor: str = "phone") -> di
     return agent_res.get(platform)
 
 
-def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
-    """Find the best available device matching a ClaimSpec.
+def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
+    """Return ranked devices matching a ClaimSpec, best candidate first.
 
-    Scoring: booted > shutdown, exact version match > close, less memory > more.
+    Scoring: exact version match > booted > non-Genymotion.
     Maps form_factor to platform and device name filters.
     Respects permanent reservations: if the agent has a reserved device, prefer it.
     """
@@ -405,7 +406,12 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
         return (reserved_score, version_score, booted_score, geny_score, sim.device_name)
 
     candidates.sort(key=_score)
-    return candidates[0]
+    return candidates
+
+
+def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
+    """Find the best available device matching a ClaimSpec."""
+    return find_matching_devices(spec)[0]
 
 
 def find_simulator(
