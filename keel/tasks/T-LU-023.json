@@ -6,10 +6,10 @@
   "lane": null,
   "wave": "wave-5",
   "space": null,
-  "status": "todo",
+  "status": "active",
   "priority": "critical",
   "platform": null,
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
@@ -21,6 +21,10 @@
     {
       "status": "todo",
       "ts": "2026-03-28T19:05:46.659Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-28T19:05:58.686Z"
     }
   ],
   "attachments": [],
@@ -29,7 +33,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-28T19:05:46.658Z",
-  "updatedAt": "2026-03-28T19:05:46.658Z",
+  "updatedAt": "2026-03-28T19:05:58.686Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
