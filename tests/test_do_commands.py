@@ -49,6 +49,7 @@ class DoCommandBase(unittest.TestCase):
         sim_id: str = "AAA-111",
         device_name: str = "iPhone 16 Pro",
         real_device: bool = False,
+        pinned_serial: str | None = None,
     ) -> None:
         now = _now_iso()
         session_data = {
@@ -71,6 +72,7 @@ class DoCommandBase(unittest.TestCase):
             "claim_os_version": None,
             "claim_real_device": real_device,
             "claim_label": "",
+            "pinned_serial": pinned_serial,
         }
         sf = Path(self.tmpdir.name) / "sessions.json"
         if sf.exists():
@@ -160,6 +162,23 @@ class TestDoLaunch(DoCommandBase):
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "launch", [])
 
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_launch_android_passes_pinned_serial(self, mock_serial, mock_fg, mock_launch, mock_stop) -> None:
+        self._seed(
+            "s-droid-pin",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        do_command("s-droid-pin", "launch", ["com.example.app"])
+        mock_stop.assert_called_once_with("Pixel_7", keep="com.example.app", pinned_serial="emulator-5554")
+        mock_launch.assert_called_once_with("Pixel_7", "com.example.app", [], pinned_serial="emulator-5554")
+        mock_fg.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
 
 # ── tap ──────────────────────────────────────────────────────────────────────
 
@@ -238,6 +257,24 @@ class TestDoScreenshot(DoCommandBase):
                     device_name="Pixel 7")
         result = do_command("s-droid1", "screenshot", ["-o", "/tmp/droid.png"])
         mock_screenshot.assert_called_once_with("Pixel_7", "/tmp/droid.png", max_size=None)
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_screenshot_android_passes_pinned_serial(self, mock_serial, mock_screenshot) -> None:
+        self._seed(
+            "s-droid-pin",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        do_command("s-droid-pin", "screenshot", ["-o", "/tmp/droid.png"])
+        mock_screenshot.assert_called_once_with(
+            "Pixel_7",
+            "/tmp/droid.png",
+            max_size=None,
+            pinned_serial="emulator-5554",
+        )
 
 
 # ── maestro ──────────────────────────────────────────────────────────────────
@@ -400,6 +437,19 @@ class TestDoForegroundApp(DoCommandBase):
         result = do_command("s-droid1", "foreground-app", [])
         mock_foreground.assert_called_once_with("Pixel_7")
         self.assertEqual("app.fitkind.dev", result["foreground_app"])
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_foreground_app_android_passes_pinned_serial(self, mock_serial, mock_foreground) -> None:
+        self._seed(
+            "s-droid-pin",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        do_command("s-droid-pin", "foreground-app", [])
+        mock_foreground.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
 
 class TestDoPresentAndStabilize(DoCommandBase):

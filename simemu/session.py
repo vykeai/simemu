@@ -1114,6 +1114,17 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                          pinned_serial: str | None = None):
     """Inner dispatch for do_command. pinned_serial is thread-safe — no monkey-patching."""
 
+    android_kwargs = (
+        {"pinned_serial": pinned_serial}
+        if platform == "android" and not is_real and pinned_serial
+        else {}
+    )
+
+    def _android_serial_for_session() -> str:
+        if is_real:
+            return sim_id
+        return android._serial(sim_id, pinned=pinned_serial)
+
     # Update HUD — only for visible sessions (hidden = no overlay needed)
     _is_visible = False
     with _locked_sessions() as (data, save):
@@ -1153,7 +1164,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.install(sim_id, app_path)
         else:
-            android.install(sim_id, app_path)
+            android.install(sim_id, app_path, **android_kwargs)
         return {"status": "installed", "app": app_path}
 
     elif command == "launch":
@@ -1168,7 +1179,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         else:
             expected_pkg = bundle.split("/", 1)[0]
             # Isolate: force-stop other third-party apps before launch
-            stopped = android.stop_other_apps(sim_id, keep=expected_pkg)
+            stopped = android.stop_other_apps(sim_id, keep=expected_pkg, **android_kwargs)
             if stopped:
                 import sys as _sys
                 print(json.dumps({
@@ -1176,9 +1187,9 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     "stopped_count": len(stopped),
                     "stopped": stopped[:10],
                 }), file=_sys.stderr, flush=True)
-            android.launch(sim_id, bundle, extra)
+            android.launch(sim_id, bundle, extra, **android_kwargs)
             # Verify the right package is foregrounded
-            actual_fg = android.foreground_app(sim_id)
+            actual_fg = android.foreground_app(sim_id, **android_kwargs)
             if actual_fg and actual_fg != expected_pkg:
                 import sys as _sys
                 print(json.dumps({
@@ -1208,7 +1219,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "visionos"):
             ios.tap(sim_id, x, y)
         else:
-            android.tap(sim_id, x, y)
+            android.tap(sim_id, x, y, **android_kwargs)
         return {"status": "tapped", "x": x, "y": y}
 
     elif command == "swipe":
@@ -1223,7 +1234,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.swipe(sim_id, x1, y1, x2, y2, duration=duration / 1000.0)
         else:
-            android.swipe(sim_id, x1, y1, x2, y2, duration=duration)
+            android.swipe(sim_id, x1, y1, x2, y2, duration=duration, **android_kwargs)
         return {"status": "swiped", "from": [x1, y1], "to": [x2, y2]}
 
     elif command == "screenshot":
@@ -1261,7 +1272,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         elif platform in ("ios", "watchos", "visionos"):
             ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
         else:
-            android.screenshot(sim_id, output, max_size=max_size)
+            android.screenshot(sim_id, output, max_size=max_size, **android_kwargs)
         update_provenance(session_id, last_screenshot=output)
         return {"status": "captured", "path": output}
 
@@ -1272,9 +1283,9 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             device_id = sim_id
         else:
-            from .discover import get_android_serial
-            device_id = get_android_serial(sim_id)
-            if not device_id:
+            try:
+                device_id = _android_serial_for_session()
+            except RuntimeError:
                 raise RuntimeError(
                     f"Android emulator is not running. "
                     f"Re-claim with: {session.reclaim_command()}"
@@ -1344,13 +1355,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if not expected_package:
                 with _locked_sessions() as (data, save):
                     expected_package = data["sessions"].get(session_id, {}).get("last_app")
-            android.open_url(sim_id, url, expected_package=expected_package)
+            android.open_url(sim_id, url, expected_package=expected_package, **android_kwargs)
             # Post-URL settle — deep link handlers (dialogs, sheets) need time to render
             import time as _time
             _time.sleep(1.0)
             # Verify foreground after URL open — retry to handle dialog transitions
             if expected_package:
-                actual_fg = android.foreground_app(sim_id, retries=3, delay=1.0)
+                actual_fg = android.foreground_app(sim_id, retries=3, delay=1.0, **android_kwargs)
                 if actual_fg is None:
                     # null foreground after URL open — app may have a sheet/dialog
                     # that doesn't register as a resumed activity. Don't error — the
@@ -1386,7 +1397,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.terminate(sim_id, bundle)
         else:
-            android.terminate(sim_id, bundle)
+            android.terminate(sim_id, bundle, **android_kwargs)
         return {"status": "terminated", "app": bundle}
 
     elif command == "uninstall":
@@ -1396,7 +1407,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.uninstall(sim_id, bundle)
         else:
-            android.uninstall(sim_id, bundle)
+            android.uninstall(sim_id, bundle, **android_kwargs)
         return {"status": "uninstalled", "app": bundle}
 
     elif command == "input":
@@ -1406,7 +1417,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.input_text(sim_id, text)
         else:
-            android.input_text(sim_id, text)
+            android.input_text(sim_id, text, **android_kwargs)
         return {"status": "input", "text": text}
 
     elif command == "long-press":
@@ -1421,7 +1432,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.long_press(sim_id, x, y, duration=duration / 1000.0)
         else:
-            android.long_press(sim_id, x, y, duration=duration)
+            android.long_press(sim_id, x, y, duration=duration, **android_kwargs)
         return {"status": "long-pressed", "x": x, "y": y}
 
     elif command == "key":
@@ -1431,7 +1442,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.key(sim_id, key_name)
         else:
-            android.key(sim_id, key_name)
+            android.key(sim_id, key_name, **android_kwargs)
         return {"status": "key_pressed", "key": key_name}
 
     elif command == "focus-move":
@@ -1466,7 +1477,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.set_appearance(sim_id, mode)
         else:
-            android.set_appearance(sim_id, mode)
+            android.set_appearance(sim_id, mode, **android_kwargs)
         return {"status": "set", "appearance": mode}
 
     elif command == "rotate":
@@ -1476,7 +1487,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.rotate(sim_id, orientation)
         else:
-            android.rotate(sim_id, orientation)
+            android.rotate(sim_id, orientation, **android_kwargs)
         return {"status": "rotated", "orientation": orientation}
 
     elif command == "location":
@@ -1486,7 +1497,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.location(sim_id, lat, lng)
         else:
-            android.location(sim_id, lat, lng)
+            android.location(sim_id, lat, lng, **android_kwargs)
         return {"status": "set", "lat": lat, "lng": lng}
 
     elif command == "push":
@@ -1494,7 +1505,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             raise RuntimeError("Usage: simemu do <session> push <local> <remote>")
         if platform != "android":
             raise RuntimeError("push is Android only")
-        android.push(sim_id, args[0], args[1])
+        android.push(sim_id, args[0], args[1], **android_kwargs)
         return {"status": "pushed", "remote": args[1]}
 
     elif command == "pull":
@@ -1502,7 +1513,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             raise RuntimeError("Usage: simemu do <session> pull <remote> <local>")
         if platform != "android":
             raise RuntimeError("pull is Android only")
-        android.pull(sim_id, args[0], args[1])
+        android.pull(sim_id, args[0], args[1], **android_kwargs)
         return {"status": "pulled", "local": args[1]}
 
     elif command == "add-media":
@@ -1511,14 +1522,14 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.add_media(sim_id, args[0])
         else:
-            android.add_media(sim_id, args[0])
+            android.add_media(sim_id, args[0], **android_kwargs)
         return {"status": "added", "file": args[0]}
 
     elif command == "shake":
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.shake(sim_id)
         else:
-            android.shake(sim_id)
+            android.shake(sim_id, **android_kwargs)
         return {"status": "shaken"}
 
     elif command == "status-bar":
@@ -1551,14 +1562,14 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.status_bar_clear(sim_id)
             else:
-                android.status_bar_clear(sim_id)
+                android.status_bar_clear(sim_id, **android_kwargs)
             return {"status": "cleared"}
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.status_bar(sim_id, time_str=time_str, battery=battery,
                            wifi=wifi, network=network)
         else:
             android.status_bar(sim_id, time_str=time_str, battery=battery,
-                               wifi=wifi, network=network)
+                               wifi=wifi, network=network, **android_kwargs)
         return {"status": "set"}
 
     elif command == "dismiss-alert":
@@ -1570,7 +1581,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow"])
         else:
             # Android: press Enter key to dismiss
-            _sp.run(["adb", "-s", android.get_serial(sim_id),
+            _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
         return {"status": "dismissed"}
@@ -1585,7 +1596,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if expected_bundle:
                 ios.complete_open_url_handoff(sim_id, expected_bundle, attempts=3, foreground_timeout=1.0)
         else:
-            _sp.run(["adb", "-s", android.get_serial(sim_id),
+            _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
         return {"status": "accepted"}
@@ -1597,7 +1608,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                      capture_output=True, check=False)
             ios.click_system_alert_button(sim_id, ["Don’t Allow", "Cancel", "Not Now", "Close"])
         else:
-            _sp.run(["adb", "-s", android.get_serial(sim_id),
+            _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_BACK"],
                      capture_output=True, check=False)
         return {"status": "denied"}
@@ -1613,7 +1624,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                 _sp.run(["xcrun", "simctl", "privacy", sim_id, "grant", svc, bundle],
                          capture_output=True, check=False)
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             permissions = [
                 "android.permission.CAMERA",
                 "android.permission.RECORD_AUDIO",
@@ -1642,7 +1653,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             # Can't easily clear data on iOS sim without uninstall
             return {"status": "terminated", "hint": "iOS: uninstall and reinstall to clear data"}
         else:
-            android.clear_data(sim_id, bundle)
+            android.clear_data(sim_id, bundle, **android_kwargs)
         return {"status": "cleared", "app": bundle}
 
     elif command == "clean-retry":
@@ -1654,8 +1665,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                 "'clean-retry' is Android only. On iOS use "
                 "`simemu do <session> reset-app <bundle> <app-path>`."
             )
-        android.clear_data(sim_id, bundle)
-        android.launch(sim_id, bundle, [])
+        android.clear_data(sim_id, bundle, **android_kwargs)
+        android.launch(sim_id, bundle, [], **android_kwargs)
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
@@ -1675,7 +1686,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             _sp.run(["xcrun", "simctl", "pbcopy", sim_id],
                      input=text.encode(), capture_output=True, check=False)
         else:
-            android.input_text(sim_id, text)
+            android.input_text(sim_id, text, **android_kwargs)
         return {"status": "set", "text": text}
 
     elif command == "clipboard-get":
@@ -1695,7 +1706,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             result["udid"] = sim_id
         else:
-            serial = android.get_serial(sim_id) if not is_real else sim_id
+            serial = _android_serial_for_session()
             result["serial"] = serial
         result["device_name"] = session.device_name
         result["os_version"] = session.resolved_os_version or session.os_version
@@ -1727,7 +1738,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             return {"status": "dismissed", "platform": "ios",
                     "hint": "Accepted pending alert and reset privacy warnings"}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             # Disable window animation scale
             _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
                       "window_animation_scale", "0"],
@@ -1773,7 +1784,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.screenshot(sim_id, output)
         else:
-            android.screenshot(sim_id, output)
+            android.screenshot(sim_id, output, **android_kwargs)
         return {"status": "captured", "waited": seconds, "path": output}
 
     elif command == "deeplink-proof":
@@ -1799,7 +1810,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if not expected_bundle:
                 ios.accept_open_app_alert(sim_id)
         else:
-            android.open_url(sim_id, url)
+            android.open_url(sim_id, url, **android_kwargs)
         # Wait for render
         _time.sleep(3)
         # Screenshot
@@ -1813,7 +1824,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.screenshot(sim_id, output)
         else:
-            android.screenshot(sim_id, output)
+            android.screenshot(sim_id, output, **android_kwargs)
         return {"status": "captured", "url": url, "path": output}
 
     elif command == "proof":
@@ -1830,10 +1841,10 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.install(sim_id, app_path)
             ios.launch(sim_id, bundle, [])
         else:
-            android.terminate(sim_id, bundle)
-            android.uninstall(sim_id, bundle)
-            android.install(sim_id, app_path)
-            android.launch(sim_id, bundle, [])
+            android.terminate(sim_id, bundle, **android_kwargs)
+            android.uninstall(sim_id, bundle, **android_kwargs)
+            android.install(sim_id, app_path, **android_kwargs)
+            android.launch(sim_id, bundle, [], **android_kwargs)
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
@@ -1844,7 +1855,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             return {"status": "ok", "foreground_app": ios.foreground_app(sim_id)}
         else:
-            return {"status": "ok", "foreground_app": android.foreground_app(sim_id)}
+            return {"status": "ok", "foreground_app": android.foreground_app(sim_id, **android_kwargs)}
 
     elif command == "is-running":
         if not args:
@@ -1859,7 +1870,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             running = bundle in result.stdout
             return {"status": "ok", "app": bundle, "running": running}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             result = _sp.run(
                 ["adb", "-s", serial, "shell", "pidof", bundle],
                 capture_output=True, text=True, check=False,
@@ -1881,7 +1892,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                             "Use Network Link Conditioner in System Preferences or "
                             "Apple Configurator profiles."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             if mode == "offline":
                 _sp.run(["adb", "-s", serial, "shell", "svc", "wifi", "disable"],
                          capture_output=True, check=False)
@@ -1939,10 +1950,10 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             return {"status": "ok", "app": bundle, "info": result.stdout.strip()}
         else:
             try:
-                probe = android.verify_install(sim_id, bundle, timeout=15)
+                probe = android.verify_install(sim_id, bundle, timeout=15, **android_kwargs)
             except RuntimeError:
                 try:
-                    serial = android._serial(sim_id)
+                    serial = _android_serial_for_session()
                     probe = android._probe_package_state(serial, bundle)
                 except RuntimeError:
                     return {
@@ -1958,7 +1969,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             raise RuntimeError("'verify-install' is Android only.")
         bundle = args[0]
-        probe = android.verify_install(sim_id, bundle)
+        probe = android.verify_install(sim_id, bundle, **android_kwargs)
         return {"status": "verified", "app": bundle, "info": probe.format_report()}
 
     elif command == "repair-install":
@@ -1968,7 +1979,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             raise RuntimeError("'repair-install' is Android only.")
         bundle = args[0]
         app_path = args[1]
-        probe = android.repair_install(sim_id, bundle, app_path)
+        probe = android.repair_install(sim_id, bundle, app_path, **android_kwargs)
         return {"status": "repaired", "app": bundle, "reinstalled_from": app_path, "info": probe.format_report()}
 
     elif command == "a11y-tree":
@@ -2039,8 +2050,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             _sp.run(["xcrun", "simctl", "io", sim_id, "sendkey", "return"],
                      capture_output=True, check=False)
         else:
-            serial = android.get_serial(sim_id)
-            android.input_text(sim_id, text)
+            serial = _android_serial_for_session()
+            android.input_text(sim_id, text, **android_kwargs)
             _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
         return {"status": "typed_and_submitted", "text": text}
@@ -2070,7 +2081,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         elif platform in ("ios", "watchos", "visionos"):
             ios.swipe(sim_id, x1, y1, x2, y2, duration=0.3)
         else:
-            android.swipe(sim_id, x1, y1, x2, y2, duration=300)
+            android.swipe(sim_id, x1, y1, x2, y2, duration=300, **android_kwargs)
         return {"status": "scrolled", "direction": direction}
 
     elif command == "back":
@@ -2084,7 +2095,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.swipe(sim_id, 5, 400, 300, 400, duration=0.3)
             return {"status": "back", "method": "edge_swipe"}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_BACK"],
                      capture_output=True, check=False)
             return {"status": "back", "method": "keyevent"}
@@ -2095,7 +2106,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             _sp.run(["xcrun", "simctl", "io", sim_id, "sendkey", "home"],
                      capture_output=True, check=False)
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_HOME"],
                      capture_output=True, check=False)
         return {"status": "home"}
@@ -2106,7 +2117,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             return {"status": "unsupported", "platform": "ios",
                     "hint": "iOS Simulator does not expose notification clearing via simctl."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "shell", "service", "call",
                       "notification", "1"],
                      capture_output=True, check=False)
@@ -2125,7 +2136,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             container = result.stdout.strip() if result.returncode == 0 else None
             return {"status": "ok", "app": bundle, "container": container}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             result = _sp.run(
                 ["adb", "-s", serial, "shell", "run-as", bundle, "pwd"],
                 capture_output=True, text=True, check=False,
@@ -2179,7 +2190,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                      capture_output=True, check=False)
             return {"status": "imported", "file": vcf_path}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             remote_path = "/sdcard/import_contacts.vcf"
             _sp.run(["adb", "-s", serial, "push", vcf_path, remote_path],
                      capture_output=True, check=False)
@@ -2202,7 +2213,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                             "Use Accessibility settings in the Simulator UI "
                             "or defaults write on the sim plist."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             scale_map = {"small": "0.85", "default": "1.0", "large": "1.15", "xlarge": "1.3"}
             scale = scale_map.get(size, "1.0")
             _sp.run(["adb", "-s", serial, "shell", "settings", "put", "system",
@@ -2220,7 +2231,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     "hint": "Reduce motion cannot be toggled via simctl. "
                             "Use Accessibility settings in the Simulator UI."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             scale = "0" if mode == "on" else "1"
             _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
                       "animator_duration_scale", scale],
@@ -2238,7 +2249,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             log = ios.crash_log(sim_id, bundle_id=bundle)
         else:
-            log = android.crash_log(sim_id, package=bundle)
+            log = android.crash_log(sim_id, package=bundle, **android_kwargs)
         return {"status": "ok", "crash_log": log}
 
     elif command == "log-tail":
@@ -2247,7 +2258,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         tail_lines = int(args[2]) if len(args) > 2 else 200
         if platform in ("ios", "watchos", "tvos", "visionos"):
             raise RuntimeError("log-tail is only supported on Android right now")
-        log = android.log_tail(sim_id, tag=tag, level=level, tail_lines=tail_lines)
+        log = android.log_tail(sim_id, tag=tag, level=level, tail_lines=tail_lines, **android_kwargs)
         return {"status": "ok", "log": log}
 
     elif command == "video-start":
@@ -2264,7 +2275,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             pid = ios.record_start(sim_id, output)
         else:
-            pid = android.record_start(sim_id, output)
+            pid = android.record_start(sim_id, output, **android_kwargs)
         return {"status": "recording", "pid": pid, "path": output}
 
     elif command == "video-stop":
@@ -2284,7 +2295,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.boot(sim_id)
             return {"status": "rebooted", "platform": "ios"}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "reboot"],
                      capture_output=True, check=False)
             return {"status": "rebooted", "platform": "android"}
@@ -2312,6 +2323,12 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
     """
     import subprocess as _sp
     import time as _time
+
+    android_kwargs = (
+        {"pinned_serial": session.pinned_serial}
+        if platform == "android" and not is_real and session.pinned_serial
+        else {}
+    )
 
     # Parse flags
     output = None
@@ -2349,7 +2366,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
             pass
     else:
         try:
-            android.dismiss_system_dialogs(sim_id)
+            android.dismiss_system_dialogs(sim_id, **android_kwargs)
             steps.append("dismiss_dialogs")
         except Exception:
             pass
@@ -2360,7 +2377,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
             if platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.set_appearance(sim_id, appearance)
             else:
-                android.set_appearance(sim_id, appearance)
+                android.set_appearance(sim_id, appearance, **android_kwargs)
             steps.append(f"appearance:{appearance}")
         except Exception as e:
             errors.append(f"appearance: {e}")
@@ -2380,7 +2397,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
             expected_pkg = data["sessions"].get(session_id, {}).get("last_app")
         if expected_pkg:
             try:
-                android.stop_other_apps(sim_id, keep=expected_pkg)
+                android.stop_other_apps(sim_id, keep=expected_pkg, **android_kwargs)
                 steps.append(f"isolate:{expected_pkg}")
             except Exception:
                 pass
@@ -2401,7 +2418,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
                 expected_pkg_url = None
                 with _locked_sessions() as (data, save):
                     expected_pkg_url = data["sessions"].get(session_id, {}).get("last_app")
-                android.open_url(sim_id, url, expected_package=expected_pkg_url)
+                android.open_url(sim_id, url, expected_package=expected_pkg_url, **android_kwargs)
             steps.append(f"url:{url[:60]}")
         except Exception as e:
             errors.append(f"url: {e}")
@@ -2420,7 +2437,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
         if platform in ("ios", "watchos", "tvos", "visionos"):
             actual_fg = ios.foreground_app(sim_id)
         else:
-            actual_fg = android.foreground_app(sim_id)
+            actual_fg = android.foreground_app(sim_id, **android_kwargs)
         if actual_fg and actual_fg != expected_app:
             errors.append(f"foreground_mismatch: expected={expected_app} actual={actual_fg}")
 
@@ -2447,7 +2464,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
     elif platform in ("ios", "watchos", "tvos", "visionos"):
         ios.screenshot(sim_id, output, max_size=max_size)
     else:
-        android.screenshot(sim_id, output, max_size=max_size, settle_ms=800)
+        android.screenshot(sim_id, output, max_size=max_size, settle_ms=800, **android_kwargs)
     steps.append(f"screenshot:{output}")
 
     # ── Step 10: Store provenance ───────────────────────────────────────
@@ -2953,9 +2970,9 @@ def get_provenance(session_id: str) -> dict:
 
 # ── T-29: Safe android serial helper ─────────────────────────────────────────
 
-def _android_serial(sim_id: str) -> str:
+def _android_serial(sim_id: str, pinned_serial: str | None = None) -> str:
     """Get Android serial, raising a clear error if not available."""
-    serial = android.get_serial(sim_id)
+    serial = android._serial(sim_id, pinned=pinned_serial) if pinned_serial else android.get_serial(sim_id)
     if not serial:
         raise RuntimeError(
             f"Android emulator '{sim_id}' is not running or not adb-ready. "

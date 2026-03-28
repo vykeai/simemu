@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simemu import android
 
 
-def _mock_serial(avd_name: str) -> str:
+def _mock_serial(avd_name: str, pinned: str | None = None) -> str:
     """Stub _serial that always returns a fixed serial."""
     return "emulator-5554"
 
@@ -73,7 +73,7 @@ class TestInstall(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
         with tempfile.NamedTemporaryFile(suffix=".apk") as f:
             android.install("MyAVD", f.name)
-        mock_verify.assert_called_once_with("MyAVD", "app.fitkind.dev")
+        mock_verify.assert_called_once_with("MyAVD", "app.fitkind.dev", pinned_serial=None)
 
     @patch("simemu.android.repair_install")
     @patch("simemu.android.verify_install", side_effect=RuntimeError("broken pm"))
@@ -91,7 +91,13 @@ class TestInstall(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
         with tempfile.NamedTemporaryFile(suffix=".apk") as f:
             android.install("MyAVD", f.name)
-            mock_repair.assert_called_once_with("MyAVD", "app.fitkind.dev", f.name, timeout=120)
+            mock_repair.assert_called_once_with(
+                "MyAVD",
+                "app.fitkind.dev",
+                f.name,
+                timeout=120,
+                pinned_serial=None,
+            )
 
 
 class TestPackageVerification(unittest.TestCase):
@@ -186,8 +192,8 @@ class TestPackageVerification(unittest.TestCase):
     ) -> None:
         probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
         self.assertTrue(probe.ok)
-        mock_reboot_cycle.assert_called_once_with("MyAVD")
-        mock_cold_boot_cycle.assert_called_once_with("MyAVD")
+        mock_reboot_cycle.assert_called_once_with("MyAVD", pinned_serial=None)
+        mock_cold_boot_cycle.assert_called_once_with("MyAVD", pinned_serial=None)
         # 3 installs: step0 + reboot + cold-boot
         self.assertEqual(3, mock_install.call_count)
 
@@ -245,7 +251,7 @@ class TestForegroundVerification(unittest.TestCase):
         mock_wait_foreground: MagicMock,
     ) -> None:
         android.launch("MyAVD", "app.fitkind.dev")
-        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev")
+        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev", pinned_serial=None)
 
     @patch("simemu.android._wait_for_foreground_package")
     @patch("simemu.android._adb", return_value="Starting: Intent { act=android.intent.action.VIEW }")
@@ -259,7 +265,12 @@ class TestForegroundVerification(unittest.TestCase):
         mock_wait_foreground: MagicMock,
     ) -> None:
         android.open_url("MyAVD", "fitkind://debug/vault/template-detail-proof", expected_package="app.fitkind.dev")
-        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev", timeout=5.0)
+        mock_wait_foreground.assert_called_once_with(
+            "MyAVD",
+            "app.fitkind.dev",
+            timeout=5.0,
+            pinned_serial=None,
+        )
 
 
 class TestKey(unittest.TestCase):
@@ -268,19 +279,19 @@ class TestKey(unittest.TestCase):
     @patch("simemu.android._ensure_booted")
     def test_maps_named_keys(self, mock_boot: MagicMock, mock_adb: MagicMock) -> None:
         android.key("MyAVD", "home")
-        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "3")
+        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "3", pinned_serial=None)
 
     @patch("simemu.android._adb")
     @patch("simemu.android._ensure_booted")
     def test_maps_back_key(self, mock_boot: MagicMock, mock_adb: MagicMock) -> None:
         android.key("MyAVD", "back")
-        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "4")
+        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "4", pinned_serial=None)
 
     @patch("simemu.android._adb")
     @patch("simemu.android._ensure_booted")
     def test_accepts_raw_integer_keycodes(self, mock_boot: MagicMock, mock_adb: MagicMock) -> None:
         android.key("MyAVD", "42")
-        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "42")
+        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "42", pinned_serial=None)
 
     @patch("simemu.android._ensure_booted")
     def test_raises_for_unknown_key(self, mock_boot: MagicMock) -> None:
@@ -680,6 +691,62 @@ class TestSessionIsolation(unittest.TestCase):
         self.assertEqual(result, "emulator-5556")
         mock_validate.assert_called_once_with("emulator-5554", "MyAVD")
         mock_resolve.assert_called_once()
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    def test_adb_with_retry_preserves_pinned_serial(self, mock_serial, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="device offline")
+        android._adb_with_retry(
+            "MyAVD",
+            ["shell", "pm", "path", "android"],
+            capture=True,
+            check=False,
+            timeout=10,
+            pinned_serial="emulator-5554",
+        )
+        self.assertEqual(2, mock_serial.call_count)
+        self.assertEqual(mock_serial.call_args_list[0].kwargs["pinned"], "emulator-5554")
+        self.assertEqual(mock_serial.call_args_list[1].kwargs["pinned"], "emulator-5554")
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_launch_passes_pinned_serial_to_foreground_wait(
+        self,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.launch("MyAVD", "app.fitkind.dev", pinned_serial="emulator-5554")
+        mock_wait_foreground.assert_called_once_with(
+            "MyAVD",
+            "app.fitkind.dev",
+            pinned_serial="emulator-5554",
+        )
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb", return_value="Starting: Intent { act=android.intent.action.VIEW }")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android.time.sleep")
+    def test_open_url_passes_pinned_serial_to_foreground_wait(
+        self,
+        mock_sleep: MagicMock,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.open_url(
+            "MyAVD",
+            "fitkind://debug/vault/template-detail-proof",
+            expected_package="app.fitkind.dev",
+            pinned_serial="emulator-5554",
+        )
+        mock_wait_foreground.assert_called_once_with(
+            "MyAVD",
+            "app.fitkind.dev",
+            timeout=5.0,
+            pinned_serial="emulator-5554",
+        )
 
 
 if __name__ == "__main__":

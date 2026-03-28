@@ -5,6 +5,7 @@ Functions take an AVD name (sim_id) and resolve the adb serial as needed.
 
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -168,10 +169,15 @@ def get_serial(avd_name: str) -> str:
     return _serial(avd_name)
 
 
-def _ensure_booted(avd_name: str) -> None:
+def _ensure_booted(avd_name: str, pinned_serial: Optional[str] = None) -> None:
     """Check emulator/device is adb-reachable. Raises instead of auto-booting runaway spawns."""
     from . import state
     state.check_maintenance()
+    try:
+        _serial(avd_name, pinned=pinned_serial)
+        return
+    except RuntimeError:
+        pass
     if _resolve_serial(avd_name, retries=6, delay=0.5) is None:
         raise RuntimeError(
             f"Android device '{avd_name}' is not connected or adb-ready.\n"
@@ -179,7 +185,11 @@ def _ensure_booted(avd_name: str) -> None:
         )
 
 
-def wait_until_ready(avd_name: str, timeout: int = 180) -> str:
+def wait_until_ready(
+    avd_name: str,
+    timeout: int = 180,
+    pinned_serial: Optional[str] = None,
+) -> str:
     """
     Wait until adb is online and the package manager responds.
 
@@ -187,12 +197,12 @@ def wait_until_ready(avd_name: str, timeout: int = 180) -> str:
     offline for installs and package queries. "ready" should mean adb commands
     will actually work, not just that the VM exists.
     """
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     deadline = time.time() + timeout
     last_detail = "device did not become adb-ready"
     while time.time() < deadline:
         try:
-            serial = _serial(avd_name)
+            serial = _serial(avd_name, pinned=pinned_serial)
         except RuntimeError as exc:
             last_detail = str(exc)
             time.sleep(2)
@@ -323,7 +333,8 @@ def _adb_with_retry(avd_name: str, args: list[str], *, capture: bool, check: boo
                 if "device" in err and ("not found" in err or "offline" in err):
                     time.sleep(1)
                     return _adb_with_retry(avd_name, args, capture=capture, check=check,
-                                           timeout=timeout, _retried=True)
+                                           timeout=timeout, pinned_serial=pinned_serial,
+                                           _retried=True)
             return output
         else:
             subprocess.run(cmd, check=check, timeout=timeout)
@@ -334,14 +345,16 @@ def _adb_with_retry(avd_name: str, args: list[str], *, capture: bool, check: boo
             if "device" in err and ("not found" in err or "offline" in err):
                 time.sleep(1)
                 return _adb_with_retry(avd_name, args, capture=capture, check=check,
-                                       timeout=timeout, _retried=True)
+                                       timeout=timeout, pinned_serial=pinned_serial,
+                                       _retried=True)
         raise
     except subprocess.TimeoutExpired:
         if not _retried:
             # Serial might be stale after an activity-alias restart — retry once
             time.sleep(2)
             return _adb_with_retry(avd_name, args, capture=capture, check=check,
-                                   timeout=timeout, _retried=True)
+                                   timeout=timeout, pinned_serial=pinned_serial,
+                                   _retried=True)
         raise RuntimeError(
             f"adb command timed out after {timeout}s (retried): {' '.join(cmd[:6])}...\n"
             f"The device may be unresponsive. Try: simemu do <session> reboot"
@@ -434,12 +447,13 @@ def _wait_for_foreground_package(
     package: str,
     timeout: float = 5.0,
     delay: float = 0.25,
+    pinned_serial: Optional[str] = None,
 ) -> None:
     """Wait briefly until the expected package is resumed."""
     deadline = time.time() + timeout
     last_foreground = None
     while time.time() < deadline:
-        last_foreground = foreground_app(avd_name)
+        last_foreground = foreground_app(avd_name, pinned_serial=pinned_serial)
         if last_foreground == package:
             return
         time.sleep(delay)
@@ -500,9 +514,14 @@ class PackageVerification:
         return "\n\n".join(sections)
 
 
-def verify_install(avd_name: str, package: str, timeout: int = 30) -> PackageVerification:
+def verify_install(
+    avd_name: str,
+    package: str,
+    timeout: int = 30,
+    pinned_serial: Optional[str] = None,
+) -> PackageVerification:
     """Verify Android package-manager state is coherent after install."""
-    serial = wait_until_ready(avd_name)
+    serial = wait_until_ready(avd_name, pinned_serial=pinned_serial)
     deadline = time.time() + timeout
     last_probe: PackageVerification | None = None
 
@@ -519,7 +538,13 @@ def verify_install(avd_name: str, package: str, timeout: int = 30) -> PackageVer
     raise RuntimeError(_format_install_verification_error(last_probe))
 
 
-def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 120) -> PackageVerification:
+def repair_install(
+    avd_name: str,
+    package: str,
+    apk_path: str,
+    timeout: int = 120,
+    pinned_serial: Optional[str] = None,
+) -> PackageVerification:
     """Attempt escalating recovery for a package that installed into a bad PM state.
 
     Strategy: try the least-disruptive fix first (uninstall+reinstall), then reboot,
@@ -527,14 +552,20 @@ def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 12
     Wipe-data is removed — it's too destructive and slow for runtime recovery.
     """
     step_timeout = min(timeout, 60)  # per-step ceiling
-    serial = wait_until_ready(avd_name, timeout=step_timeout)
+    serial = wait_until_ready(avd_name, timeout=step_timeout, pinned_serial=pinned_serial)
 
     # Step 0: simple uninstall + reinstall (no reboot) — handles most alias-switch state
     try:
         subprocess.run(["adb", "-s", serial, "uninstall", package],
                        capture_output=True, text=True, check=False, timeout=15)
-        install(avd_name, apk_path, timeout=step_timeout, repair_on_failure=False)
-        probe = verify_install(avd_name, package, timeout=10)
+        install(
+            avd_name,
+            apk_path,
+            timeout=step_timeout,
+            repair_on_failure=False,
+            pinned_serial=pinned_serial,
+        )
+        probe = verify_install(avd_name, package, timeout=10, pinned_serial=pinned_serial)
         if probe.ok:
             return probe
     except RuntimeError:
@@ -550,14 +581,20 @@ def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 12
     for label, action in recovery_steps:
         step_start = time.time()
         try:
-            action(avd_name)
+            action(avd_name, pinned_serial=pinned_serial)
             # Hard per-step timeout — don't let any single step churn
             elapsed = time.time() - step_start
             if elapsed > step_timeout:
                 recovery_errors.append(f"{label}: exceeded {step_timeout}s step timeout")
                 continue
-            install(avd_name, apk_path, timeout=step_timeout, repair_on_failure=False)
-            probe = verify_install(avd_name, package, timeout=10)
+            install(
+                avd_name,
+                apk_path,
+                timeout=step_timeout,
+                repair_on_failure=False,
+                pinned_serial=pinned_serial,
+            )
+            probe = verify_install(avd_name, package, timeout=10, pinned_serial=pinned_serial)
             if probe.ok:
                 return probe
             recovery_errors.append(f"{label}: install ok but verify failed")
@@ -572,25 +609,25 @@ def repair_install(avd_name: str, package: str, apk_path: str, timeout: int = 12
     )
 
 
-def _repair_reboot_cycle(avd_name: str) -> None:
-    reboot(avd_name)
-    _verify_post_recovery_health(avd_name)
+def _repair_reboot_cycle(avd_name: str, pinned_serial: Optional[str] = None) -> None:
+    reboot(avd_name, pinned_serial=pinned_serial)
+    _verify_post_recovery_health(avd_name, pinned_serial=pinned_serial)
 
 
-def _repair_cold_boot_cycle(avd_name: str) -> None:
+def _repair_cold_boot_cycle(avd_name: str, pinned_serial: Optional[str] = None) -> None:
     shutdown(avd_name)
     time.sleep(3)
     boot(avd_name, headless=True)
-    wait_until_ready(avd_name, timeout=90)
-    _verify_post_recovery_health(avd_name)
+    wait_until_ready(avd_name, timeout=90, pinned_serial=pinned_serial)
+    _verify_post_recovery_health(avd_name, pinned_serial=pinned_serial)
 
 
-def _verify_post_recovery_health(avd_name: str) -> None:
+def _verify_post_recovery_health(avd_name: str, pinned_serial: Optional[str] = None) -> None:
     """After reboot/recovery, verify the device is actually usable before returning.
 
     Checks: adb stable, launcher ready, PM queryable, screenshot works.
     """
-    serial = _serial(avd_name)
+    serial = _serial(avd_name, pinned=pinned_serial)
 
     # 1. Launcher must be ready (not still on boot animation)
     _wait_for_launcher_ready(serial, timeout=15)
@@ -615,14 +652,10 @@ def _verify_post_recovery_health(avd_name: str) -> None:
     test_png = _tmp_f.name
     _tmp_f.close()
     try:
-        with open(test_png, "wb") as f:
-            subprocess.run(
-                ["adb", "-s", serial, "exec-out", "screencap", "-p"],
-                stdout=f, check=True, timeout=10,
-            )
+        screenshot(avd_name, test_png, pinned_serial=pinned_serial, settle_ms=0)
         if Path(test_png).stat().st_size < 100:
             raise RuntimeError("Post-recovery screenshot produced empty file")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+    except (RuntimeError, OSError) as e:
         raise RuntimeError(f"Post-recovery health check failed: screenshot not working ({e})")
     finally:
         try:
@@ -799,8 +832,14 @@ def shutdown(avd_name: str) -> None:
     _adb(avd_name, "emu", "kill", check=False)
 
 
-def install(avd_name: str, apk_path: str, timeout: int = 120, repair_on_failure: bool = True) -> None:
-    serial = wait_until_ready(avd_name, timeout=max(timeout, 180))
+def install(
+    avd_name: str,
+    apk_path: str,
+    timeout: int = 120,
+    repair_on_failure: bool = True,
+    pinned_serial: Optional[str] = None,
+) -> None:
+    serial = wait_until_ready(avd_name, timeout=max(timeout, 180), pinned_serial=pinned_serial)
     path = Path(apk_path)
     if not path.exists():
         raise RuntimeError(f"APK not found: {apk_path}")
@@ -837,12 +876,12 @@ def install(avd_name: str, apk_path: str, timeout: int = 120, repair_on_failure:
         return
 
     try:
-        verify_install(avd_name, package_name)
+        verify_install(avd_name, package_name, pinned_serial=pinned_serial)
         return
     except RuntimeError:
         if not repair_on_failure:
             raise
-        repair_install(avd_name, package_name, str(path), timeout=timeout)
+        repair_install(avd_name, package_name, str(path), timeout=timeout, pinned_serial=pinned_serial)
 
 
 def list_apps(avd_name: str) -> list[dict]:
@@ -860,14 +899,18 @@ def list_apps(avd_name: str) -> list[dict]:
     return sorted(apps, key=lambda x: x["package"])
 
 
-def stop_other_apps(avd_name: str, keep: str | list[str] | None = None) -> list[str]:
+def stop_other_apps(
+    avd_name: str,
+    keep: str | list[str] | None = None,
+    pinned_serial: Optional[str] = None,
+) -> list[str]:
     """Force-stop all third-party packages except those in keep.
 
     Used to isolate the device for proof capture — prevents other agents'
     apps from intercepting deep links or appearing in foreground.
     Returns the list of packages that were stopped.
     """
-    serial = wait_until_ready(avd_name)
+    serial = wait_until_ready(avd_name, pinned_serial=pinned_serial)
     keep_set = set()
     if isinstance(keep, str):
         keep_set.add(keep)
@@ -892,8 +935,13 @@ def stop_other_apps(avd_name: str, keep: str | list[str] | None = None) -> list[
     return stopped
 
 
-def launch(avd_name: str, package_activity: str, args: list[str] | None = None) -> None:
-    wait_until_ready(avd_name)
+def launch(
+    avd_name: str,
+    package_activity: str,
+    args: list[str] | None = None,
+    pinned_serial: Optional[str] = None,
+) -> None:
+    wait_until_ready(avd_name, pinned_serial=pinned_serial)
     """
     Launch an app. package_activity can be:
       - "com.example.app"           → resolves main launcher activity
@@ -902,14 +950,14 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
     expected_package = package_activity.split("/", 1)[0]
     if "/" not in package_activity:
         try:
-            verify_install(avd_name, expected_package, timeout=15)
+            verify_install(avd_name, expected_package, timeout=15, pinned_serial=pinned_serial)
         except RuntimeError:
             pass
 
         # Strategy 1: resolve the real launcher component via package manager.
         # This is the most reliable approach — uses the actual registered launcher
         # activity (e.g. MainActivityPepperAlias) instead of guessing .MainActivity.
-        serial = wait_until_ready(avd_name)
+        serial = wait_until_ready(avd_name, pinned_serial=pinned_serial)
         probe = _probe_package_state(serial, expected_package)
         resolved_lines = [line.strip() for line in probe.resolve_activity.splitlines() if line.strip()]
         for component in resolved_lines:
@@ -919,8 +967,8 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
             if not component.startswith(expected_package):
                 continue
             try:
-                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []))
-                _wait_for_foreground_package(avd_name, expected_package)
+                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []), pinned_serial=pinned_serial)
+                _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
                 return
             except (subprocess.CalledProcessError, RuntimeError):
                 pass
@@ -934,8 +982,9 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
                 "-p", expected_package,
                 "-c", "android.intent.category.LAUNCHER",
                 "1",
+                pinned_serial=pinned_serial,
             )
-            _wait_for_foreground_package(avd_name, expected_package)
+            _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
             return
         except (subprocess.CalledProcessError, RuntimeError):
             pass
@@ -948,8 +997,9 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
                 "-c", "android.intent.category.LAUNCHER",
                 "-n", f"{expected_package}/.MainActivity",
                 *(args or []),
+                pinned_serial=pinned_serial,
             )
-            _wait_for_foreground_package(avd_name, expected_package)
+            _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
             return
         except (subprocess.CalledProcessError, RuntimeError):
             pass
@@ -968,8 +1018,8 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
         last_error: subprocess.CalledProcessError | None = None
         for component in candidates:
             try:
-                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []))
-                _wait_for_foreground_package(avd_name, expected_package)
+                _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []), pinned_serial=pinned_serial)
+                _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
                 return
             except subprocess.CalledProcessError as exc:
                 last_error = exc
@@ -977,26 +1027,26 @@ def launch(avd_name: str, package_activity: str, args: list[str] | None = None) 
             raise last_error
     else:
         cmd = ["shell", "am", "start", "-n", package_activity] + (args or [])
-        _adb(avd_name, *cmd)
-        _wait_for_foreground_package(avd_name, expected_package)
+        _adb(avd_name, *cmd, pinned_serial=pinned_serial)
+        _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
 
 
-def terminate(avd_name: str, package: str) -> None:
-    wait_until_ready(avd_name)
-    _adb(avd_name, "shell", "am", "force-stop", package)
+def terminate(avd_name: str, package: str, pinned_serial: Optional[str] = None) -> None:
+    wait_until_ready(avd_name, pinned_serial=pinned_serial)
+    _adb(avd_name, "shell", "am", "force-stop", package, pinned_serial=pinned_serial)
 
 
-def uninstall(avd_name: str, package: str) -> None:
-    wait_until_ready(avd_name)
-    _adb(avd_name, "uninstall", package)
+def uninstall(avd_name: str, package: str, pinned_serial: Optional[str] = None) -> None:
+    wait_until_ready(avd_name, pinned_serial=pinned_serial)
+    _adb(avd_name, "uninstall", package, pinned_serial=pinned_serial)
 
 
-def dismiss_system_dialogs(avd_name: str) -> bool:
+def dismiss_system_dialogs(avd_name: str, pinned_serial: Optional[str] = None) -> bool:
     """Dismiss any Android system dialog (ANR, crash, app not responding).
 
     Returns True if a dialog was detected and dismissed.
     """
-    serial = wait_until_ready(avd_name)
+    serial = wait_until_ready(avd_name, pinned_serial=pinned_serial)
     # Check for system dialog via dumpsys window
     result = subprocess.run(
         ["adb", "-s", serial, "shell", "dumpsys", "window", "windows"],
@@ -1087,6 +1137,121 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                 except OSError:
                     pass
 
+        if not captured:
+            # Fallback for devices where adb exec-out stalls or returns an empty
+            # stream under GPU load: write the screenshot on-device, then pull it.
+            remote_tmp = f"/sdcard/Pictures/simemu_capture_{os.getpid()}.png"
+            pulled_tmp = output_path + ".pulltmp"
+            try:
+                _adb(
+                    avd_name,
+                    "shell",
+                    "rm",
+                    "-f",
+                    remote_tmp,
+                    check=False,
+                    timeout=10,
+                    pinned_serial=serial,
+                )
+                _adb(
+                    avd_name,
+                    "shell",
+                    "screencap",
+                    "-p",
+                    remote_tmp,
+                    timeout=15,
+                    pinned_serial=serial,
+                )
+                _adb(
+                    avd_name,
+                    "pull",
+                    remote_tmp,
+                    pulled_tmp,
+                    timeout=20,
+                    pinned_serial=serial,
+                )
+                size = Path(pulled_tmp).stat().st_size
+                if size > 100:
+                    Path(pulled_tmp).replace(output_path)
+                    captured = True
+            except (OSError, RuntimeError, subprocess.CalledProcessError):
+                pass
+            finally:
+                if not captured:
+                    try:
+                        Path(pulled_tmp).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                try:
+                    _adb(
+                        avd_name,
+                        "shell",
+                        "rm",
+                        "-f",
+                        remote_tmp,
+                        check=False,
+                        timeout=10,
+                        pinned_serial=serial,
+                    )
+                except RuntimeError:
+                    pass
+
+        if not captured:
+            # Final fallback: some Android emulator builds return empty PNGs for
+            # both exec-out screencap and on-device screencap. Screenrecord still
+            # works there, so capture a 1-second MP4 and extract the first frame.
+            ffmpeg = shutil.which("ffmpeg")
+            remote_video = f"/sdcard/Movies/simemu_capture_{os.getpid()}.mp4"
+            local_video = output_path + ".recordtmp.mp4"
+            local_frame = output_path + ".recordtmp.png"
+            try:
+                if ffmpeg:
+                    subprocess.run(
+                        ["adb", "-s", serial, "shell", "rm", "-f", remote_video],
+                        capture_output=True,
+                        check=False,
+                        timeout=10,
+                    )
+                    subprocess.run(
+                        ["adb", "-s", serial, "shell", "screenrecord", "--time-limit=1", remote_video],
+                        capture_output=True,
+                        check=False,
+                        timeout=12,
+                    )
+                    subprocess.run(
+                        ["adb", "-s", serial, "pull", remote_video, local_video],
+                        capture_output=True,
+                        check=False,
+                        timeout=20,
+                    )
+                    if Path(local_video).exists() and Path(local_video).stat().st_size > 1000:
+                        subprocess.run(
+                            [ffmpeg, "-y", "-i", local_video, "-frames:v", "1", local_frame],
+                            capture_output=True,
+                            check=False,
+                            timeout=20,
+                        )
+                        if Path(local_frame).exists() and Path(local_frame).stat().st_size > 100:
+                            Path(local_frame).replace(output_path)
+                            captured = True
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+            finally:
+                try:
+                    subprocess.run(
+                        ["adb", "-s", serial, "shell", "rm", "-f", remote_video],
+                        capture_output=True,
+                        check=False,
+                        timeout=10,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                for path in (local_video, local_frame):
+                    try:
+                        Path(path).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
         if captured:
             break
 
@@ -1104,12 +1269,16 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                        capture_output=True, check=False)
 
 
-def record_start(avd_name: str, output_path: str) -> int:
+def record_start(
+    avd_name: str,
+    output_path: str,
+    pinned_serial: Optional[str] = None,
+) -> int:
     """Start screenrecord in background. Returns PID.
 
     Note: Android screenrecord has a hard 3-minute limit.
     """
-    serial = wait_until_ready(avd_name)
+    serial = wait_until_ready(avd_name, pinned_serial=pinned_serial)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     remote = "/sdcard/simemu_record.mp4"
     proc = subprocess.Popen(
@@ -1144,10 +1313,15 @@ def record_stop(pid: int) -> Optional[str]:
     return None
 
 
-def log_stream(avd_name: str, tag: Optional[str] = None, level: Optional[str] = None) -> None:
-    _ensure_booted(avd_name)
+def log_stream(
+    avd_name: str,
+    tag: Optional[str] = None,
+    level: Optional[str] = None,
+    pinned_serial: Optional[str] = None,
+) -> None:
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     """Stream logcat (blocking, Ctrl-C to stop). level: V, D, I, W, E, F, S"""
-    serial = _serial(avd_name)
+    serial = _serial(avd_name, pinned=pinned_serial)
     cmd = ["adb", "-s", serial, "logcat"]
     if level:
         cmd += [f"*:{level}"]
@@ -1167,10 +1341,11 @@ def log_tail(
     tag: Optional[str] = None,
     level: Optional[str] = None,
     tail_lines: int = 200,
+    pinned_serial: Optional[str] = None,
 ) -> str:
     """Return recent logcat lines as text."""
-    _ensure_booted(avd_name)
-    serial = _serial(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    serial = _serial(avd_name, pinned=pinned_serial)
     cmd = ["adb", "-s", serial, "logcat", "-d"]
     if tag:
         tag_level = level or "V"
@@ -1184,14 +1359,19 @@ def log_tail(
     return "\n".join(lines)
 
 
-def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) -> None:
+def open_url(
+    avd_name: str,
+    url: str,
+    expected_package: Optional[str] = None,
+    pinned_serial: Optional[str] = None,
+) -> None:
     """Open a URL/deep-link on the device.
 
     Tries multiple intent strategies to handle apps that register deep links
     with different category combinations (DEFAULT, BROWSABLE, or none).
     Retries on transient adb offline errors.
     """
-    wait_until_ready(avd_name)
+    wait_until_ready(avd_name, pinned_serial=pinned_serial)
 
     # Brief settle after any prior command — prevents racing with app process restart
     time.sleep(0.3)
@@ -1211,7 +1391,14 @@ def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) ->
     for strategy in strategies:
         for attempt in range(2):
             try:
-                result = _adb(avd_name, *strategy, capture=True, check=False, timeout=15)
+                result = _adb(
+                    avd_name,
+                    *strategy,
+                    capture=True,
+                    check=False,
+                    timeout=15,
+                    pinned_serial=pinned_serial,
+                )
                 # Check if am start reported an error
                 if result and "unable to resolve" in result.lower():
                     last_error = RuntimeError(f"Intent not resolved: {result.strip()}")
@@ -1223,10 +1410,15 @@ def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) ->
                 time.sleep(0.5)
                 if expected_package:
                     try:
-                        _wait_for_foreground_package(avd_name, expected_package, timeout=5.0)
+                        _wait_for_foreground_package(
+                            avd_name,
+                            expected_package,
+                            timeout=5.0,
+                            pinned_serial=pinned_serial,
+                        )
                     except RuntimeError:
                         # Wrong app foregrounded — this strategy didn't work
-                        actual = foreground_app(avd_name, retries=1)
+                        actual = foreground_app(avd_name, retries=1, pinned_serial=pinned_serial)
                         last_error = RuntimeError(
                             f"URL dispatched but wrong app is foreground: "
                             f"expected={expected_package}, actual={actual}"
@@ -1252,15 +1444,25 @@ def open_url(avd_name: str, url: str, expected_package: Optional[str] = None) ->
     raise RuntimeError(f"Failed to open URL '{url[:80]}' — all intent strategies exhausted.")
 
 
-def push(avd_name: str, local_path: str, remote_path: str) -> None:
+def push(
+    avd_name: str,
+    local_path: str,
+    remote_path: str,
+    pinned_serial: Optional[str] = None,
+) -> None:
     if not Path(local_path).exists():
         raise RuntimeError(f"Local file not found: {local_path}")
-    _adb(avd_name, "push", local_path, remote_path)
+    _adb(avd_name, "push", local_path, remote_path, pinned_serial=pinned_serial)
 
 
-def pull(avd_name: str, remote_path: str, local_path: str) -> None:
+def pull(
+    avd_name: str,
+    remote_path: str,
+    local_path: str,
+    pinned_serial: Optional[str] = None,
+) -> None:
     Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-    _adb(avd_name, "pull", remote_path, local_path)
+    _adb(avd_name, "pull", remote_path, local_path, pinned_serial=pinned_serial)
 
 
 def erase(avd_name: str) -> None:
@@ -1396,15 +1598,15 @@ def get_env(avd_name: str) -> dict:
     }
 
 
-def set_appearance(avd_name: str, mode: str) -> None:
+def set_appearance(avd_name: str, mode: str, pinned_serial: Optional[str] = None) -> None:
     """Set light or dark mode. mode must be 'light' or 'dark'."""
     value = "yes" if mode == "dark" else "no"
-    _adb(avd_name, "shell", "cmd", "uimode", "night", value)
+    _adb(avd_name, "shell", "cmd", "uimode", "night", value, pinned_serial=pinned_serial)
 
 
-def get_screen_size(avd_name: str) -> tuple[int, int]:
+def get_screen_size(avd_name: str, pinned_serial: Optional[str] = None) -> tuple[int, int]:
     """Return physical screen dimensions (width, height) in pixels."""
-    serial = _serial(avd_name)
+    serial = _serial(avd_name, pinned=pinned_serial)
     result = subprocess.run(
         ["adb", "-s", serial, "shell", "wm", "size"],
         capture_output=True, text=True, timeout=10,
@@ -1417,32 +1619,40 @@ def get_screen_size(avd_name: str) -> tuple[int, int]:
     raise RuntimeError(f"Could not determine screen size for '{avd_name}'")
 
 
-def tap(avd_name: str, x: int, y: int) -> None:
+def tap(avd_name: str, x: int, y: int, pinned_serial: Optional[str] = None) -> None:
     """Tap a coordinate on the emulator screen."""
-    _ensure_booted(avd_name)
-    _adb(avd_name, "shell", "input", "tap", str(x), str(y))
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    _adb(avd_name, "shell", "input", "tap", str(x), str(y), pinned_serial=pinned_serial)
 
 
-def swipe(avd_name: str, x1: int, y1: int, x2: int, y2: int, duration: int = 300) -> None:
+def swipe(
+    avd_name: str,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    duration: int = 300,
+    pinned_serial: Optional[str] = None,
+) -> None:
     """Swipe from (x1,y1) to (x2,y2). duration in milliseconds (default 300)."""
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     _adb(avd_name, "shell", "input", "swipe",
-         str(x1), str(y1), str(x2), str(y2), str(duration))
+         str(x1), str(y1), str(x2), str(y2), str(duration), pinned_serial=pinned_serial)
 
 
-def shake(avd_name: str) -> None:
-    _ensure_booted(avd_name)
+def shake(avd_name: str, pinned_serial: Optional[str] = None) -> None:
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     """Send Menu key (triggers React Native dev menu)."""
-    _adb(avd_name, "shell", "input", "keyevent", "82")
+    _adb(avd_name, "shell", "input", "keyevent", "82", pinned_serial=pinned_serial)
 
 
-def input_text(avd_name: str, text: str) -> None:
-    _ensure_booted(avd_name)
+def input_text(avd_name: str, text: str, pinned_serial: Optional[str] = None) -> None:
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     """Type text into the currently focused field.
     Note: spaces must be escaped as %s; use clipboard for complex strings."""
     # adb input text handles most printable chars; spaces become %s automatically
     safe = text.replace(" ", "%s").replace("'", "")
-    _adb(avd_name, "shell", "input", "text", safe)
+    _adb(avd_name, "shell", "input", "text", safe, pinned_serial=pinned_serial)
 
 
 def privacy(avd_name: str, package: str, action: str, permission: str) -> None:
@@ -1458,7 +1668,12 @@ def privacy(avd_name: str, package: str, action: str, permission: str) -> None:
     _adb(avd_name, "shell", "pm", action, package, permission)
 
 
-def location(avd_name: str, lat: float, lng: float) -> None:
+def location(
+    avd_name: str,
+    lat: float,
+    lng: float,
+    pinned_serial: Optional[str] = None,
+) -> None:
     """Set a mock GPS location via adb shell geo fix."""
     from . import genymotion
     if genymotion.is_genymotion_id(avd_name):
@@ -1467,7 +1682,7 @@ def location(avd_name: str, lat: float, lng: float) -> None:
             "Use the Genymotion UI (GPS widget) to set location."
         )
     # adb emu geo fix <longitude> <latitude> (note: lng comes first)
-    _adb(avd_name, "emu", "geo", "fix", str(lng), str(lat))
+    _adb(avd_name, "emu", "geo", "fix", str(lng), str(lat), pinned_serial=pinned_serial)
 
 
 _ANDROID_KEYCODES: dict[str, int] = {
@@ -1489,14 +1704,14 @@ _ANDROID_KEYCODES: dict[str, int] = {
 }
 
 
-def key(avd_name: str, key_name: str) -> None:
+def key(avd_name: str, key_name: str, pinned_serial: Optional[str] = None) -> None:
     """Press a hardware key on the emulator.
 
     Accepts named keys (home, back, menu, power/lock, volume_up, volume_down,
     mute, enter, delete/backspace, search, app_switch, camera, screenshot)
     or a raw integer keycode.
     """
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     k = key_name.lower()
     if k in _ANDROID_KEYCODES:
         code = str(_ANDROID_KEYCODES[k])
@@ -1507,86 +1722,92 @@ def key(avd_name: str, key_name: str) -> None:
             f"Unknown Android key '{key_name}'. "
             f"Use a named key ({', '.join(_ANDROID_KEYCODES)}) or a numeric keycode."
         )
-    _adb(avd_name, "shell", "input", "keyevent", code)
+    _adb(avd_name, "shell", "input", "keyevent", code, pinned_serial=pinned_serial)
 
 
-def long_press(avd_name: str, x: int, y: int, duration: int = 1000) -> None:
+def long_press(
+    avd_name: str,
+    x: int,
+    y: int,
+    duration: int = 1000,
+    pinned_serial: Optional[str] = None,
+) -> None:
     """Long-press at a coordinate. duration in milliseconds (default 1000)."""
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     # adb input swipe at the same start/end coords with a long duration = long press
     _adb(avd_name, "shell", "input", "swipe",
-         str(x), str(y), str(x), str(y), str(duration))
+         str(x), str(y), str(x), str(y), str(duration), pinned_serial=pinned_serial)
 
 
-def rotate(avd_name: str, orientation: str) -> None:
+def rotate(avd_name: str, orientation: str, pinned_serial: Optional[str] = None) -> None:
     """Set device orientation: 'portrait' or 'landscape'."""
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     o = orientation.lower()
     if o not in ("portrait", "landscape"):
         raise RuntimeError(f"orientation must be 'portrait' or 'landscape' — got '{o}'")
     rotation = "0" if o == "portrait" else "1"
     # Disable auto-rotate then set fixed rotation
-    _adb(avd_name, "shell", "settings", "put", "system", "accelerometer_rotation", "0")
-    _adb(avd_name, "shell", "settings", "put", "system", "user_rotation", rotation)
+    _adb(avd_name, "shell", "settings", "put", "system", "accelerometer_rotation", "0", pinned_serial=pinned_serial)
+    _adb(avd_name, "shell", "settings", "put", "system", "user_rotation", rotation, pinned_serial=pinned_serial)
 
 
-def clear_data(avd_name: str, package: str) -> None:
+def clear_data(avd_name: str, package: str, pinned_serial: Optional[str] = None) -> None:
     """Clear all app data (equivalent to uninstall + reinstall). Android only."""
-    _ensure_booted(avd_name)
-    _adb(avd_name, "shell", "pm", "clear", package)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    _adb(avd_name, "shell", "pm", "clear", package, pinned_serial=pinned_serial)
 
 
 def status_bar(avd_name: str, time_str: Optional[str] = None, battery: Optional[int] = None,
-               wifi: Optional[int] = None) -> None:
+               wifi: Optional[int] = None, pinned_serial: Optional[str] = None) -> None:
     """Override the Android status bar via demo mode for clean screenshots.
 
     time_str: clock in HH:MM format, e.g. "9:41"
     battery:  0-100
     wifi:     0-4 bars
     """
-    _ensure_booted(avd_name)
-    _adb(avd_name, "shell", "settings", "put", "global", "sysui_demo_allowed", "1")
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    _adb(avd_name, "shell", "settings", "put", "global", "sysui_demo_allowed", "1", pinned_serial=pinned_serial)
     _adb(avd_name, "shell", "am", "broadcast",
-         "-a", "com.android.systemui.demo", "-e", "command", "enter", check=False)
+         "-a", "com.android.systemui.demo", "-e", "command", "enter", check=False, pinned_serial=pinned_serial)
     if time_str:
         hhmm = time_str.replace(":", "").zfill(4)
         _adb(avd_name, "shell", "am", "broadcast",
              "-a", "com.android.systemui.demo",
-             "-e", "command", "clock", "-e", "hhmm", hhmm, check=False)
+             "-e", "command", "clock", "-e", "hhmm", hhmm, check=False, pinned_serial=pinned_serial)
     if battery is not None:
         _adb(avd_name, "shell", "am", "broadcast",
              "-a", "com.android.systemui.demo",
              "-e", "command", "battery",
-             "-e", "level", str(battery), "-e", "plugged", "false", check=False)
+             "-e", "level", str(battery), "-e", "plugged", "false", check=False, pinned_serial=pinned_serial)
     if wifi is not None:
         bars = str(min(4, max(0, wifi)))
         _adb(avd_name, "shell", "am", "broadcast",
              "-a", "com.android.systemui.demo",
              "-e", "command", "network",
-             "-e", "wifi", "show", "-e", "level", bars, check=False)
+             "-e", "wifi", "show", "-e", "level", bars, check=False, pinned_serial=pinned_serial)
 
 
-def status_bar_clear(avd_name: str) -> None:
+def status_bar_clear(avd_name: str, pinned_serial: Optional[str] = None) -> None:
     """Exit demo mode and restore the real status bar."""
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     _adb(avd_name, "shell", "am", "broadcast",
-         "-a", "com.android.systemui.demo", "-e", "command", "exit", check=False)
+         "-a", "com.android.systemui.demo", "-e", "command", "exit", check=False, pinned_serial=pinned_serial)
 
 
-def reboot(avd_name: str) -> None:
+def reboot(avd_name: str, pinned_serial: Optional[str] = None) -> None:
     """Reboot the emulator and wait until it's fully back up.
 
     Re-resolves the adb serial after reboot since the emulator may come
     back on a different port.
     """
-    _ensure_booted(avd_name)
-    serial = _serial(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    serial = _serial(avd_name, pinned=pinned_serial)
     subprocess.run(["adb", "-s", serial, "reboot"], check=False, timeout=30)
     print("Rebooting...", flush=True)
     time.sleep(5)  # allow device to go offline before polling
     # Use wait_until_ready which re-resolves the serial and verifies PM
     try:
-        wait_until_ready(avd_name, timeout=120)
+        wait_until_ready(avd_name, timeout=120, pinned_serial=pinned_serial)
     except RuntimeError:
         raise RuntimeError(f"Emulator '{avd_name}' did not complete reboot within 120s")
 
@@ -1655,38 +1876,48 @@ def set_animations(avd_name: str, enabled: bool) -> None:
     _adb(avd_name, "shell", "settings", "put", "global", "animator_duration_scale", scale)
 
 
-def add_media(avd_name: str, file_path: str) -> None:
+def add_media(avd_name: str, file_path: str, pinned_serial: Optional[str] = None) -> None:
     """Add a photo or video file to the emulator's media library (Photos/Gallery).
 
     Pushes the file to /sdcard/DCIM/Camera/ and triggers the media scanner so it
     appears in the Photos app immediately — equivalent to iOS simctl addmedia.
     """
-    _ensure_booted(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     path = Path(file_path)
     if not path.exists():
         raise RuntimeError(f"File not found: {file_path}")
     remote = f"/sdcard/DCIM/Camera/{path.name}"
-    _adb(avd_name, "push", str(path), remote)
+    _adb(avd_name, "push", str(path), remote, pinned_serial=pinned_serial)
     _adb(avd_name, "shell", "am", "broadcast",
          "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-         "-d", f"file://{remote}", check=False)
+         "-d", f"file://{remote}", check=False, pinned_serial=pinned_serial)
 
 
-def reset_app(avd_name: str, package: str, launch: bool = True) -> None:
+def reset_app(
+    avd_name: str,
+    package: str,
+    launch: bool = True,
+    pinned_serial: Optional[str] = None,
+) -> None:
     """Force-stop, clear all app data, then relaunch.
 
     Equivalent to uninstall+reinstall for data purposes, without removing the APK.
     """
-    _ensure_booted(avd_name)
-    _adb(avd_name, "shell", "am", "force-stop", package)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    _adb(avd_name, "shell", "am", "force-stop", package, pinned_serial=pinned_serial)
     time.sleep(0.3)
-    _adb(avd_name, "shell", "pm", "clear", package)
+    _adb(avd_name, "shell", "pm", "clear", package, pinned_serial=pinned_serial)
     if launch:
         _adb(avd_name, "shell", "monkey", "-p", package,
-             "-c", "android.intent.category.LAUNCHER", "1")
+             "-c", "android.intent.category.LAUNCHER", "1", pinned_serial=pinned_serial)
 
 
-def crash_log(avd_name: str, package: Optional[str] = None, since_minutes: int = 60) -> Optional[str]:
+def crash_log(
+    avd_name: str,
+    package: Optional[str] = None,
+    since_minutes: int = 60,
+    pinned_serial: Optional[str] = None,
+) -> Optional[str]:
     """Return recent Android crash or launch-failure lines from logcat.
 
     Prefer the dedicated crash buffer, then fall back to recent package-related
@@ -1696,8 +1927,8 @@ def crash_log(avd_name: str, package: Optional[str] = None, since_minutes: int =
     - startup failures where the process dies before AndroidRuntime emits a
       conventional Java stack trace
     """
-    _ensure_booted(avd_name)
-    serial = _serial(avd_name)
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
+    serial = _serial(avd_name, pinned=pinned_serial)
     seconds = since_minutes * 60
 
     def _run(cmd: list[str]) -> list[str]:
