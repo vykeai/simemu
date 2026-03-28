@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-023",
+  "title": "[BUG] Fix iOS boot tolerance test (test_boot_tolerates_already_booted_error) — mock IndexError",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-5",
+  "space": null,
+  "status": "todo",
+  "priority": "critical",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-28T19:05:46.659Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-28T19:05:46.658Z",
+  "updatedAt": "2026-03-28T19:05:46.658Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
