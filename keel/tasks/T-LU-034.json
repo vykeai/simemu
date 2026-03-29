@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-29T09:48:47.823Z",
+      "by": "human",
+      "text": "Started from live FitKind proof session. Root causes already reproed: devicectl --json-output /dev/stdout fails on this macOS/Xcode combination, devicectl platform strings are human-readable (iOS/watchOS) rather than only com.apple.* identifiers, real-device screenshot path in simemu still points at removed devicectl screenshot command, and real iPhone identifier must align with xcdevice/libimobiledevice UDID for build+screenshot parity."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
@@ -33,7 +39,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-29T09:48:37.681Z",
-  "updatedAt": "2026-03-29T09:48:47.618Z",
+  "updatedAt": "2026-03-29T09:48:47.823Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
