@@ -31,6 +31,38 @@ def _read_log_excerpt(log_path: Path, max_chars: int = 4000) -> str:
     return content[-max_chars:]
 
 
+def _capture_is_black(path: str, threshold: int = 98) -> bool:
+    ffmpeg = shutil.which("ffmpeg")
+    candidate = Path(path)
+    if not ffmpeg or not candidate.exists():
+        return False
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-v", "info", "-i", str(candidate), "-vf", f"blackframe={threshold}:32", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = f"{proc.stdout}\n{proc.stderr}"
+    scores = [int(match.group(1)) for match in re.finditer(r"pblack:(\d+)", output)]
+    return bool(scores) and max(scores) >= threshold
+
+
+def _finalize_capture(candidate_path: str, output_path: str) -> bool:
+    candidate = Path(candidate_path)
+    try:
+        size = candidate.stat().st_size
+    except OSError:
+        return False
+    if size <= 100 or _capture_is_black(str(candidate)):
+        return False
+    candidate.replace(output_path)
+    return True
+
+
 def _window_info(avd_name: str) -> Optional[dict]:
     try:
         import importlib as _il
@@ -61,6 +93,7 @@ def _window_info(avd_name: str) -> Optional[dict]:
             {
                 "owner": owner,
                 "name": name,
+                "window_id": int(window.get("kCGWindowNumber", 0) or 0),
                 "bounds": {
                     "x": float(bounds.get("X", 0)),
                     "y": float(bounds.get("Y", 0)),
@@ -104,6 +137,82 @@ def set_window_frame(avd_name: str, x: float, y: float, width: float, height: fl
 end tell'''
     subprocess.run(["osascript", "-e", script], capture_output=True, check=False)
     return True
+
+
+def _capture_window_fallback(avd_name: str, output_path: str) -> bool:
+    info = _window_info(avd_name)
+    if not info or not info.get("onscreen"):
+        return False
+
+    tmp_path = output_path + ".windowtmp.png"
+    try:
+        window_id = int(info.get("window_id") or 0)
+        if window_id > 0:
+            proc = subprocess.run(
+                ["screencapture", "-x", "-l", str(window_id), tmp_path],
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        else:
+            bounds = info["bounds"]
+            rect = ",".join(
+                str(int(bounds[key]))
+                for key in ("x", "y", "width", "height")
+            )
+            proc = subprocess.run(
+                ["screencapture", "-x", "-R", rect, tmp_path],
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        if proc.returncode != 0:
+            return False
+        return _finalize_capture(tmp_path, output_path)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _capture_console_screenshot(serial: str, output_path: str) -> bool:
+    """Use the emulator console screenshot path when adb screencap is broken.
+
+    Android Emulator supports `adb emu screenrecord screenshot <dir>` and writes
+    a PNG directly on the host. This works on headless emulator sessions where
+    both exec-out screencap and on-device screencap can return empty files.
+    """
+    if not serial.startswith("emulator-"):
+        return False
+
+    with tempfile.TemporaryDirectory(prefix="simemu-console-screenshot-") as td:
+        output_dir = Path(td)
+        before = {p.name for p in output_dir.glob("*.png")}
+        try:
+            proc = subprocess.run(
+                ["adb", "-s", serial, "emu", "screenrecord", "screenshot", str(output_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+        if proc.returncode != 0:
+            return False
+
+        candidates = [p for p in output_dir.glob("*.png") if p.name not in before]
+        if not candidates:
+            candidates = list(output_dir.glob("*.png"))
+        candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            if _finalize_capture(str(candidate), output_path):
+                return True
+        return False
 
 
 def _sidecar_dir() -> Path:
@@ -1086,7 +1195,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
     triggers an activity-alias switch or app restart).
     Uses a temp file + rename to avoid leaving zero-byte files on timeout.
     """
-    dismiss_system_dialogs(avd_name)
+    dismiss_system_dialogs(avd_name, pinned_serial=pinned_serial)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     # Let the UI settle after route-open / activity transitions before capturing
@@ -1106,11 +1215,14 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                 f"Re-claim or reboot: simemu do <session> reboot"
             )
 
+        captured = False
+        if _capture_window_fallback(avd_name, output_path):
+            break
+
         # Write to temp file, then rename — prevents leaving zero-byte files on timeout.
         # Use Popen for explicit process control — subprocess.run can leave adb
         # exec-out hanging when screencap stalls on a GPU buffer lock.
         tmp_path = output_path + ".tmp"
-        captured = False
         try:
             with open(tmp_path, "wb") as f:
                 proc = subprocess.Popen(
@@ -1124,9 +1236,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                     proc.wait(timeout=3)
 
             if proc.returncode == 0:
-                size = Path(tmp_path).stat().st_size
-                if size > 100:
-                    Path(tmp_path).replace(output_path)
+                if _finalize_capture(tmp_path, output_path):
                     captured = True
         except OSError:
             pass
@@ -1170,9 +1280,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                     timeout=20,
                     pinned_serial=serial,
                 )
-                size = Path(pulled_tmp).stat().st_size
-                if size > 100:
-                    Path(pulled_tmp).replace(output_path)
+                if _finalize_capture(pulled_tmp, output_path):
                     captured = True
             except (OSError, RuntimeError, subprocess.CalledProcessError):
                 pass
@@ -1195,6 +1303,11 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                     )
                 except RuntimeError:
                     pass
+
+        if not captured:
+            # Emulator console screenshots are host-side PNGs that still work on
+            # some headless API 34/35 builds where screencap returns zero bytes.
+            captured = _capture_console_screenshot(serial, output_path)
 
         if not captured:
             # Final fallback: some Android emulator builds return empty PNGs for
@@ -1231,8 +1344,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                             check=False,
                             timeout=20,
                         )
-                        if Path(local_frame).exists() and Path(local_frame).stat().st_size > 100:
-                            Path(local_frame).replace(output_path)
+                        if _finalize_capture(local_frame, output_path):
                             captured = True
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 pass
@@ -1251,6 +1363,9 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                         Path(path).unlink(missing_ok=True)
                     except OSError:
                         pass
+
+        if not captured:
+            captured = _capture_window_fallback(avd_name, output_path)
 
         if captured:
             break
