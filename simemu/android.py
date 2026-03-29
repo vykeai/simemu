@@ -8,6 +8,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -809,8 +810,8 @@ def _dumpsys_has_real_package(text: str, package: str) -> bool:
         return False
     return (
         f"Package [{package}]" in text
-        or (f"pkg=Package{{" in text and package in text)
-        or (f"PackageSetting{{" in text and package in text)
+        or ("pkg=Package{" in text and package in text)
+        or ("PackageSetting{" in text and package in text)
     )
 
 
@@ -856,7 +857,7 @@ def boot(avd_name: str, headless: bool = False) -> None:
         proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
         log_handle.close()
 
-        print(f"Waiting for '{avd_name}' to boot...", flush=True)
+        print(f"Waiting for '{avd_name}' to boot...", file=sys.stderr, flush=True)
         deadline = time.time() + 300
         serial = None
         while time.time() < deadline:
@@ -1918,7 +1919,7 @@ def reboot(avd_name: str, pinned_serial: Optional[str] = None) -> None:
     _ensure_booted(avd_name, pinned_serial=pinned_serial)
     serial = _serial(avd_name, pinned=pinned_serial)
     subprocess.run(["adb", "-s", serial, "reboot"], check=False, timeout=30)
-    print("Rebooting...", flush=True)
+    print("Rebooting...", file=sys.stderr, flush=True)
     time.sleep(5)  # allow device to go offline before polling
     # Use wait_until_ready which re-resolves the serial and verifies PM
     try:

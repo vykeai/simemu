@@ -1,7 +1,9 @@
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -653,6 +655,56 @@ class TestBoot(unittest.TestCase):
         self.assertNotIn("-no-snapshot-load", first_cmd)
         self.assertIn("-no-snapshot-load", second_cmd)
         mock_run.assert_called_once()
+
+    @patch("simemu.android._read_log_excerpt", return_value="")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.get_android_serial")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
+    @patch("simemu.state.check_maintenance")
+    def test_boot_logs_progress_to_stderr_only(
+        self,
+        mock_maintenance: MagicMock,
+        mock_geny: MagicMock,
+        mock_popen: MagicMock,
+        mock_get_serial: MagicMock,
+        mock_run: MagicMock,
+        mock_read_log: MagicMock,
+    ) -> None:
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        mock_get_serial.side_effect = [None, "emulator-5554"]
+        mock_run.return_value = MagicMock(stdout="1\n", returncode=0)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            android.boot("MedPhone_API33", headless=True)
+
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("Waiting for 'MedPhone_API33' to boot...", stderr.getvalue())
+
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._ensure_booted")
+    def test_reboot_logs_progress_to_stderr_only(
+        self,
+        mock_booted: MagicMock,
+        mock_sleep: MagicMock,
+        mock_run: MagicMock,
+        mock_serial: MagicMock,
+        mock_ready: MagicMock,
+    ) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            android.reboot("MedPhone_API33")
+
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("Rebooting...", stderr.getvalue())
 
 
 class TestSessionIsolation(unittest.TestCase):

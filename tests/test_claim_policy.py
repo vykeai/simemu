@@ -6,14 +6,30 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_tmpdir = tempfile.mkdtemp(prefix="simemu-policy-test-")
-os.environ["SIMEMU_STATE_DIR"] = _tmpdir
-os.environ["SIMEMU_CONFIG_DIR"] = _tmpdir
-
 from simemu.claim_policy import resolve_alias, apply_defaults, get_all_aliases
 
 
+_tmpdir = tempfile.mkdtemp(prefix="simemu-policy-test-")
+
+
 class TestResolveAlias(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_state = os.environ.get("SIMEMU_STATE_DIR")
+        self._old_config = os.environ.get("SIMEMU_CONFIG_DIR")
+        os.environ["SIMEMU_STATE_DIR"] = _tmpdir
+        os.environ["SIMEMU_CONFIG_DIR"] = _tmpdir
+
+    def tearDown(self) -> None:
+        if self._old_state is None:
+            os.environ.pop("SIMEMU_STATE_DIR", None)
+        else:
+            os.environ["SIMEMU_STATE_DIR"] = self._old_state
+
+        if self._old_config is None:
+            os.environ.pop("SIMEMU_CONFIG_DIR", None)
+        else:
+            os.environ["SIMEMU_CONFIG_DIR"] = self._old_config
+
     def test_builtin_iphone(self) -> None:
         result = resolve_alias("iphone")
         self.assertEqual(result["platform"], "ios")

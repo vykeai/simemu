@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -22,6 +23,9 @@ def test_authoritative_simemu_docs_do_not_reference_legacy_commands() -> None:
 
 
 def test_local_product_docs_do_not_reference_legacy_simemu_usage() -> None:
+    if os.environ.get("SIMEMU_CHECK_LOCAL_PRODUCT_DOCS") != "1":
+        return
+
     targets = [
         Path("/Users/luke/dev/products/goala/AUTONOMOUS_EXECUTION.md"),
         Path("/Users/luke/dev/products/fitkind/AUTONOMOUS_EXECUTION.md"),
