@@ -31,8 +31,9 @@ class ListIOSDevicesTests(unittest.TestCase):
             }
         ]
 
-        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
-            devices = device.list_ios_devices()
+        with patch("simemu.device._list_xcdevice_devices_json", return_value=None):
+            with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+                devices = device.list_ios_devices()
 
         self.assertEqual(1, len(devices))
         self.assertEqual("00008030-001A2B3C4D5E6F78", devices[0].device_id)
@@ -52,8 +53,9 @@ class ListIOSDevicesTests(unittest.TestCase):
             }
         ]
 
-        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
-            devices = device.list_ios_devices()
+        with patch("simemu.device._list_xcdevice_devices_json", return_value=None):
+            with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+                devices = device.list_ios_devices()
 
         self.assertEqual(0, len(devices))
 
@@ -79,8 +81,9 @@ class ListIOSDevicesTests(unittest.TestCase):
             }
         ]
 
-        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
-            devices = device.list_ios_devices()
+        with patch("simemu.device._list_xcdevice_devices_json", return_value=None):
+            with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+                devices = device.list_ios_devices()
 
         self.assertEqual("wifi", devices[0].connection)
 
@@ -114,8 +117,9 @@ class ListIOSDevicesTests(unittest.TestCase):
             },
         ]
 
-        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
-            devices = device.list_ios_devices()
+        with patch("simemu.device._list_xcdevice_devices_json", return_value=None):
+            with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+                devices = device.list_ios_devices()
 
         self.assertEqual(1, len(devices))
         self.assertEqual("Luke iPhone 17 Pro Max", devices[0].device_name)
@@ -144,6 +148,26 @@ class ListIOSDevicesTests(unittest.TestCase):
         self.assertEqual("00008150-001622E63638401C", devices[0].device_id)
         self.assertEqual("Luke iPhone 17 Pro Max", devices[0].device_name)
         self.assertEqual("26.4", devices[0].os_version)
+
+    def test_includes_persistent_alias_when_present(self) -> None:
+        xcdevice_devices = [
+            {
+                "simulator": False,
+                "identifier": "00008150-001622E63638401C",
+                "platform": "com.apple.platform.iphoneos",
+                "available": True,
+                "name": "Luke iPhone 17 Pro Max",
+                "operatingSystemVersion": "26.4 (23E246)",
+                "interface": "usb",
+            }
+        ]
+
+        with patch("simemu.device._list_devicectl_devices_json", return_value=None):
+            with patch("simemu.device._list_xcdevice_devices_json", return_value=xcdevice_devices):
+                with patch("simemu.device.find_alias_for_device", return_value="luke-iphone"):
+                    devices = device.list_ios_devices()
+
+        self.assertEqual("luke-iphone", devices[0].alias)
 
     def test_devicectl_uses_temp_file_instead_of_stdout(self) -> None:
         class _Tmp:
@@ -312,6 +336,23 @@ class IOSInstallTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".apk") as f:
             with self.assertRaisesRegex(RuntimeError, "Real iOS devices require .ipa"):
                 device.ios_install("UDID", f.name)
+
+
+class IOSScreenshotTests(unittest.TestCase):
+    def test_uses_idevicescreenshot_when_available(self) -> None:
+        with patch("simemu.device.shutil.which", return_value="/opt/homebrew/bin/idevicescreenshot"):
+            with patch("simemu.device.subprocess.run") as mock_run:
+                device.ios_screenshot("UDID-001", "/tmp/out.png")
+
+        mock_run.assert_called_once_with(
+            ["idevicescreenshot", "-u", "UDID-001", "/tmp/out.png"],
+            check=True,
+        )
+
+    def test_raises_clear_error_when_idevicescreenshot_missing(self) -> None:
+        with patch("simemu.device.shutil.which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "brew install libimobiledevice"):
+                device.ios_screenshot("UDID-001", "/tmp/out.png")
 
 
 class IsRealDeviceSerialTests(unittest.TestCase):

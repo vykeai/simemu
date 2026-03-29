@@ -51,6 +51,22 @@ class TestResolveAlias(unittest.TestCase):
         result = resolve_alias("foobar")
         self.assertEqual(result["platform"], "foobar")
 
+    def test_device_alias_resolves_to_real_device_claim(self) -> None:
+        Path(_tmpdir).mkdir(parents=True, exist_ok=True)
+        (Path(_tmpdir) / "config.json").write_text(json.dumps({
+            "device_aliases": {
+                "luke-iphone": {
+                    "platform": "ios",
+                    "device_id": "00008150-001622E63638401C",
+                    "device_name": "Luke iPhone 17 Pro Max",
+                }
+            }
+        }))
+        result = resolve_alias("luke-iphone")
+        self.assertEqual(result["platform"], "ios")
+        self.assertTrue(result["real_device"])
+        self.assertEqual(result["device"], "00008150-001622E63638401C")
+
 
 class TestApplyDefaults(unittest.TestCase):
     def setUp(self) -> None:

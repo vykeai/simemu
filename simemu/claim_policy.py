@@ -24,6 +24,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .device_aliases import resolve_device_alias
+
 
 # Built-in aliases (always available, config can override)
 _BUILTIN_ALIASES: dict[str, dict[str, str]] = {
@@ -51,10 +53,11 @@ def _load_policy() -> dict[str, Any]:
     return config.get("claim_policy", {})
 
 
-def resolve_alias(platform_or_alias: str) -> dict[str, str]:
+def resolve_alias(platform_or_alias: str) -> dict[str, Any]:
     """Resolve a platform name or alias to a claim spec dict.
 
-    Returns dict with keys: platform, form_factor, version (all optional except platform).
+    Returns dict with keys: platform, form_factor, version, real_device, device
+    (all optional except platform).
     If the input is a known alias, expands it. Otherwise passes through as platform.
     """
     policy = _load_policy()
@@ -64,6 +67,15 @@ def resolve_alias(platform_or_alias: str) -> dict[str, str]:
     alias_def = user_aliases.get(platform_or_alias) or _BUILTIN_ALIASES.get(platform_or_alias)
     if alias_def:
         return dict(alias_def)
+
+    # Physical device labels live in the separate device-alias registry.
+    device_alias = resolve_device_alias(platform_or_alias)
+    if device_alias:
+        return {
+            "platform": device_alias["platform"],
+            "real_device": True,
+            "device": device_alias["device_id"],
+        }
 
     # Not an alias — treat as raw platform
     return {"platform": platform_or_alias}

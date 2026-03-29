@@ -29,6 +29,7 @@ from .discover import (
 from . import session as session_module
 from . import window as window_mgr
 from .session import ClaimSpec, SessionError
+from .device_aliases import set_device_alias
 
 # Apple platforms all use xcrun simctl — same as iOS
 _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
@@ -215,10 +216,12 @@ def cmd_claim(args):
     # Resolve alias → platform + defaults
     resolved = resolve_alias(args.platform)
     platform = resolved.get("platform", args.platform)
+    real_device = bool(getattr(args, "real", False) or resolved.get("real_device", False))
 
     # User-provided flags override alias defaults
     form_factor = getattr(args, "form_factor", None) or resolved.get("form_factor") or "phone"
     version = getattr(args, "version", None) or resolved.get("version")
+    device_selector = getattr(args, "device", None) or resolved.get("device")
     visible = getattr(args, "visible", False)
 
     # Apply per-platform defaults from policy config
@@ -228,7 +231,8 @@ def cmd_claim(args):
         platform=platform,
         form_factor=spec_dict.get("form_factor") or "phone",
         os_version=spec_dict.get("version"),
-        real_device=getattr(args, "real", False),
+        real_device=real_device,
+        device_selector=device_selector,
         label=getattr(args, "label", None) or "",
         visible=visible,
     )
@@ -875,10 +879,118 @@ def cmd_list_devices(args):
         _print_json([r.__dict__ for r in rows])
         return
 
-    print(f"{'PLATFORM':<10} {'STATE':<8} {'DEVICE':<30} {'RUNTIME':<16} {'ID'}")
-    print("─" * 96)
+    print(f"{'PLATFORM':<10} {'STATE':<8} {'ALIAS':<20} {'DEVICE':<34} {'RUNTIME':<16} {'ID'}")
+    print("─" * 124)
     for s in rows:
-        print(f"{s.platform:<10} {'On' if s.booted else 'Off':<8} {s.device_name:<30} {s.runtime:<16} {s.sim_id}")
+        print(
+            f"{s.platform:<10} {'On' if s.booted else 'Off':<8} "
+            f"{(s.label or ''):<20} {s.device_name:<34} {s.runtime:<16} {s.sim_id}"
+        )
+
+
+def _candidate_pool(platform: str, real_device: bool) -> list:
+    if real_device:
+        if platform == "ios":
+            return list_real_ios(set())
+        if platform == "android":
+            return list_real_android(set())
+        raise RuntimeError(f"Real device relabeling is not supported for platform '{platform}'.")
+
+    if platform == "ios":
+        return list_ios(set())
+    if platform == "android":
+        return list_android(set())
+    raise RuntimeError(f"Simulator renaming is not supported for platform '{platform}'.")
+
+
+def _match_candidate(target: str, candidates: list) -> object:
+    wanted = target.strip().lower()
+    exact_id = [c for c in candidates if c.sim_id.lower() == wanted]
+    if exact_id:
+        return exact_id[0]
+
+    exact_name = [c for c in candidates if c.device_name.lower() == wanted]
+    if len(exact_name) == 1:
+        return exact_name[0]
+    if len(exact_name) > 1:
+        names = ", ".join(c.device_name for c in exact_name)
+        raise RuntimeError(f"Target '{target}' is ambiguous. Matches: {names}")
+
+    contains = [c for c in candidates if wanted in c.device_name.lower()]
+    if len(contains) == 1:
+        return contains[0]
+    if len(contains) > 1:
+        names = ", ".join(c.device_name for c in contains)
+        raise RuntimeError(f"Target '{target}' is ambiguous. Matches: {names}")
+
+    raise RuntimeError(f"No device matched '{target}'.")
+
+
+def _update_session_device_refs(platform: str, old_sim_id: str, new_name: str) -> None:
+    new_sim_id = new_name.replace(" ", "_") if platform == "android" else old_sim_id
+    with session_module._locked_sessions() as (data, save):
+        changed = False
+        for sid, raw in data.get("sessions", {}).items():
+            if raw.get("platform") != platform:
+                continue
+            if raw.get("sim_id") != old_sim_id:
+                continue
+            raw["device_name"] = new_name
+            if platform == "android" and not raw.get("real_device"):
+                raw["sim_id"] = new_sim_id
+            changed = True
+        if changed:
+            save(data)
+
+
+def _resolve_real_device_target(target: str, platform: str | None) -> tuple[str, str, str]:
+    if target.startswith("s-"):
+        session = session_module.require_session(target)
+        if not session.real_device:
+            raise RuntimeError(f"Session '{target}' is not a real device session.")
+        device_rows = device.list_ios_devices() if session.platform == "ios" else device.list_android_devices()
+        for row in device_rows:
+            if row.device_id == session.sim_id:
+                return session.platform, session.sim_id, row.device_name
+        return session.platform, session.sim_id, session.device_name
+
+    platforms = [platform] if platform else ["ios", "android"]
+    candidates = []
+    for plat in platforms:
+        candidates.extend(_candidate_pool(plat, real_device=True))
+    match = _match_candidate(target, candidates)
+    device_name = match.device_name.replace(" (real)", "")
+    if getattr(match, "label", ""):
+        prefix = f"{match.label} · "
+        if device_name.startswith(prefix):
+            device_name = device_name[len(prefix):]
+    return match.platform, match.sim_id, device_name
+
+
+def _resolve_simulator_target(target: str, platform: str | None) -> tuple[str, str]:
+    if target.startswith("s-"):
+        session = session_module.require_session(target)
+        if session.real_device:
+            raise RuntimeError(f"Session '{target}' is a real device. Use relabel instead of rename.")
+        return session.platform, session.sim_id
+
+    legacy_alloc = state.get(target)
+    if legacy_alloc:
+        return legacy_alloc.platform, legacy_alloc.sim_id
+
+    platforms = [platform] if platform else ["ios", "android"]
+    candidates = []
+    for plat in platforms:
+        candidates.extend(_candidate_pool(plat, real_device=False))
+    match = _match_candidate(target, candidates)
+    return match.platform, match.sim_id
+
+
+def cmd_relabel(args):
+    """Persist a slug-like alias for a connected real device."""
+    platform, device_id, device_name = _resolve_real_device_target(args.target, getattr(args, "platform", None))
+    alias = set_device_alias(platform=platform, device_id=device_id, device_name=device_name, alias=args.label)
+    print(f"Labeled {platform} device '{device_name}' as '{alias}'.")
 
 
 def cmd_list(args):
@@ -1369,21 +1481,27 @@ def cmd_push_notification(args):
 
 
 def cmd_rename(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.rename(alloc.sim_id, args.name)
+    platform, sim_id = _resolve_simulator_target(args.target, getattr(args, "platform", None))
+    if platform == "ios":
+        ios.rename(sim_id, args.name)
     else:
-        android.rename(alloc.sim_id, args.name)
-    # Update the stored device_name (and sim_id for Android, where AVD name = sim_id)
+        android.rename(sim_id, args.name)
+
+    # Update any legacy allocation record still pointing at this simulator.
     with state._locked_state() as (s, save):
-        if args.slug in s["allocations"]:
-            s["allocations"][args.slug]["device_name"] = args.name
-            if alloc.platform == "android":
-                # AVD filesystem id uses underscores (matches android.rename() convention)
-                s["allocations"][args.slug]["sim_id"] = args.name.replace(" ", "_")
+        changed = False
+        for slug, raw in s.get("allocations", {}).items():
+            if raw.get("platform") != platform or raw.get("sim_id") != sim_id:
+                continue
+            raw["device_name"] = args.name
+            if platform == "android":
+                raw["sim_id"] = args.name.replace(" ", "_")
+            changed = True
+        if changed:
             save(s)
-    print(f"Renamed '{args.slug}' → {args.name}")
+
+    _update_session_device_refs(platform, sim_id, args.name)
+    print(f"Renamed {platform} device '{args.target}' → {args.name}")
 
 
 def cmd_delete(args):
@@ -2244,6 +2362,7 @@ def build_parser() -> argparse.ArgumentParser:
                          default="phone", help="Device form factor (default: phone)")
     claim_p.add_argument("--real", action="store_true",
                          help="Prefer real device over simulator")
+    claim_p.add_argument("--device", help="Specific device id, current name, or configured alias")
     claim_p.add_argument("--show", action="store_true", dest="visible",
                          help="Keep simulator window visible (default: hidden)")
     claim_p.add_argument("--label", help="Human label for display (e.g. 'proof capture')")
@@ -2570,10 +2689,20 @@ def build_parser() -> argparse.ArgumentParser:
     erase.set_defaults(func=cmd_erase)
 
     # rename
-    rename_p = sub.add_parser("rename", help="Rename a simulator or Android AVD")
-    rename_p.add_argument("slug")
+    rename_p = sub.add_parser("rename", help="Rename a simulator by session id, legacy slug, device id, or current name")
+    rename_p.add_argument("target")
     rename_p.add_argument("name", help="New display name")
+    rename_p.add_argument("--platform", choices=["ios", "android"],
+                          help="Platform hint when renaming by raw device name")
     rename_p.set_defaults(func=cmd_rename)
+
+    # relabel
+    relabel_p = sub.add_parser("relabel", help="Assign a persistent alias to a connected real device")
+    relabel_p.add_argument("target", help="Session id, real device id, or current device name")
+    relabel_p.add_argument("label", help="Slug-like alias (e.g. luke-iphone)")
+    relabel_p.add_argument("--platform", choices=["ios", "android"],
+                           help="Platform hint when relabeling by raw device name")
+    relabel_p.set_defaults(func=cmd_relabel)
 
     # delete
     delete_p = sub.add_parser("delete", help="Permanently remove a simulator or Android AVD")
@@ -2992,7 +3121,7 @@ _V2_COMMANDS = {
     "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config", "cmd_completions", "cmd_doctor",
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
-    "cmd_list", "cmd_list_devices",  # discovery is still useful
+    "cmd_list", "cmd_list_devices", "cmd_rename", "cmd_relabel",  # discovery/admin actions
     "cmd_status_overview",  # v2 system overview
 }
 

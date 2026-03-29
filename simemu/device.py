@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .device_aliases import find_alias_for_device
+
 # iOS UDIDs: 40-char hex (USB) or 00008XXX-XXXX... (WiFi/newer devices)
 _IOS_UDID_RE = re.compile(r"^[0-9a-fA-F-]{24,40}$")
 
@@ -31,6 +33,7 @@ class RealDevice:
     connected: bool
     os_version: str     # e.g. "18.2" or "15"
     connection: str     # "usb" | "wifi"
+    alias: str = ""
 
 
 def _has_devicectl() -> bool:
@@ -121,11 +124,14 @@ def list_ios_devices() -> list[RealDevice]:
     Falls back to empty list if devicectl is not available or no devices
     are connected.
     """
-    result_devices = _list_devicectl_devices_json()
-    source = "devicectl"
+    # Prefer xcdevice identifiers because they line up with xcodebuild and
+    # libimobiledevice tooling, while devicectl can emit a different internal
+    # CoreDevice UUID for the same physical iPhone.
+    result_devices = _list_xcdevice_devices_json()
+    source = "xcdevice"
     if result_devices is None:
-        result_devices = _list_xcdevice_devices_json()
-        source = "xcdevice"
+        result_devices = _list_devicectl_devices_json()
+        source = "devicectl"
     if result_devices is None:
         return []
 
@@ -176,6 +182,7 @@ def list_ios_devices() -> list[RealDevice]:
             connected=True,
             os_version=str(os_version),
             connection=connection,
+            alias=find_alias_for_device("ios", udid) or "",
         ))
 
     return devices
@@ -233,6 +240,7 @@ def list_android_devices() -> list[RealDevice]:
             connected=True,
             os_version=os_version,
             connection=connection,
+            alias=find_alias_for_device("android", serial) or "",
         ))
 
     return devices
@@ -286,27 +294,23 @@ def ios_launch(udid: str, bundle_id: str) -> None:
 
 
 def ios_screenshot(udid: str, output_path: str, max_size: int | None = None) -> None:
-    """Take a screenshot of a real iOS device via devicectl or idevicescreenshot."""
+    """Take a screenshot of a real iOS device.
+
+    Xcode 26's `devicectl` no longer exposes a screenshot subcommand for real
+    devices, so libimobiledevice's `idevicescreenshot` is the reliable path.
+    """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Try devicectl first (Xcode 15+)
-    result = subprocess.run(
-        ["xcrun", "devicectl", "device", "info", "screenshot",
-         "--device", udid, "--output", output_path],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        # Fall back to idevicescreenshot (libimobiledevice)
-        if shutil.which("idevicescreenshot"):
-            subprocess.run(
-                ["idevicescreenshot", "-u", udid, output_path],
-                check=True,
-            )
-        else:
-            raise RuntimeError(
-                f"Screenshot failed. devicectl error: {result.stderr.strip()}\n"
-                "Install libimobiledevice for fallback: brew install libimobiledevice"
-            )
+    if shutil.which("idevicescreenshot"):
+        subprocess.run(
+            ["idevicescreenshot", "-u", udid, output_path],
+            check=True,
+        )
+    else:
+        raise RuntimeError(
+            "Real iOS screenshots require libimobiledevice on this Xcode build.\n"
+            "Install it with: brew install libimobiledevice"
+        )
 
     if max_size:
         subprocess.run(
@@ -324,11 +328,11 @@ def ios_get_env(udid: str) -> dict:
         "state": "Connected",
     }
 
-    result_devices = _list_devicectl_devices_json()
-    source = "devicectl"
+    result_devices = _list_xcdevice_devices_json()
+    source = "xcdevice"
     if result_devices is None:
-        result_devices = _list_xcdevice_devices_json()
-        source = "xcdevice"
+        result_devices = _list_devicectl_devices_json()
+        source = "devicectl"
 
     for dev in result_devices or []:
         if dev.get("identifier") != udid:

@@ -31,14 +31,23 @@ class CliParserTests(unittest.TestCase):
             "claim", "ios",
             "--version", "26",
             "--form-factor", "tablet",
+            "--device", "luke-iphone",
             "--show",
             "--label", "test",
         ])
         self.assertEqual(args.platform, "ios")
         self.assertEqual(args.version, "26")
         self.assertEqual(args.form_factor, "tablet")
+        self.assertEqual(args.device, "luke-iphone")
         self.assertTrue(args.visible)
         self.assertEqual(args.label, "test")
+
+    def test_relabel_parser(self) -> None:
+        args = self.parser.parse_args(["relabel", "s-abc123", "luke-iphone", "--platform", "ios"])
+        self.assertEqual(args.target, "s-abc123")
+        self.assertEqual(args.label, "luke-iphone")
+        self.assertEqual(args.platform, "ios")
+        self.assertEqual(args.func, cli.cmd_relabel)
 
     def test_do_parser_accepts_session_and_command(self) -> None:
         args = self.parser.parse_args(["do", "s-abc123", "screenshot"])
@@ -155,6 +164,7 @@ class CliHandlerTests(unittest.TestCase):
             form_factor="phone",
             version=None,
             real=False,
+            device="luke-iphone",
             visible=False,
             label="",
         )
@@ -168,8 +178,36 @@ class CliHandlerTests(unittest.TestCase):
         spec = claim_mock.call_args[0][0]
         self.assertIsInstance(spec, ClaimSpec)
         self.assertEqual(spec.platform, "ios")
+        self.assertEqual(spec.device_selector, "luke-iphone")
         output = json.loads(stdout.getvalue())
         self.assertEqual(output["session"], "s-abc123")
+
+    def test_claim_uses_real_device_alias(self) -> None:
+        session = self._make_session(real_device=True)
+        args = Namespace(
+            platform="luke-iphone",
+            form_factor="phone",
+            version=None,
+            real=False,
+            device=None,
+            visible=False,
+            label="",
+        )
+        stdout = io.StringIO()
+
+        with patch("simemu.cli.session_module.claim", return_value=session) as claim_mock:
+            with patch("simemu.claim_policy.resolve_alias", return_value={
+                "platform": "ios",
+                "real_device": True,
+                "device": "00008150-001622E63638401C",
+            }):
+                with patch("simemu.claim_policy.apply_defaults", side_effect=lambda platform, spec: spec):
+                    with redirect_stdout(stdout):
+                        cli.cmd_claim(args)
+
+        spec = claim_mock.call_args[0][0]
+        self.assertTrue(spec.real_device)
+        self.assertEqual(spec.device_selector, "00008150-001622E63638401C")
 
     def test_do_calls_do_command(self) -> None:
         args = Namespace(
@@ -246,6 +284,40 @@ class CliHandlerTests(unittest.TestCase):
 
         set_mock.assert_called_once_with("hidden", display=None, corner=None)
         self.assertIn("Window mode set to: hidden", stdout.getvalue())
+
+    def test_relabel_calls_alias_store(self) -> None:
+        args = Namespace(target="s-live123", label="luke-iphone", platform=None)
+        stdout = io.StringIO()
+
+        with patch("simemu.cli._resolve_real_device_target", return_value=("ios", "DEVICE-1", "Luke iPhone")):
+            with patch("simemu.cli.set_device_alias", return_value="luke-iphone") as set_alias:
+                with redirect_stdout(stdout):
+                    cli.cmd_relabel(args)
+
+        set_alias.assert_called_once_with(
+            platform="ios",
+            device_id="DEVICE-1",
+            device_name="Luke iPhone",
+            alias="luke-iphone",
+        )
+        self.assertIn("luke-iphone", stdout.getvalue())
+
+    def test_rename_updates_matching_sessions(self) -> None:
+        args = Namespace(target="s-abc123", name="FitKind iPhone", platform=None)
+        stdout = io.StringIO()
+
+        with patch("simemu.cli._resolve_simulator_target", return_value=("ios", "SIM-001")):
+            with patch("simemu.cli.ios.rename") as rename_mock:
+                with patch("simemu.cli._update_session_device_refs") as update_refs:
+                    with patch("simemu.cli.state._locked_state") as locked_state:
+                        locked_state.return_value.__enter__.return_value = ({"allocations": {}}, lambda data: None)
+                        locked_state.return_value.__exit__.return_value = False
+                        with redirect_stdout(stdout):
+                            cli.cmd_rename(args)
+
+        rename_mock.assert_called_once_with("SIM-001", "FitKind iPhone")
+        update_refs.assert_called_once_with("ios", "SIM-001", "FitKind iPhone")
+        self.assertIn("FitKind iPhone", stdout.getvalue())
 
 
 class CliInvocationWarningTests(unittest.TestCase):

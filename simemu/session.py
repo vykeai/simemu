@@ -49,6 +49,7 @@ class ClaimSpec:
     form_factor: str = "phone"           # "phone" | "tablet" | "watch" | "tv" | "vision"
     os_version: str | None = None        # requested version or None (any)
     real_device: bool = False
+    device_selector: str | None = None   # specific device id/name/alias to target
     label: str = ""
     visible: bool = False                # if True, keep window visible (default: headless)
 
@@ -61,8 +62,10 @@ class ClaimSpec:
             parts += ["--form-factor", self.form_factor]
         if self.real_device:
             parts.append("--real")
+        if self.device_selector:
+            parts += ["--device", self.device_selector]
         if self.visible:
-            parts.append("--visible")
+            parts.append("--show")
         if self.label:
             parts += ["--label", f"'{self.label}'"]
         return " ".join(parts)
@@ -94,6 +97,7 @@ class Session:
     claim_form_factor: str = "phone"
     claim_os_version: str | None = None
     claim_real_device: bool = False
+    claim_device_selector: str | None = None
     claim_label: str = ""
 
     def to_agent_json(self) -> dict:
@@ -116,6 +120,7 @@ class Session:
             form_factor=self.claim_form_factor or self.form_factor,
             os_version=self.claim_os_version or self.os_version,
             real_device=self.claim_real_device or self.real_device,
+            device_selector=self.claim_device_selector,
             label=self.claim_label or self.label,
         )
 
@@ -336,6 +341,7 @@ def claim(spec: ClaimSpec) -> Session:
             claim_form_factor="desktop",
             claim_os_version=spec.os_version,
             claim_real_device=True,
+            claim_device_selector=spec.device_selector,
             claim_label=spec.label,
         )
         session.expires_at = _compute_expires_at("active", now)
@@ -367,7 +373,7 @@ def claim(spec: ClaimSpec) -> Session:
         if sim.platform == "android":
             print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
             try:
-                android.boot(sim.sim_id, headless=True)
+                android.boot(sim.sim_id, headless=not spec.visible)
                 print(f"Ready.", file=_sys.stderr, flush=True)
             except RuntimeError as exc:
                 boot_errors = [f"{sim.sim_id}: {exc}"]
@@ -379,7 +385,7 @@ def claim(spec: ClaimSpec) -> Session:
                         break
                     print(f"Booting {candidate.device_name}...", file=_sys.stderr, flush=True)
                     try:
-                        android.boot(candidate.sim_id, headless=True)
+                        android.boot(candidate.sim_id, headless=not spec.visible)
                         print(f"Ready.", file=_sys.stderr, flush=True)
                         sim = candidate
                         break
@@ -396,7 +402,7 @@ def claim(spec: ClaimSpec) -> Session:
             if sim.platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.boot(sim.sim_id)
             else:
-                android.boot(sim.sim_id, headless=True)
+                android.boot(sim.sim_id, headless=not spec.visible)
             print(f"Ready.", file=_sys.stderr, flush=True)
 
     # Apply window management — headless by default unless --visible
@@ -431,6 +437,7 @@ def claim(spec: ClaimSpec) -> Session:
         claim_form_factor=spec.form_factor,
         claim_os_version=spec.os_version,
         claim_real_device=spec.real_device,
+        claim_device_selector=spec.device_selector,
         claim_label=spec.label,
     )
     session.expires_at = _compute_expires_at("active", now)
@@ -1057,10 +1064,19 @@ tell application "System Events"
     end tell
 end tell'''
             ], capture_output=True, check=False)
+        elif not session.real_device and session.platform == "android":
+            if android.current_window_frame(session.sim_id) is None:
+                android.shutdown(session.sim_id)
+                android.boot(session.sim_id, headless=False)
+            current_serial = android.get_android_serial(session.sim_id, retries=8, delay=1.0)
+            if current_serial:
+                session.pinned_serial = current_serial
         # Persist visibility state
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["visible"] = True
+                if session.pinned_serial:
+                    data["sessions"][session_id]["pinned_serial"] = session.pinned_serial
                 save(data)
         return {"session": session_id, "status": "visible", "device": session.device_name}
 

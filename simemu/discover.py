@@ -10,6 +10,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
+from .device_aliases import find_alias_for_device
+
 
 @dataclass
 class SimulatorInfo:
@@ -20,6 +22,7 @@ class SimulatorInfo:
     runtime: str      # e.g. "iOS 26.2" or "API 35"
     real_device: bool = False   # True for physical devices, False for simulators/emulators
     genymotion: bool = False    # True for Genymotion VMs (preferred over standard AVDs)
+    label: str = ""
 
 
 def _list_apple_simulators(
@@ -131,13 +134,15 @@ def list_real_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
     for dev in device.list_ios_devices():
         if dev.device_id in allocated_ids:
             continue
+        display_name = f"{dev.alias} · {dev.device_name}" if dev.alias else dev.device_name
         results.append(SimulatorInfo(
             sim_id=dev.device_id,
             platform="ios",
-            device_name=f"{dev.device_name} (real)",
+            device_name=f"{display_name} (real)",
             booted=dev.connected,
             runtime=f"iOS {dev.os_version}" if dev.os_version else "iOS",
             real_device=True,
+            label=dev.alias,
         ))
     return results
 
@@ -150,15 +155,33 @@ def list_real_android(allocated_ids: set[str] | None = None) -> list[SimulatorIn
     for dev in device.list_android_devices():
         if dev.device_id in allocated_ids:
             continue
+        display_name = f"{dev.alias} · {dev.device_name}" if dev.alias else dev.device_name
         results.append(SimulatorInfo(
             sim_id=dev.device_id,
             platform="android",
-            device_name=f"{dev.device_name} (real)",
+            device_name=f"{display_name} (real)",
             booted=dev.connected,
             runtime=f"Android {dev.os_version}" if dev.os_version else "Android",
             real_device=True,
+            label=dev.alias,
         ))
     return results
+
+
+def _matches_device_selector(sim: SimulatorInfo, selector: str) -> bool:
+    """Return True when a candidate matches an explicit device selector."""
+    wanted = selector.strip().lower()
+    if not wanted:
+        return True
+    if sim.sim_id.lower() == wanted:
+        return True
+    if sim.device_name.lower() == wanted or wanted in sim.device_name.lower():
+        return True
+    if sim.real_device:
+        alias = find_alias_for_device(sim.platform, sim.sim_id)
+        if alias and alias.lower() == wanted:
+            return True
+    return False
 
 
 def _get_booted_avds() -> set[str]:
@@ -365,6 +388,17 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
             raise NoSimulatorAvailable(
                 f"No available {platform} {kind} matching form factor "
                 f"'{spec.form_factor}'. Available unclaimed devices: {available}{ownership_hint}"
+            )
+        candidates = filtered
+
+    selector = getattr(spec, "device_selector", None)
+    if selector:
+        filtered = [sim for sim in candidates if _matches_device_selector(sim, selector)]
+        if not filtered:
+            available = ", ".join(sim.device_name for sim in candidates)
+            raise NoSimulatorAvailable(
+                f"No available {platform} {kind} matching '{selector}'. "
+                f"Available unclaimed devices: {available}"
             )
         candidates = filtered
 
