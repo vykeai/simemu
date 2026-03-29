@@ -15,33 +15,24 @@ from simemu.discover import (
 
 class ListIOSDevicesTests(unittest.TestCase):
     def test_returns_connected_devices_from_devicectl(self) -> None:
-        devicectl_output = json.dumps({
-            "result": {
-                "devices": [
-                    {
-                        "identifier": "00008030-001A2B3C4D5E6F78",
-                        "connectionProperties": {"transportType": "usb"},
-                        "hardwareProperties": {
-                            "marketingName": "iPhone 15 Pro",
-                            "platform": "com.apple.platform.iphoneos",
-                        },
-                        "deviceProperties": {
-                            "name": "Luke's iPhone",
-                            "osVersionNumber": "18.2",
-                        },
-                        "simulator": False,
-                    }
-                ]
+        devicectl_devices = [
+            {
+                "identifier": "00008030-001A2B3C4D5E6F78",
+                "connectionProperties": {"transportType": "usb"},
+                "hardwareProperties": {
+                    "marketingName": "iPhone 15 Pro",
+                    "platform": "com.apple.platform.iphoneos",
+                },
+                "deviceProperties": {
+                    "name": "Luke's iPhone",
+                    "osVersionNumber": "18.2",
+                },
+                "simulator": False,
             }
-        })
+        ]
 
-        result = Mock()
-        result.returncode = 0
-        result.stdout = devicectl_output
-
-        with patch("simemu.device.subprocess.run", return_value=result):
-            with patch("simemu.device._has_devicectl", return_value=True):
-                devices = device.list_ios_devices()
+        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+            devices = device.list_ios_devices()
 
         self.assertEqual(1, len(devices))
         self.assertEqual("00008030-001A2B3C4D5E6F78", devices[0].device_id)
@@ -51,69 +42,132 @@ class ListIOSDevicesTests(unittest.TestCase):
         self.assertEqual("18.2", devices[0].os_version)
 
     def test_skips_simulators_in_devicectl_output(self) -> None:
-        devicectl_output = json.dumps({
-            "result": {
-                "devices": [
-                    {
-                        "identifier": "SIM-UUID-001",
-                        "connectionProperties": {},
-                        "hardwareProperties": {"platform": "com.apple.platform.appletvsimulator"},
-                        "deviceProperties": {"name": "Apple TV"},
-                        "simulator": True,
-                    }
-                ]
+        devicectl_devices = [
+            {
+                "identifier": "SIM-UUID-001",
+                "connectionProperties": {},
+                "hardwareProperties": {"platform": "com.apple.platform.appletvsimulator"},
+                "deviceProperties": {"name": "Apple TV"},
+                "simulator": True,
             }
-        })
+        ]
 
-        result = Mock()
-        result.returncode = 0
-        result.stdout = devicectl_output
-
-        with patch("simemu.device.subprocess.run", return_value=result):
-            with patch("simemu.device._has_devicectl", return_value=True):
-                devices = device.list_ios_devices()
+        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+            devices = device.list_ios_devices()
 
         self.assertEqual(0, len(devices))
 
     def test_returns_empty_when_devicectl_not_available(self) -> None:
-        with patch("simemu.device._has_devicectl", return_value=False):
-            devices = device.list_ios_devices()
+        with patch("simemu.device._list_devicectl_devices_json", return_value=None):
+            with patch("simemu.device._list_xcdevice_devices_json", return_value=None):
+                devices = device.list_ios_devices()
         self.assertEqual([], devices)
 
     def test_returns_empty_when_devicectl_fails(self) -> None:
-        result = Mock()
-        result.returncode = 1
-        result.stdout = ""
-
-        with patch("simemu.device.subprocess.run", return_value=result):
-            with patch("simemu.device._has_devicectl", return_value=True):
+        with patch("simemu.device._list_devicectl_devices_json", return_value=None):
+            with patch("simemu.device._list_xcdevice_devices_json", return_value=None):
                 devices = device.list_ios_devices()
-
         self.assertEqual([], devices)
 
     def test_detects_wifi_connection(self) -> None:
-        devicectl_output = json.dumps({
-            "result": {
-                "devices": [
-                    {
-                        "identifier": "WIFI-UDID-001",
-                        "connectionProperties": {"transportType": "wifi"},
-                        "hardwareProperties": {"marketingName": "iPhone 16"},
-                        "deviceProperties": {"name": "Test iPhone", "osVersionNumber": "18.0"},
-                    }
-                ]
+        devicectl_devices = [
+            {
+                "identifier": "WIFI-UDID-001",
+                "connectionProperties": {"transportType": "wifi"},
+                "hardwareProperties": {"marketingName": "iPhone 16", "platform": "com.apple.platform.iphoneos"},
+                "deviceProperties": {"name": "Test iPhone", "osVersionNumber": "18.0"},
             }
-        })
+        ]
 
-        result = Mock()
-        result.returncode = 0
-        result.stdout = devicectl_output
-
-        with patch("simemu.device.subprocess.run", return_value=result):
-            with patch("simemu.device._has_devicectl", return_value=True):
-                devices = device.list_ios_devices()
+        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+            devices = device.list_ios_devices()
 
         self.assertEqual("wifi", devices[0].connection)
+
+    def test_skips_watch_devices_in_devicectl_output(self) -> None:
+        devicectl_devices = [
+            {
+                "identifier": "WATCH-UDID-001",
+                "connectionProperties": {"transportType": "usb"},
+                "hardwareProperties": {
+                    "marketingName": "Apple Watch Ultra",
+                    "platform": "watchOS",
+                },
+                "deviceProperties": {
+                    "name": "Luke Apple Watch Ultra",
+                    "osVersionNumber": "26.4",
+                },
+                "simulator": False,
+            },
+            {
+                "identifier": "PHONE-UDID-001",
+                "connectionProperties": {"transportType": "usb"},
+                "hardwareProperties": {
+                    "marketingName": "iPhone 17 Pro Max",
+                    "platform": "iOS",
+                },
+                "deviceProperties": {
+                    "name": "Luke iPhone 17 Pro Max",
+                    "osVersionNumber": "26.4",
+                },
+                "simulator": False,
+            },
+        ]
+
+        with patch("simemu.device._list_devicectl_devices_json", return_value=devicectl_devices):
+            devices = device.list_ios_devices()
+
+        self.assertEqual(1, len(devices))
+        self.assertEqual("Luke iPhone 17 Pro Max", devices[0].device_name)
+
+    def test_falls_back_to_xcdevice_when_devicectl_returns_none(self) -> None:
+        xcdevice_devices = [
+            {
+                "ignored": False,
+                "modelCode": "iPhone18,2",
+                "simulator": False,
+                "modelName": "iPhone 17 Pro Max",
+                "operatingSystemVersion": "26.4 (23E246)",
+                "identifier": "00008150-001622E63638401C",
+                "platform": "com.apple.platform.iphoneos",
+                "available": True,
+                "name": "Luke iPhone 17 Pro Max",
+                "interface": "usb",
+            }
+        ]
+
+        with patch("simemu.device._list_devicectl_devices_json", return_value=None):
+            with patch("simemu.device._list_xcdevice_devices_json", return_value=xcdevice_devices):
+                devices = device.list_ios_devices()
+
+        self.assertEqual(1, len(devices))
+        self.assertEqual("00008150-001622E63638401C", devices[0].device_id)
+        self.assertEqual("Luke iPhone 17 Pro Max", devices[0].device_name)
+        self.assertEqual("26.4", devices[0].os_version)
+
+    def test_devicectl_uses_temp_file_instead_of_stdout(self) -> None:
+        class _Tmp:
+            name = "/tmp/simemu-devicectl-test.json"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        run_result = Mock(returncode=0)
+
+        with patch("simemu.device.tempfile.NamedTemporaryFile", return_value=_Tmp()):
+            with patch("simemu.device.subprocess.run", return_value=run_result) as mock_run:
+                with patch("simemu.device.Path.read_text", return_value=json.dumps({"result": {"devices": []}})):
+                    with patch("simemu.device.Path.unlink", return_value=None):
+                        device._list_devicectl_devices_json()
+
+        self.assertEqual(
+            "/tmp/simemu-devicectl-test.json",
+            mock_run.call_args[0][0][-1],
+        )
+        self.assertNotEqual("/dev/stdout", mock_run.call_args[0][0][-1])
 
 
 class ListAndroidDevicesTests(unittest.TestCase):

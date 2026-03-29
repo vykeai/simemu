@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,18 @@ def _has_devicectl() -> bool:
     return shutil.which("devicectl") is not None or shutil.which("xcrun") is not None
 
 
+def _is_ios_family_platform(platform: str) -> bool:
+    """Return True for real iPhone/iPad device platforms across Apple tool variants."""
+    normalized = platform.strip().lower()
+    return normalized in {
+        "ios",
+        "ipados",
+        "iphoneos",
+        "com.apple.platform.iphoneos",
+        "com.apple.platform.ipados",
+    }
+
+
 def _devicectl(*args, capture: bool = True) -> Optional[str]:
     """Run xcrun devicectl with args."""
     cmd = ["xcrun", "devicectl"] + list(args)
@@ -46,48 +59,115 @@ def _devicectl(*args, capture: bool = True) -> Optional[str]:
     return None
 
 
+def _list_devicectl_devices_json() -> Optional[list[dict]]:
+    """Return raw device rows from `xcrun devicectl list devices`.
+
+    `devicectl --json-output /dev/stdout` is not portable across macOS/Xcode
+    combinations; some environments reject `/dev/stdout` with NSCocoaError 512.
+    Write to a temporary file instead, then load JSON from disk.
+    """
+    if not _has_devicectl():
+        return None
+
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+            tmp_path = Path(handle.name)
+
+        result = subprocess.run(
+            ["xcrun", "devicectl", "list", "devices", "--json-output", str(tmp_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+
+        data = json.loads(tmp_path.read_text())
+        return data.get("result", {}).get("devices", [])
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError, OSError):
+        return None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _list_xcdevice_devices_json() -> Optional[list[dict]]:
+    """Fallback raw rows from `xcrun xcdevice list`.
+
+    `xcdevice` is less featureful than `devicectl`, but it reliably exposes
+    connected real iPhone/iPad hardware on machines where `devicectl` JSON
+    output is flaky.
+    """
+    try:
+        result = subprocess.run(
+            ["xcrun", "xcdevice", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        if isinstance(data, list):
+            return data
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        return None
+    return None
+
+
 def list_ios_devices() -> list[RealDevice]:
     """List connected real iOS devices via devicectl (Xcode 15+).
 
     Falls back to empty list if devicectl is not available or no devices
     are connected.
     """
-    if not _has_devicectl():
-        return []
-
-    try:
-        out = subprocess.run(
-            ["xcrun", "devicectl", "list", "devices", "--json-output", "/dev/stdout"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if out.returncode != 0:
-            return []
-        data = json.loads(out.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+    result_devices = _list_devicectl_devices_json()
+    source = "devicectl"
+    if result_devices is None:
+        result_devices = _list_xcdevice_devices_json()
+        source = "xcdevice"
+    if result_devices is None:
         return []
 
     devices = []
-    result_devices = data.get("result", {}).get("devices", [])
     for dev in result_devices:
-        conn_props = dev.get("connectionProperties", {})
-        hw_props = dev.get("hardwareProperties", {})
-        device_props = dev.get("deviceProperties", {})
+        if source == "devicectl":
+            conn_props = dev.get("connectionProperties", {})
+            hw_props = dev.get("hardwareProperties", {})
+            device_props = dev.get("deviceProperties", {})
+            platform = hw_props.get("platform", "")
 
-        # Skip simulators (devicectl can list those too)
-        if hw_props.get("platform") == "com.apple.platform.appletvsimulator":
-            continue
-        if dev.get("simulator", False):
-            continue
+            # Keep only real iPhone/iPad family hardware.
+            if dev.get("simulator", False):
+                continue
+            if platform and not _is_ios_family_platform(platform):
+                continue
 
-        udid = dev.get("identifier", "")
-        if not udid:
-            continue
+            udid = dev.get("identifier", "")
+            if not udid:
+                continue
 
-        transport = conn_props.get("transportType", "")
-        connection = "wifi" if transport == "wifi" else "usb"
+            transport = conn_props.get("transportType", "")
+            connection = "wifi" if transport == "wifi" else "usb"
+            name = device_props.get("name", hw_props.get("marketingName", "iOS Device"))
+            os_version = device_props.get("osVersionNumber", "")
+        else:
+            # xcdevice emits a flatter schema.
+            if dev.get("simulator", False):
+                continue
+            if not dev.get("available", True):
+                continue
+            platform = dev.get("platform", "")
+            if platform and not _is_ios_family_platform(platform):
+                continue
 
-        name = device_props.get("name", hw_props.get("marketingName", "iOS Device"))
-        os_version = device_props.get("osVersionNumber", "")
+            udid = dev.get("identifier", "")
+            if not udid:
+                continue
+
+            connection = "wifi" if dev.get("interface") == "network" else "usb"
+            name = dev.get("name", dev.get("modelName", "iOS Device"))
+            os_version = str(dev.get("operatingSystemVersion", "")).split(" ", 1)[0]
 
         devices.append(RealDevice(
             device_id=udid,
@@ -244,23 +324,26 @@ def ios_get_env(udid: str) -> dict:
         "state": "Connected",
     }
 
-    try:
-        out = subprocess.run(
-            ["xcrun", "devicectl", "list", "devices", "--json-output", "/dev/stdout"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if out.returncode == 0:
-            data = json.loads(out.stdout)
-            for dev in data.get("result", {}).get("devices", []):
-                if dev.get("identifier") == udid:
-                    hw = dev.get("hardwareProperties", {})
-                    dp = dev.get("deviceProperties", {})
-                    info["model"] = hw.get("marketingName", "")
-                    info["device_name"] = dp.get("name", "")
-                    info["os_version"] = str(dp.get("osVersionNumber", ""))
-                    break
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass
+    result_devices = _list_devicectl_devices_json()
+    source = "devicectl"
+    if result_devices is None:
+        result_devices = _list_xcdevice_devices_json()
+        source = "xcdevice"
+
+    for dev in result_devices or []:
+        if dev.get("identifier") != udid:
+            continue
+        if source == "devicectl":
+            hw = dev.get("hardwareProperties", {})
+            dp = dev.get("deviceProperties", {})
+            info["model"] = hw.get("marketingName", "")
+            info["device_name"] = dp.get("name", "")
+            info["os_version"] = str(dp.get("osVersionNumber", ""))
+        else:
+            info["model"] = dev.get("modelName", "")
+            info["device_name"] = dev.get("name", "")
+            info["os_version"] = str(dev.get("operatingSystemVersion", "")).split(" ", 1)[0]
+        break
 
     return info
 
