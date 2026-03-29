@@ -1,0 +1,37 @@
+{
+  "id": "T-LU-035",
+  "title": "Menubar device management — relabel and rename devices from UI",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-3",
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": "all",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-03-29T09:48:37.710Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-03-29T09:48:37.710Z",
+  "updatedAt": "2026-03-29T09:48:37.710Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}
