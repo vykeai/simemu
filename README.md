@@ -73,8 +73,20 @@ SESSION=$(simemu claim android | jq -r .session)
 #   --version 26          specific OS version
 #   --form-factor tablet  phone (default), tablet, watch, tv, vision
 #   --real                prefer real device over simulator
+#   --device luke-iphone  target a specific device id, name, or alias
 #   --show                keep simulator window visible (default: hidden)
 #   --label "my task"     label for tracking
+```
+
+### Relabel real devices and rename simulators
+
+```bash
+simemu relabel s-abc123 luke-iphone
+simemu claim luke-iphone
+simemu claim ios --real --device luke-iphone
+
+simemu rename s-abc123 "FitKind iPhone 17 Pro"
+simemu rename --platform ios "Aiyayai iPhone 17 Pro" "Luke iPhone 17 Pro"
 ```
 
 ### Use it

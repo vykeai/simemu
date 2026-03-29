@@ -25,6 +25,8 @@ _simemu() {
         'menubar:Launch menu bar app'
         'create:Create a new simulator/emulator'
         'idle-shutdown:Shut down idle simulators'
+        'rename:Rename a simulator by session or device'
+        'relabel:Assign a persistent alias to a real device'
     )
 
     local -a platforms
@@ -87,6 +89,7 @@ _simemu() {
                         '--version[OS version]:version' \\
                         '--form-factor[Form factor]:factor:(phone tablet watch tv vision)' \\
                         '--real[Prefer real device]' \\
+                        '--device[Specific device id, current name, or alias]:device' \\
                         '--show[Keep window visible]' \\
                         '--label[Human label]:label'
                     case "$state" in
@@ -133,7 +136,7 @@ def bash_completion() -> str:
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="claim do sessions status config serve daemon maintenance menubar create idle-shutdown"
+    commands="claim do sessions status config serve daemon maintenance menubar create idle-shutdown rename relabel"
     platforms="ios android macos iphone ipad pixel watch tv appletv vision mac"
     do_commands="install launch terminate uninstall reset-app tap swipe long-press key input a11y-tap screenshot proof url maestro appearance rotate status-bar boot show hide done renew help build env dismiss-alert accept-alert video-start video-stop present stabilize verify-install repair-install focus-move focus-select remote"
 

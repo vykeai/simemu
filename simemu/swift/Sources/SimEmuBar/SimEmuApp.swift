@@ -52,13 +52,16 @@ struct SimSession: Identifiable {
     let formFactor: String
     let status: String
     let label: String
+    let deviceAlias: String
     let agent: String
     let createdAt: Date?
     let heartbeatAt: Date?
     let expiresAt: Date?
     let osVersion: String
     let deviceName: String
+    let rawDeviceName: String
     let simId: String
+    let realDevice: Bool
     let isVisible: Bool  // from sessions.json "visible" field
 
     // T-005: Smart project name -- never show raw pid-XXXXX
@@ -188,6 +191,21 @@ struct SimConfig {
     }
 }
 
+func loadDeviceAliases() -> [String: String] {
+    let f = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".simemu/config.json")
+    guard let d = try? Data(contentsOf: f),
+          let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+          let aliases = j["device_aliases"] as? [String: [String: Any]] else { return [:] }
+
+    var result: [String: String] = [:]
+    for (alias, raw) in aliases {
+        guard let platform = raw["platform"] as? String,
+              let deviceId = raw["device_id"] as? String else { continue }
+        result["\(platform):\(deviceId)"] = alias
+    }
+    return result
+}
+
 // ============================================================================
 // MARK: - Data Loading
 // ============================================================================
@@ -197,6 +215,7 @@ func loadSessions() -> [SimSession] {
     guard let d = try? Data(contentsOf: f),
           let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
           let sessions = j["sessions"] as? [String: [String: Any]] else { return [] }
+    let aliases = loadDeviceAliases()
 
     let iso = ISO8601DateFormatter()
     iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -211,19 +230,28 @@ func loadSessions() -> [SimSession] {
     for (sid, raw) in sessions {
         let st = raw["status"] as? String ?? ""
         guard ["active", "idle", "parked"].contains(st) else { continue }
+        let platform = raw["platform"] as? String ?? "?"
+        let simId = raw["sim_id"] as? String ?? ""
+        let realDevice = raw["real_device"] as? Bool ?? false
+        let rawDeviceName = raw["device_name"] as? String ?? ""
+        let deviceAlias = aliases["\(platform):\(simId)"] ?? ""
+        let displayName = (realDevice && !deviceAlias.isEmpty) ? "\(deviceAlias) · \(rawDeviceName)" : rawDeviceName
         result.append(SimSession(
             id: sid,
-            platform: raw["platform"] as? String ?? "?",
+            platform: platform,
             formFactor: raw["form_factor"] as? String ?? "phone",
             status: st,
             label: raw["label"] as? String ?? "",
+            deviceAlias: deviceAlias,
             agent: raw["agent"] as? String ?? "",
             createdAt: pd(raw["created_at"]),
             heartbeatAt: pd(raw["heartbeat_at"]),
             expiresAt: pd(raw["expires_at"]),
             osVersion: raw["resolved_os_version"] as? String ?? "",
-            deviceName: raw["device_name"] as? String ?? "",
-            simId: raw["sim_id"] as? String ?? "",
+            deviceName: displayName,
+            rawDeviceName: rawDeviceName,
+            simId: simId,
+            realDevice: realDevice,
             isVisible: raw["visible"] as? Bool ?? false
         ))
     }
@@ -1079,11 +1107,17 @@ struct SessionTile: View {
         .buttonStyle(.plain)
         // T-009: Right-click context menu
         .contextMenu {
-            if session.platform == "ios" && session.status != "parked" {
+            if !session.realDevice && session.platform == "ios" && session.status != "parked" {
                 Button("Focus Window") { focusSimulator() }
                 Button("Hide Window") { hideSimulator() }
                 Divider()
             }
+            if session.realDevice {
+                Button("Relabel Real Device…") { relabelRealDevice() }
+            } else {
+                Button("Rename Simulator…") { renameSimulator() }
+            }
+            Divider()
             Button("Copy Session ID") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(session.id, forType: .string)
@@ -1222,6 +1256,7 @@ struct SessionTile: View {
         guard session.platform == "ios" else { return }
         let name = session.deviceName
         guard !name.isEmpty else { return }
+        guard !session.realDevice else { return }
 
         DispatchQueue.global(qos: .userInitiated).async {
             // First unminiaturize, then raise
@@ -1244,8 +1279,9 @@ struct SessionTile: View {
     }
 
     private func hideSimulator() {
-        let name = session.deviceName
+        let name = session.rawDeviceName
         guard !name.isEmpty else { return }
+        guard !session.realDevice else { return }
 
         DispatchQueue.global(qos: .utility).async {
             let script = """
@@ -1259,6 +1295,80 @@ struct SessionTile: View {
             """
             var err: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&err)
+        }
+    }
+
+    private func renameSimulator() {
+        let initialValue = session.rawDeviceName.isEmpty ? session.deviceName : session.rawDeviceName
+        guard let nextName = promptForText(
+            title: "Rename Simulator",
+            message: "Rename the backing simulator or Android AVD for this session.",
+            initialValue: initialValue,
+            actionTitle: "Rename"
+        ) else { return }
+        runSimEmuCommand(["rename", session.id, nextName], successMessage: "Renamed simulator to \(nextName).")
+    }
+
+    private func relabelRealDevice() {
+        guard let alias = promptForText(
+            title: "Relabel Real Device",
+            message: "Set a persistent simemu alias for this real device.",
+            initialValue: session.deviceAlias,
+            actionTitle: "Save Alias"
+        ) else { return }
+        runSimEmuCommand(["relabel", session.id, alias], successMessage: "Saved alias \(alias).")
+    }
+
+    private func promptForText(title: String, message: String, initialValue: String, actionTitle: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = initialValue
+        alert.accessoryView = field
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func runSimEmuCommand(_ args: [String], successMessage: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["simemu"] + args
+            process.standardOutput = output
+            process.standardError = output
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                DispatchQueue.main.async {
+                    if process.terminationStatus == 0 {
+                        _ = successMessage
+                    } else {
+                        let alert = NSAlert()
+                        alert.alertStyle = .warning
+                        alert.messageText = "simemu command failed"
+                        alert.informativeText = text.isEmpty ? "Unknown error" : text
+                        alert.runModal()
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Unable to run simemu"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
         }
     }
 
