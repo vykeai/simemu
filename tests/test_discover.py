@@ -219,6 +219,49 @@ class TestFindBestDeviceAndroidVersion(unittest.TestCase):
         ))
         self.assertEqual(best.sim_id, "Pixel8_API34")
 
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch("simemu.discover.list_watchos")
+    @patch("simemu.discover.list_android")
+    def test_android_watch_claim_stays_on_android(
+        self,
+        mock_list_android: MagicMock,
+        mock_list_watchos: MagicMock,
+        mock_claimed: MagicMock,
+    ) -> None:
+        mock_list_android.return_value = [
+            SimulatorInfo(
+                sim_id="Wear_OS_Small_Round_API_35",
+                platform="android",
+                device_name="Wear OS Small Round API 35",
+                booted=False,
+                runtime="API 35",
+            ),
+        ]
+        mock_list_watchos.return_value = [
+            SimulatorInfo(
+                sim_id="WATCH-UDID",
+                platform="watchos",
+                device_name="Apple Watch Ultra 2",
+                booted=False,
+                runtime="watchOS 26.4",
+            ),
+        ]
+
+        best = find_best_device(
+            SimpleNamespace(
+                platform="android",
+                form_factor="watch",
+                os_version="35",
+                real_device=False,
+                device_selector=None,
+            )
+        )
+
+        self.assertEqual(best.platform, "android")
+        self.assertEqual(best.sim_id, "Wear_OS_Small_Round_API_35")
+        mock_list_android.assert_called_once()
+        mock_list_watchos.assert_not_called()
+
 class TestFindSimulator(unittest.TestCase):
 
     @patch("simemu.discover._get_claimed_sim_ids", return_value=set())

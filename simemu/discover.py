@@ -265,7 +265,7 @@ def _classify_form_factor(sim: SimulatorInfo) -> str | None:
 
     if any(hint in name for hint in ("apple tv", "appletv")):
         return "tv"
-    if any(hint in name for hint in ("apple watch", "watch")):
+    if any(hint in name for hint in ("apple watch", "watch", "wear os", "wear")):
         return "watch"
     if any(hint in name for hint in ("apple vision", "vision pro")):
         return "vision"
@@ -329,14 +329,16 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
 
     allocated_ids = _get_claimed_sim_ids()
 
-    # Map form_factor to platform and device filter
-    _FORM_FACTOR_PLATFORM = {
+    # Only Apple claims fan out by form factor into sibling simulator platforms.
+    _APPLE_FORM_FACTOR_PLATFORM = {
         "watch": "watchos",
         "tv": "tvos",
         "vision": "visionos",
     }
 
-    platform = _FORM_FACTOR_PLATFORM.get(spec.form_factor, spec.platform)
+    platform = spec.platform
+    if spec.platform in {"ios", "watchos", "tvos", "visionos"}:
+        platform = _APPLE_FORM_FACTOR_PLATFORM.get(spec.form_factor, spec.platform)
 
     if spec.real_device:
         if platform == "ios":
@@ -368,7 +370,7 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
             f"Re-try later or create a new one."
         )
 
-    if spec.form_factor in {"phone", "tablet"}:
+    if spec.form_factor in {"phone", "tablet", "watch", "tv", "vision"}:
         filtered = [
             sim for sim in candidates
             if _classify_form_factor(sim) == spec.form_factor
