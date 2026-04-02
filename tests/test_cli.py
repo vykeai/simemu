@@ -319,6 +319,25 @@ class CliHandlerTests(unittest.TestCase):
         update_refs.assert_called_once_with("ios", "SIM-001", "FitKind iPhone")
         self.assertIn("FitKind iPhone", stdout.getvalue())
 
+    @patch("subprocess.run")
+    def test_daemon_install_uses_state_dir_log(self, mock_run) -> None:
+        args = Namespace(action="install", idle_timeout=20)
+        stdout = io.StringIO()
+        fake_home = Path(self._tmpdir) / "home"
+        repo_root = Path(cli.__file__).resolve().parents[1]
+
+        with patch("simemu.cli.Path.home", return_value=fake_home):
+            with redirect_stdout(stdout):
+                cli.cmd_daemon(args)
+
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.simemu.daemon.plist"
+        plist = plist_path.read_text()
+        expected_log = str(Path(self._tmpdir) / "daemon.log")
+        self.assertIn(expected_log, plist)
+        self.assertIn(sys.executable, plist)
+        self.assertIn(str(repo_root), plist)
+        self.assertIn(expected_log, stdout.getvalue())
+
 
 class CliInvocationWarningTests(unittest.TestCase):
     def test_warns_for_module_invocation(self) -> None:

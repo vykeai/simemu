@@ -24,9 +24,31 @@ class Runtime:
     platform: str     # "ios"
 
 
-# ── iOS ──────────────────────────────────────────────────────────────────────
+# ── Apple simulators ─────────────────────────────────────────────────────────
 
-def list_ios_device_types() -> list[DeviceType]:
+def _apple_platform_name(platform: str) -> str:
+    return {
+        "ios": "iOS",
+        "watchos": "watchOS",
+        "tvos": "tvOS",
+        "visionos": "xrOS",
+    }.get(platform, platform)
+
+
+def _apple_device_matches_platform(name: str, platform: str) -> bool:
+    lower_name = name.lower()
+    if platform == "ios":
+        return "iphone" in lower_name or "ipad" in lower_name
+    if platform == "watchos":
+        return "watch" in lower_name
+    if platform == "tvos":
+        return "tv" in lower_name
+    if platform == "visionos":
+        return "vision" in lower_name
+    return False
+
+
+def list_apple_device_types(platform: str) -> list[DeviceType]:
     out = subprocess.check_output(
         ["xcrun", "simctl", "list", "devicetypes", "--json"],
         stderr=subprocess.DEVNULL,
@@ -35,11 +57,12 @@ def list_ios_device_types() -> list[DeviceType]:
     return [
         DeviceType(identifier=d["identifier"], name=d["name"])
         for d in data["devicetypes"]
-        if "iPhone" in d["name"] or "iPad" in d["name"]
+        if _apple_device_matches_platform(d["name"], platform)
     ]
 
 
-def list_ios_runtimes() -> list[Runtime]:
+def list_apple_runtimes(platform: str) -> list[Runtime]:
+    platform_name = _apple_platform_name(platform)
     out = subprocess.check_output(
         ["xcrun", "simctl", "list", "runtimes", "--json"],
         stderr=subprocess.DEVNULL,
@@ -49,24 +72,40 @@ def list_ios_runtimes() -> list[Runtime]:
         Runtime(
             identifier=r["identifier"],
             name=r["name"],
-            platform="ios",
+            platform=platform,
         )
         for r in data["runtimes"]
-        if r.get("isAvailable") and "iOS" in r["name"]
+        if r.get("isAvailable") and platform_name in r["name"]
     ]
 
 
-def create_ios(device_name: str, device_type_query: str, runtime_query: str) -> str:
+def list_ios_device_types() -> list[DeviceType]:
+    return list_apple_device_types("ios")
+
+
+def list_watchos_device_types() -> list[DeviceType]:
+    return list_apple_device_types("watchos")
+
+
+def list_ios_runtimes() -> list[Runtime]:
+    return list_apple_runtimes("ios")
+
+
+def list_watchos_runtimes() -> list[Runtime]:
+    return list_apple_runtimes("watchos")
+
+
+def create_apple(platform: str, device_name: str, device_type_query: str, runtime_query: str) -> str:
     """
-    Create a new iOS simulator. Returns the new UDID.
+    Create a new Apple simulator. Returns the new UDID.
 
     Args:
         device_name:       name for the new simulator (e.g. "My iPhone 16")
         device_type_query: partial match for device type (e.g. "iPhone 16 Pro")
         runtime_query:     partial match for runtime (e.g. "iOS 18" or "18.0")
     """
-    device_types = list_ios_device_types()
-    runtimes = list_ios_runtimes()
+    device_types = list_apple_device_types(platform)
+    runtimes = list_apple_runtimes(platform)
 
     matched_dt = _fuzzy_match(device_type_query, device_types, key=lambda x: x.name)
     if not matched_dt:
@@ -90,6 +129,14 @@ def create_ios(device_name: str, device_type_query: str, runtime_query: str) -> 
     ).strip()
 
     return result  # returns new UDID
+
+
+def create_ios(device_name: str, device_type_query: str, runtime_query: str) -> str:
+    return create_apple("ios", device_name, device_type_query, runtime_query)
+
+
+def create_watchos(device_name: str, device_type_query: str, runtime_query: str) -> str:
+    return create_apple("watchos", device_name, device_type_query, runtime_query)
 
 
 # ── Android ───────────────────────────────────────────────────────────────────

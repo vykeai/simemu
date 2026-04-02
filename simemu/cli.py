@@ -2236,8 +2236,27 @@ def cmd_create(args):
     from . import create as c
 
     if args.platform == "ios":
+        device_list_fn = c.list_ios_device_types
+        runtime_list_fn = c.list_ios_runtimes
+        create_fn = c.create_ios
+        usage_platform = "ios"
+        display_platform = "iOS"
+    elif args.platform == "watchos":
+        device_list_fn = c.list_watchos_device_types
+        runtime_list_fn = c.list_watchos_runtimes
+        create_fn = c.create_watchos
+        usage_platform = "watchos"
+        display_platform = "watchOS"
+    else:
+        device_list_fn = None
+        runtime_list_fn = None
+        create_fn = None
+        usage_platform = ""
+        display_platform = ""
+
+    if args.platform in {"ios", "watchos"}:
         if args.list_devices:
-            devices = c.list_ios_device_types()
+            devices = device_list_fn()
             if args.json:
                 _print_json([{"name": d.name, "identifier": d.identifier} for d in devices])
             else:
@@ -2245,7 +2264,7 @@ def cmd_create(args):
                     print(f"{d.name:<40} {d.identifier}")
             return
         if args.list_runtimes:
-            runtimes = c.list_ios_runtimes()
+            runtimes = runtime_list_fn()
             if args.json:
                 _print_json([{"name": r.name, "identifier": r.identifier} for r in runtimes])
             else:
@@ -2253,15 +2272,15 @@ def cmd_create(args):
                     print(f"{r.name:<20} {r.identifier}")
             return
         if not args.name or not args.device or not args.os:
-            print("Usage: simemu create ios <name> --device <type> --os <runtime>", file=sys.stderr)
-            print("       simemu create ios --list-devices", file=sys.stderr)
-            print("       simemu create ios --list-runtimes", file=sys.stderr)
+            print(f"Usage: simemu create {usage_platform} <name> --device <type> --os <runtime>", file=sys.stderr)
+            print(f"       simemu create {usage_platform} --list-devices", file=sys.stderr)
+            print(f"       simemu create {usage_platform} --list-runtimes", file=sys.stderr)
             sys.exit(1)
-        udid = c.create_ios(args.name, args.device, args.os)
+        udid = create_fn(args.name, args.device, args.os)
         if args.json:
-            _print_json({"name": args.name, "udid": udid, "platform": "ios"})
+            _print_json({"name": args.name, "udid": udid, "platform": args.platform})
         else:
-            print(f"Created iOS simulator '{args.name}': {udid}")
+            print(f"Created {display_platform} simulator '{args.name}': {udid}")
 
     elif args.platform == "genymotion":
         from . import genymotion as gen
@@ -2872,6 +2891,15 @@ def build_parser() -> argparse.ArgumentParser:
     cr_ios.add_argument("--json", action="store_true", help="Output as JSON")
     cr_ios.set_defaults(func=cmd_create)
 
+    cr_watch = cr_sub.add_parser("watchos", help="Create watchOS simulator")
+    cr_watch.add_argument("name", nargs="?", help="Name for the new simulator")
+    cr_watch.add_argument("--device", help="Device type, e.g. 'Apple Watch Series 10 (46mm)'")
+    cr_watch.add_argument("--os", help="Runtime, e.g. 'watchOS 26.2' or '26.2'")
+    cr_watch.add_argument("--list-devices", action="store_true", help="List available device types")
+    cr_watch.add_argument("--list-runtimes", action="store_true", help="List installed runtimes")
+    cr_watch.add_argument("--json", action="store_true", help="Output as JSON")
+    cr_watch.set_defaults(func=cmd_create)
+
     cr_gen = cr_sub.add_parser("genymotion", help="Create Genymotion VM (requires Genymotion Desktop)")
     cr_gen.add_argument("name", nargs="?", help="Name for the new VM")
     cr_gen.add_argument("--hwprofile", help="Hardware profile name or UUID (e.g. 'Samsung Galaxy S24')")
@@ -2971,20 +2999,29 @@ def cmd_idle_shutdown(args):
 
 def cmd_daemon(args):
     """Manage the simemu background daemon (launchd agent on macOS)."""
-    import shutil
+    import sys as _sys
     import subprocess as _sp
     import urllib.request
     label = "com.simemu.daemon"
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    daemon_log = state.state_dir() / "daemon.log"
 
     if args.action == "install":
-        simemu_bin = shutil.which("simemu")
-        if not simemu_bin:
+        python_bin = _sys.executable
+        repo_root = Path(__file__).resolve().parents[1]
+        if not python_bin:
             raise RuntimeError(
-                "simemu binary not found on PATH.\n"
-                "Install simemu first: pip install -e ~/dev/simemu/"
+                "Python executable not found for simemu daemon install.\n"
+                "Run simemu from a working Python environment and retry."
             )
         timeout = args.idle_timeout
+        daemon_log.parent.mkdir(parents=True, exist_ok=True)
+        path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+        pythonpath_parts = [str(repo_root)]
+        existing_pythonpath = os.environ.get("PYTHONPATH")
+        if existing_pythonpath:
+            pythonpath_parts.append(existing_pythonpath)
+        pythonpath_env = ":".join(pythonpath_parts)
         plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2994,19 +3031,28 @@ def cmd_daemon(args):
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{simemu_bin}</string>
+        <string>{python_bin}</string>
+        <string>-m</string>
+        <string>simemu.cli</string>
         <string>serve</string>
         <string>--idle-timeout</string>
         <string>{timeout}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path_env}</string>
+        <key>PYTHONPATH</key>
+        <string>{pythonpath_env}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/simemu/daemon.log</string>
+    <string>{daemon_log}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/simemu/daemon.log</string>
+    <string>{daemon_log}</string>
 </dict>
 </plist>
 """
@@ -3015,7 +3061,7 @@ def cmd_daemon(args):
         _sp.run(["launchctl", "load", "-w", str(plist_path)], check=False)
         print(f"simemu daemon installed and started.")
         print(f"  Idle-shutdown timeout: {timeout} minutes")
-        print(f"  Logs:  /tmp/simemu/daemon.log")
+        print(f"  Logs:  {daemon_log}")
         print(f"  Plist: {plist_path}")
 
     elif args.action == "uninstall":
@@ -3045,7 +3091,7 @@ def cmd_daemon(args):
         )
         if result.returncode == 0:
             print(f"simemu daemon is RUNNING  (launchd label: {label})")
-            print(f"  Logs: /tmp/simemu/daemon.log")
+            print(f"  Logs: {daemon_log}")
             if plist_path.exists():
                 print(f"  Plist: {plist_path}")
         else:
