@@ -220,7 +220,6 @@ class TestPackageVerification(unittest.TestCase):
         self.assertIn("reboot:", str(ctx.exception))
         self.assertIn("cold-boot:", str(ctx.exception))
 
-
 class TestForegroundVerification(unittest.TestCase):
     def _result(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
         return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
@@ -705,6 +704,42 @@ class TestBoot(unittest.TestCase):
 
         self.assertEqual("", stdout.getvalue())
         self.assertIn("Rebooting...", stderr.getvalue())
+
+
+class TestReadyState(unittest.TestCase):
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android.time.time", side_effect=[0.0, 0.0, 2.0])
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android._ensure_booted")
+    def test_wait_until_ready_fails_fast_on_unauthorized_transport(
+        self,
+        mock_booted: MagicMock,
+        mock_serial: MagicMock,
+        mock_run: MagicMock,
+        mock_time: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="adb: device unauthorized.\nOtherwise check for a confirmation dialog on your device.\n",
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            android.wait_until_ready("Broken_AVD", timeout=1)
+
+        self.assertIn("unauthorized", str(ctx.exception).lower())
+        invoked = [" ".join(call.args[0]) for call in mock_run.call_args_list]
+        self.assertTrue(any("get-state" in cmd for cmd in invoked))
+        self.assertFalse(any("wait-for-device" in cmd for cmd in invoked))
+
+    @patch("simemu.android.wait_until_ready", side_effect=RuntimeError("adb device unauthorized"))
+    def test_dismiss_system_dialogs_is_best_effort_when_adb_is_unhealthy(
+        self,
+        mock_ready: MagicMock,
+    ) -> None:
+        self.assertFalse(android.dismiss_system_dialogs("Broken_AVD"))
 
 
 class TestSessionIsolation(unittest.TestCase):

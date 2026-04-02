@@ -1,5 +1,6 @@
 """Tests for simemu.session — session lifecycle, claim, touch, renew, release."""
 
+import io
 import json
 import os
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, call, patch
 
 # Set up temp state dir before importing session module
@@ -23,6 +25,7 @@ from simemu.session import (
     _compute_expires_at,
     _gen_session_id,
     _now_iso,
+    _park_session,
     claim,
     do_command,
     get_active_sessions,
@@ -93,7 +96,7 @@ class TestClaimSpec(unittest.TestCase):
     def test_to_claim_command_with_visible(self) -> None:
         spec = ClaimSpec(platform="ios", visible=True)
         cmd = spec.to_claim_command()
-        self.assertIn("--visible", cmd)
+        self.assertIn("--show", cmd)
 
 
 class TestSession(unittest.TestCase):
@@ -227,6 +230,53 @@ class TestClaim(unittest.TestCase):
         data["sessions"][session_id] = session_data
         sf.write_text(json.dumps(data))
 
+    @patch("simemu.session.android.get_android_serial", return_value=None)
+    @patch("simemu.session.android.validate_serial", return_value=False)
+    def test_get_active_sessions_expires_stale_android_emulators(
+        self,
+        mock_validate,
+        mock_get_serial,
+    ) -> None:
+        self._seed_session("s-stale", sim_id="Stale_API35", pinned_serial="emulator-5554")
+
+        active = get_active_sessions()
+
+        self.assertNotIn("s-stale", active)
+        persisted = get_session("s-stale")
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.status, "expired")
+        self.assertIsNone(persisted.pinned_serial)
+
+    @patch("simemu.session.android.shutdown")
+    def test_park_session_logs_to_stderr(self, mock_shutdown) -> None:
+        now = _now_iso()
+        session = Session(
+            session_id="s-park01",
+            platform="android",
+            form_factor="phone",
+            os_version=None,
+            real_device=False,
+            label="",
+            status="active",
+            sim_id="Pixel_API35",
+            device_name="Pixel API35",
+            agent="test",
+            created_at=now,
+            heartbeat_at=now,
+            expires_at=_compute_expires_at("active", now),
+            claim_platform="android",
+            claim_form_factor="phone",
+        )
+        self._seed_session("s-park01", sim_id="Pixel_API35")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            _park_session("s-park01", session)
+
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Parked 's-park01' to free memory", stderr.getvalue())
+
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.ios.boot")
     @patch("simemu.session.find_best_device")
@@ -273,10 +323,11 @@ class TestClaim(unittest.TestCase):
         mock_boot.assert_not_called()
 
     @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.boot")
     @patch("simemu.session.find_best_device")
     @patch("simemu.session.state.check_maintenance")
-    def test_claim_boots_android_headless(self, mock_maint, mock_find, mock_boot, mock_win) -> None:
+    def test_claim_boots_android_headless(self, mock_maint, mock_find, mock_boot, mock_ready, mock_win) -> None:
         mock_find.return_value = _make_sim(
             sim_id="Pixel_7", platform="android", device_name="Pixel 7",
             booted=False, runtime="API 35",
@@ -286,6 +337,22 @@ class TestClaim(unittest.TestCase):
         mock_boot.assert_called_once_with("Pixel_7", headless=True)
 
     @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.session.android.boot")
+    @patch("simemu.session.find_best_device")
+    @patch("simemu.session.state.check_maintenance")
+    def test_claim_boots_android_windowed_when_visible(self, mock_maint, mock_find, mock_boot, mock_ready, mock_win) -> None:
+        mock_find.return_value = _make_sim(
+            sim_id="Pixel_7", platform="android", device_name="Pixel 7",
+            booted=False, runtime="API 35",
+        )
+        spec = ClaimSpec(platform="android", visible=True)
+        claim(spec)
+        mock_boot.assert_called_once_with("Pixel_7", headless=False)
+        mock_win.assert_not_called()
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5556")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5556")
     @patch("simemu.session.android.boot")
     @patch("simemu.session.find_matching_devices")
@@ -298,6 +365,7 @@ class TestClaim(unittest.TestCase):
         mock_find_matching,
         mock_boot,
         mock_get_serial,
+        mock_ready,
         mock_win,
     ) -> None:
         bad = _make_sim(
@@ -319,6 +387,78 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(mock_boot.call_args_list[1], call("Pixel8_API34", headless=True))
 
     @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5556")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5556")
+    @patch("simemu.session.android.boot")
+    @patch("simemu.session.find_matching_devices")
+    @patch("simemu.session.find_best_device")
+    @patch("simemu.session.state.check_maintenance")
+    def test_claim_visible_android_fallback_stays_windowed(
+        self,
+        mock_maint,
+        mock_find,
+        mock_find_matching,
+        mock_boot,
+        mock_get_serial,
+        mock_ready,
+        mock_win,
+    ) -> None:
+        bad = _make_sim(
+            sim_id="Biscuit_API35", platform="android", device_name="Biscuit API35",
+            booted=False, runtime="API 35",
+        )
+        good = _make_sim(
+            sim_id="Pixel8_API34", platform="android", device_name="Pixel8 API34",
+            booted=False, runtime="API 34",
+        )
+        mock_find.return_value = bad
+        mock_find_matching.return_value = [bad, good]
+        mock_boot.side_effect = [RuntimeError("snapshot pending"), None]
+
+        session = claim(ClaimSpec(platform="android", visible=True))
+
+        self.assertEqual(session.sim_id, "Pixel8_API34")
+        self.assertEqual(mock_boot.call_args_list[0], call("Biscuit_API35", headless=False))
+        self.assertEqual(mock_boot.call_args_list[1], call("Pixel8_API34", headless=False))
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.shutdown")
+    @patch("simemu.session.android.boot")
+    @patch("simemu.session.android.wait_until_ready", side_effect=[RuntimeError("adb device unauthorized"), "emulator-5556"])
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5556")
+    @patch("simemu.session.find_matching_devices")
+    @patch("simemu.session.find_best_device")
+    @patch("simemu.session.state.check_maintenance")
+    def test_claim_falls_back_when_booted_android_candidate_is_not_adb_ready(
+        self,
+        mock_maint,
+        mock_find,
+        mock_find_matching,
+        mock_get_serial,
+        mock_ready,
+        mock_boot,
+        mock_shutdown,
+        mock_win,
+    ) -> None:
+        bad = _make_sim(
+            sim_id="Broken_API35", platform="android", device_name="Broken API35",
+            booted=True, runtime="API 35",
+        )
+        good = _make_sim(
+            sim_id="Healthy_API34", platform="android", device_name="Healthy API34",
+            booted=True, runtime="API 34",
+        )
+        mock_find.return_value = bad
+        mock_find_matching.return_value = [bad, good]
+
+        session = claim(ClaimSpec(platform="android"))
+
+        self.assertEqual(session.sim_id, "Broken_API35")
+        mock_shutdown.assert_called_once_with("Broken_API35")
+        mock_boot.assert_called_once_with("Broken_API35", headless=True)
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.validate_serial", return_value=False)
     @patch("simemu.session.android.get_android_serial")
     @patch("simemu.session.find_best_device")
@@ -329,6 +469,7 @@ class TestClaim(unittest.TestCase):
         mock_find,
         mock_get_serial,
         mock_validate,
+        mock_ready,
         mock_win,
     ) -> None:
         self._seed_session("s-old", sim_id="MedPhone_API34", pinned_serial="emulator-5554")
@@ -339,7 +480,7 @@ class TestClaim(unittest.TestCase):
             booted=True,
             runtime="API 35",
         )
-        mock_get_serial.side_effect = [None, "emulator-5554"]
+        mock_get_serial.side_effect = [None]
 
         session = claim(ClaimSpec(platform="android"))
 
@@ -1042,6 +1183,30 @@ class TestDoCommand(unittest.TestCase):
         self._seed_session()
         result = do_command("s-aaa111", "show", [])
         self.assertEqual(result["status"], "visible")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5558")
+    @patch("simemu.session.android.boot")
+    @patch("simemu.session.android.shutdown")
+    @patch("simemu.session.android.current_window_frame", return_value=None)
+    def test_do_command_show_reboots_android_window_if_missing(
+        self,
+        mock_window_frame,
+        mock_shutdown,
+        mock_boot,
+        mock_serial,
+    ) -> None:
+        self._seed_session(
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        result = do_command("s-aaa111", "show", [])
+        self.assertEqual(result["status"], "visible")
+        mock_shutdown.assert_called_once_with("Pixel_7")
+        mock_boot.assert_called_once_with("Pixel_7", headless=False)
+        persisted = get_session("s-aaa111")
+        self.assertEqual(persisted.pinned_serial, "emulator-5558")
 
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")

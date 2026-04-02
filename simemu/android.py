@@ -317,6 +317,36 @@ def _serial(avd_name: str, pinned: Optional[str] = None) -> str:
     return serial
 
 
+def _transport_state(serial: str, timeout: int = 10) -> tuple[str | None, str]:
+    """Return the current adb transport state plus a human-readable detail string.
+
+    `adb wait-for-device` can block on unauthorized transports, so readiness checks
+    must start with `get-state` and inspect stderr for auth failures.
+    """
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "get-state"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "adb get-state timed out"
+    except OSError as exc:
+        return None, str(exc)
+
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    detail = stderr or stdout or "adb device state unavailable"
+    lower_detail = detail.lower()
+    if "unauthorized" in lower_detail:
+        return "unauthorized", detail
+    if result.returncode == 0 and stdout:
+        return stdout.lower(), detail
+    return None, detail
+
+
 def validate_serial(serial: str, expected_avd: str) -> bool:
     """Check that a serial (e.g. emulator-5554) belongs to the expected AVD.
 
@@ -380,37 +410,9 @@ def wait_until_ready(
             time.sleep(2)
             continue
 
-        try:
-            wait_result = subprocess.run(
-                ["adb", "-s", serial, "wait-for-device"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            last_detail = "adb wait-for-device timed out"
-            time.sleep(2)
-            continue
-        if wait_result.returncode != 0:
-            last_detail = wait_result.stderr.strip() or wait_result.stdout.strip() or "adb wait-for-device failed"
-            time.sleep(2)
-            continue
-
-        try:
-            state_result = subprocess.run(
-                ["adb", "-s", serial, "get-state"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            last_detail = "adb get-state timed out"
-            time.sleep(2)
-            continue
-        if state_result.stdout.strip() != "device":
-            last_detail = state_result.stderr.strip() or state_result.stdout.strip() or "adb device state unavailable"
+        transport_state, transport_detail = _transport_state(serial, timeout=15)
+        if transport_state != "device":
+            last_detail = transport_detail
             time.sleep(2)
             continue
 
@@ -916,7 +918,14 @@ def boot(avd_name: str, headless: bool = False) -> None:
             delete=False,
         )
         log_path = Path(log_handle.name)
-        proc = subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
         log_handle.close()
 
         print(f"Waiting for '{avd_name}' to boot...", file=sys.stderr, flush=True)
@@ -1219,7 +1228,12 @@ def dismiss_system_dialogs(avd_name: str, pinned_serial: Optional[str] = None) -
 
     Returns True if a dialog was detected and dismissed.
     """
-    serial = wait_until_ready(avd_name, pinned_serial=pinned_serial)
+    try:
+        serial = wait_until_ready(avd_name, pinned_serial=pinned_serial, timeout=20)
+    except RuntimeError:
+        # Best-effort only. Screenshot fallback paths can still work even when
+        # adb shell is unhealthy, so don't block the capture on dialog cleanup.
+        return False
     # Check for system dialog via dumpsys window
     result = subprocess.run(
         ["adb", "-s", serial, "shell", "dumpsys", "window", "windows"],

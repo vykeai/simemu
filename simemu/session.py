@@ -13,6 +13,7 @@ import os
 import platform as _platform_mod
 import re
 import secrets
+import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -368,6 +369,11 @@ def _session_from_dict(d: dict) -> Session:
     return Session(**filtered)
 
 
+def _session_log(message: str) -> None:
+    """Emit session diagnostics to stderr so JSON stdout stays machine-readable."""
+    print(message, file=sys.stderr, flush=True)
+
+
 # ── public API ───────────────────────────────────────────────────────────────
 
 def claim(spec: ClaimSpec) -> Session:
@@ -426,51 +432,70 @@ def claim(spec: ClaimSpec) -> Session:
     # Reconcile stale Android session pins before selecting a new device.
     # This prevents fresh claims from reusing emulator ports still "owned" by
     # dead or parked sessions in the session store.
-    with _locked_sessions() as (data, save):
-        if _reconcile_android_sessions_locked(data):
-            save(data)
+    _reconcile_android_sessions()
 
     # Find best matching device
     sim = find_best_device(spec)
+    pinned_serial: str | None = None
+
+    def _prepare_android_candidate(candidate):
+        """Return a usable adb serial for a candidate, recovering broken booted AVDs."""
+        if candidate.real_device:
+            return None
+
+        attempted_recovery = False
+        while True:
+            if not candidate.booted or attempted_recovery:
+                print(f"Booting {candidate.device_name}...", file=_sys.stderr, flush=True)
+                android.boot(candidate.sim_id, headless=not spec.visible)
+
+            try:
+                serial = android.wait_until_ready(candidate.sim_id, timeout=45)
+                print("Ready.", file=_sys.stderr, flush=True)
+                return serial
+            except RuntimeError as exc:
+                if attempted_recovery:
+                    raise RuntimeError(str(exc))
+                attempted_recovery = True
+                print(
+                    f"Recovering {candidate.device_name} after adb-ready failure...",
+                    file=_sys.stderr,
+                    flush=True,
+                )
+                try:
+                    android.shutdown(candidate.sim_id)
+                except RuntimeError:
+                    pass
 
     # Boot the device if not already booted and not a real device.
-    # Android gets one extra resilience layer: if the top-ranked emulator fails
-    # to boot, try the next ranked candidate instead of failing the whole claim.
-    if not sim.real_device and not sim.booted:
-        if sim.platform == "android":
-            print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
+    # Android gets extra resilience: validate adb readiness even for already-
+    # booted emulators, recover once, then fall back to the next candidate.
+    if sim.platform == "android" and not sim.real_device:
+        prep_errors = []
+        candidates = [sim] + [
+            candidate for candidate in find_matching_devices(spec)
+            if candidate.sim_id != sim.sim_id
+        ]
+        for candidate in candidates:
             try:
-                android.boot(sim.sim_id, headless=not spec.visible)
-                print(f"Ready.", file=_sys.stderr, flush=True)
+                pinned_serial = _prepare_android_candidate(candidate)
+                sim = candidate
+                break
             except RuntimeError as exc:
-                boot_errors = [f"{sim.sim_id}: {exc}"]
-                for candidate in find_matching_devices(spec):
-                    if candidate.sim_id == sim.sim_id:
-                        continue
-                    if candidate.real_device or candidate.booted:
-                        sim = candidate
-                        break
-                    print(f"Booting {candidate.device_name}...", file=_sys.stderr, flush=True)
-                    try:
-                        android.boot(candidate.sim_id, headless=not spec.visible)
-                        print(f"Ready.", file=_sys.stderr, flush=True)
-                        sim = candidate
-                        break
-                    except RuntimeError as fallback_exc:
-                        boot_errors.append(f"{candidate.sim_id}: {fallback_exc}")
-                        continue
-                else:
-                    raise RuntimeError(
-                        "No Android emulator could be booted for this claim.\n" +
-                        "\n".join(boot_errors)
-                    )
+                prep_errors.append(f"{candidate.sim_id}: {exc}")
+                continue
         else:
-            print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
-            if sim.platform in ("ios", "watchos", "tvos", "visionos"):
-                ios.boot(sim.sim_id)
-            else:
-                android.boot(sim.sim_id, headless=not spec.visible)
-            print(f"Ready.", file=_sys.stderr, flush=True)
+            raise RuntimeError(
+                "No Android emulator could be prepared for this claim.\n" +
+                "\n".join(prep_errors)
+            )
+    elif not sim.real_device and not sim.booted:
+        print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
+        if sim.platform in ("ios", "watchos", "tvos", "visionos"):
+            ios.boot(sim.sim_id)
+        else:
+            android.boot(sim.sim_id, headless=not spec.visible)
+        print(f"Ready.", file=_sys.stderr, flush=True)
 
     # Apply window management — headless by default unless --visible
     if not sim.real_device and not spec.visible:
@@ -480,9 +505,8 @@ def claim(spec: ClaimSpec) -> Session:
             pass  # window management is best-effort
 
     # Pin the adb serial at claim time for Android session isolation
-    pinned_serial: str | None = None
     if spec.platform == "android" and not sim.real_device:
-        pinned_serial = android.get_android_serial(sim.sim_id, retries=4, delay=1.0)
+        pinned_serial = pinned_serial or android.get_android_serial(sim.sim_id, retries=4, delay=1.0)
 
     # Create the session
     session = Session(
@@ -522,10 +546,9 @@ def claim(spec: ClaimSpec) -> Session:
                         # Emulator is dead — expire the zombie session
                         data["sessions"][existing_id]["status"] = "expired"
                         data["sessions"][existing_id]["expires_at"] = _now_iso()
-                        print(
+                        _session_log(
                             f"[simemu-session] Expired zombie session '{existing_id}' "
-                            f"(emulator '{sim.sim_id}' not running) to allow new claim",
-                            flush=True, file=_sys.stderr,
+                            f"(emulator '{sim.sim_id}' not running) to allow new claim"
                         )
                         continue
                 raise SessionError(
@@ -571,6 +594,15 @@ def _mark_expired(session_id: str) -> None:
         if session_id in data["sessions"] and data["sessions"][session_id].get("status") not in ("expired", "released"):
             data["sessions"][session_id]["status"] = "expired"
             save(data)
+
+
+def _reconcile_android_sessions() -> list[str]:
+    """Persist Android session cleanup outside the daemon path."""
+    with _locked_sessions() as (data, save):
+        changed = _reconcile_android_sessions_locked(data)
+        if changed:
+            save(data)
+        return changed
 
 
 def _reconcile_android_sessions_locked(data: dict) -> list[str]:
@@ -620,10 +652,9 @@ def _reconcile_android_sessions_locked(data: dict) -> list[str]:
         data["sessions"][sid]["expires_at"] = _now_iso()
         data["sessions"][sid]["pinned_serial"] = None
         changed.append(sid)
-        print(
+        _session_log(
             f"[simemu-session] '{sid}' {old_status} → expired "
-            f"(stale Android session: emulator '{sim_id}' not running)",
-            flush=True,
+            f"(stale Android session: emulator '{sim_id}' not running)"
         )
 
     return changed
@@ -825,6 +856,7 @@ def get_all_sessions() -> dict[str, Session]:
 
 def get_active_sessions() -> dict[str, Session]:
     """Return only active/idle/parked sessions."""
+    _reconcile_android_sessions()
     return {
         sid: s for sid, s in get_all_sessions().items()
         if s.status in ("active", "idle", "parked") and not _is_effectively_expired(s)
@@ -905,6 +937,7 @@ _COMMAND_HELP: dict[str, str] = {
     "keychain-reset":   "Clear iOS keychain",
     "icloud-sync":      "Trigger iCloud sync (iOS only)",
     "clone":            "Clone an iOS simulator",
+    "pair":             "Pair a watchOS and iOS simulator session/device and activate the pair",
     "font-size":        "Set accessibility font size (Android)",
     "reduce-motion":    "Toggle reduce motion / animations (Android)",
     "notifications-clear": "Clear notification center (Android)",
@@ -1070,7 +1103,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
             "Device": ["appearance", "rotate", "location", "status-bar", "biometrics",
                        "network", "clipboard-set", "clipboard-get"],
             "Files": ["push", "pull", "add-media", "contacts-import"],
-            "System": ["keychain-reset", "icloud-sync", "clone", "font-size",
+            "System": ["keychain-reset", "icloud-sync", "clone", "pair", "font-size",
                        "reduce-motion", "notifications-clear", "a11y-tree", "env"],
             "tvOS Remote": ["focus-move", "focus-select", "remote"],
         }
@@ -2259,6 +2292,112 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             return {"status": "unsupported", "platform": "android",
                     "hint": "Android emulator cloning is not supported."}
 
+    elif command == "pair":
+        import subprocess as _sp
+
+        def _find_existing_pair_id(watch_udid: str, phone_udid: str) -> str | None:
+            result = _sp.run(
+                ["xcrun", "simctl", "list", "pairs", "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            try:
+                data = json.loads(result.stdout or "{}")
+            except json.JSONDecodeError:
+                return None
+
+            for pair_id, pair in (data.get("pairs") or {}).items():
+                watch = pair.get("watch") or {}
+                phone = pair.get("phone") or {}
+                if watch.get("udid") == watch_udid and phone.get("udid") == phone_udid:
+                    return pair_id
+            return None
+
+        def _resolve_target_session(target: str) -> Session | None:
+            try:
+                return get_session(target)
+            except KeyError:
+                return None
+
+        if len(args) != 1:
+            raise RuntimeError("Usage: simemu do <session> pair <other-session|other-udid>")
+        if session.real_device or platform not in ("ios", "watchos"):
+            return {
+                "status": "unsupported",
+                "platform": platform,
+                "hint": "pair is only available for iOS/watchOS simulator sessions.",
+            }
+
+        other_ref = args[0]
+        other_session = _resolve_target_session(other_ref)
+
+        if other_session is not None:
+            if other_session.real_device or other_session.platform not in ("ios", "watchos"):
+                return {
+                    "status": "unsupported",
+                    "platform": other_session.platform,
+                    "hint": "pair requires an iOS phone session and a watchOS watch session.",
+                }
+            other_udid = other_session.sim_id
+            other_form_factor = other_session.form_factor
+        else:
+            other_udid = other_ref
+            other_form_factor = "phone" if platform == "watchos" else "watch"
+
+        if not sim_id or not other_udid:
+            return {"status": "failed", "error": "Both simulator UDIDs are required to pair."}
+
+        if session.form_factor == "watch" and other_form_factor == "phone":
+            watch_udid = sim_id
+            phone_udid = other_udid
+        elif session.form_factor == "phone" and other_form_factor == "watch":
+            watch_udid = other_udid
+            phone_udid = sim_id
+        else:
+            return {
+                "status": "unsupported",
+                "hint": "pair requires exactly one watch session and one phone session.",
+            }
+
+        pair_id = _find_existing_pair_id(watch_udid, phone_udid)
+        if not pair_id:
+            result = _sp.run(
+                ["xcrun", "simctl", "pair", watch_udid, phone_udid],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return {
+                    "status": "failed",
+                    "error": result.stderr.strip() or "Failed to create simulator pair.",
+                }
+            pair_id = result.stdout.strip()
+
+        activate = _sp.run(
+            ["xcrun", "simctl", "pair_activate", pair_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if activate.returncode != 0 and "already active" not in (activate.stderr or "").lower():
+            return {
+                "status": "failed",
+                "error": activate.stderr.strip() or "Failed to activate simulator pair.",
+                "pair_id": pair_id,
+            }
+
+        return {
+            "status": "paired",
+            "pair_id": pair_id,
+            "watch_udid": watch_udid,
+            "phone_udid": phone_udid,
+            "hint": "Reboot both simulator sessions to refresh WatchConnectivity pairing state.",
+        }
+
     elif command == "siri":
         if not args:
             raise RuntimeError("Usage: simemu do <session> siri <query...>")
@@ -2403,7 +2542,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             f"foreground-app, is-running, network, keychain-reset, icloud-sync, "
             f"app-info, a11y-tree, a11y-tap, type-submit, scroll, back, home, "
             f"notifications-clear, app-container, clone, siri, contacts-import, "
-            f"font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
+            f"pair, font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
         )
 
 
@@ -2879,10 +3018,9 @@ def lifecycle_tick() -> list[str]:
                     except Exception:
                         pass  # device may already be off
 
-                print(
+                _session_log(
                     f"[simemu-session] '{sid}' {old_status} → {new_status} "
-                    f"(idle {idle_seconds / 60:.0f}m)",
-                    flush=True,
+                    f"(idle {idle_seconds / 60:.0f}m)"
                 )
 
         reconciled = _reconcile_android_sessions_locked(data)
@@ -2983,7 +3121,7 @@ def _park_session(session_id: str, session: Session) -> None:
         except Exception:
             pass
 
-    print(f"[simemu-session] Parked '{session_id}' to free memory", flush=True)
+    _session_log(f"[simemu-session] Parked '{session_id}' to free memory")
 
 
 # ── errors ───────────────────────────────────────────────────────────────────
