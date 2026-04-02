@@ -35,6 +35,15 @@
       "target": null,
       "gates": [],
       "checkpoints": []
+    },
+    {
+      "id": "wave-5",
+      "name": "Zero Tolerance",
+      "goal": "Every bug fixed from brutal assessment, security hardened, code quality cleaned, all tests passing, zero warnings",
+      "status": "planned",
+      "target": null,
+      "gates": [],
+      "checkpoints": []
     }
   ]
 }

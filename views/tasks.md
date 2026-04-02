@@ -47,6 +47,13 @@
 | T-LU-016 | Runecode/doctor integration — detect broken simemu setup and suggest fixes | done | medium | — | — | all | — |
 | T-LU-018 | Project integration kit — canonical keel/execution.yaml and simemu snippets for downstream repos | done | low | — | — | all | — |
 
+### Unassigned
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-LU-035 | Menubar device management — relabel and rename devices from UI | done | medium | — | — | all | — |
+| T-LU-036 | Device aliases and renaming — persistent labels for real devices and simulators | done | high | — | — | all | — |
+
 ## Wave 4: Ops Hardening
 
 
@@ -61,6 +68,32 @@
 | T-LU-009 | Real-device parity — claim/do/recovery coverage for iPhone and Android hardware | done | medium | — | — | all | — |
 | T-LU-012 | Server auth and rate limiting for multi-user deployments | done | medium | — | — | all | — |
 | T-LU-015 | JSON schema contract for sessions, commands, and server responses | done | medium | — | — | all | — |
+
+### Unassigned
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-LU-034 | Real iOS parity — stable identifiers, discovery, and screenshot path | active | high | — | — | all | — |
+
+## Wave 5: Zero Tolerance
+
+
+### Unassigned
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-LU-022 | [BUG] Fix 2 Android launch tests that timeout at 60s — unmocked time.sleep in stop_other_apps | done | critical | — | — | — | — |
+| T-LU-023 | [BUG] Fix iOS boot tolerance test (test_boot_tolerates_already_booted_error) — mock IndexError | done | critical | — | — | — | — |
+| T-LU-024 | [BUG] Fix misplaced docstrings in 7+ functions across android.py and ios.py — docstring after first statement is dead code | done | high | — | — | — | — |
+| T-LU-025 | [BUG] Add missing subprocess timeout to boot() getprop call and get_screen_size() wm size call in android.py | done | high | — | — | — | — |
+| T-LU-026 | [BUG] reboot() does not wait for Android device after adb reboot — serial becomes invalid | done | high | — | — | — | — |
+| T-LU-027 | [BUG] Hardcoded target=android-35 in AVD rename() — should preserve original ini target | done | medium | — | — | — | — |
+| T-LU-028 | [BUG] Hardcoded /tmp/simemu-apps in macOS command handler — should use _sidecar_dir pattern | done | medium | — | — | — | — |
+| T-LU-029 | [BUG] _dumpsys_has_real_package operator precedence unclear — add explicit parentheses | done | low | — | — | — | — |
+| T-LU-030 | [BUG] Dead pass statement in foreground_app line 374 | done | low | — | — | — | — |
+| T-LU-031 | [GATE] All tests pass with zero failures and zero timeouts — pytest exits 0 | done | critical | — | — | — | — |
+| T-LU-032 | [GATE] Zero subprocess.run calls without timeout in android.py — grep verification | done | high | — | — | — | — |
+| T-LU-033 | [GATE] All docstrings are first statement in function body — grep verification | done | medium | — | — | — | — |
 
 ## Unassigned
 

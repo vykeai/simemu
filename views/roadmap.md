@@ -17,9 +17,14 @@
 ## Wave 3: Productization `planned`
 **Goal:** Turn simemu into a stable installable tool with reservations, packaging, and operator-grade ergonomics
 
-`████████████████████` 100%  (7/7 tasks)
+`████████████████████` 100%  (9/9 tasks)
 
 ## Wave 4: Ops Hardening `planned`
 **Goal:** Harden session state, diagnostics, APIs, and recovery paths for long-running shared-desktop use
 
-`████████████████████` 100%  (7/7 tasks)
+`██████████████████░░` 88%  (7/8 tasks)
+
+## Wave 5: Zero Tolerance `planned`
+**Goal:** Every bug fixed from brutal assessment, security hardened, code quality cleaned, all tests passing, zero warnings
+
+`████████████████████` 100%  (12/12 tasks)
