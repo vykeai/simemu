@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 import platform as _platform_mod
+import re
 import secrets
 import tempfile
 from contextlib import contextmanager
@@ -135,6 +136,72 @@ def _gen_session_id() -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_FLOW_APP_ID_RE = re.compile(r"^\s*appId\s*:\s*['\"]?([^'\"#\s]+)")
+
+
+def _extract_maestro_app_id(flow_path: str) -> str | None:
+    path = Path(flow_path)
+    if not path.exists() or path.suffix not in {".yaml", ".yml"}:
+        return None
+    try:
+        for line in path.read_text(errors="ignore").splitlines()[:40]:
+            match = _FLOW_APP_ID_RE.match(line)
+            if match:
+                return match.group(1).strip()
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_maestro_target_app(session_id: str, flow_files: list[str]) -> str | None:
+    for flow_path in flow_files:
+        app_id = _extract_maestro_app_id(flow_path)
+        if app_id:
+            return app_id
+
+    data = _read_sessions_raw()
+    return data["sessions"].get(session_id, {}).get("last_app")
+
+
+def _ensure_maestro_target_foreground(
+    session_id: str,
+    platform: str,
+    sim_id: str,
+    expected_app: str | None,
+    android_kwargs: dict,
+) -> None:
+    if not expected_app or expected_app == "com.apple.springboard":
+        return
+
+    provenance = get_provenance(session_id)
+    launch_args = provenance.get("last_launch_args") or []
+    if not isinstance(launch_args, list):
+        launch_args = []
+
+    if platform in ("ios", "watchos", "tvos", "visionos"):
+        current = ios.foreground_app(sim_id)
+        if current != expected_app:
+            ios.launch(sim_id, expected_app, launch_args)
+        if not ios.wait_for_foreground_app(sim_id, expected_app, timeout=4.0, delay=0.2):
+            ios.accept_open_app_alert(sim_id, attempts=3, delay=0.25)
+            if not ios.wait_for_foreground_app(sim_id, expected_app, timeout=2.0, delay=0.2):
+                actual = ios.foreground_app(sim_id)
+                raise RuntimeError(
+                    f"Maestro handoff failed: expected '{expected_app}' foreground on iOS, got '{actual}'."
+                )
+        return
+
+    expected_package = expected_app.split("/", 1)[0]
+    current = android.foreground_app(sim_id, retries=2, delay=0.5, **android_kwargs)
+    if current != expected_package:
+        android.launch(sim_id, expected_package, launch_args, **android_kwargs)
+    actual = android.foreground_app(sim_id, retries=3, delay=0.75, **android_kwargs)
+    if actual != expected_package:
+        raise RuntimeError(
+            f"Maestro handoff failed: expected '{expected_package}' foreground on Android, got '{actual}'."
+        )
 
 
 def _compute_expires_at(status: str, heartbeat_at: str) -> str:
@@ -1316,6 +1383,15 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if not flow_files:
             flow_files = [args[0]]
             extra_args = args[1:]
+
+        expected_app = _resolve_maestro_target_app(session_id, flow_files)
+        _ensure_maestro_target_foreground(
+            session_id=session_id,
+            platform=platform,
+            sim_id=sim_id,
+            expected_app=expected_app,
+            android_kwargs=android_kwargs,
+        )
 
         cmd = ["maestro", "--device", device_id, "test"] + flow_files + extra_args
         result = _sp.run(cmd)

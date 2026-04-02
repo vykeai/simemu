@@ -21,6 +21,68 @@ from . import device as real_device
 # Android screenrecord hard cap (3 minutes); warn agents approaching this
 SCREENRECORD_MAX_SECONDS = 180
 
+_AM_START_PASSTHROUGH_LONG_OPTIONS = {
+    "--user",
+    "--display",
+    "--windowingMode",
+    "--activityType",
+    "--attach-agent",
+    "--attach-agent-bind",
+    "--receiver-permission",
+    "--selector",
+}
+
+_AM_START_PASSTHROUGH_PREFIXES = (
+    "--activity-",
+    "--grant-",
+    "--receiver-",
+    "--splashscreen-",
+)
+
+
+def _normalize_launch_args(args: list[str] | None) -> list[str]:
+    """Translate ergonomic `--key=value` launch args into Android intent extras.
+
+    This keeps iOS-style launch ergonomics working on Android for app-specific
+    debug routes like `--debug-route=journey/root`, while leaving known
+    `am start` options untouched.
+    """
+    if not args:
+        return []
+
+    normalized: list[str] = []
+    for arg in args:
+        if not arg.startswith("--"):
+            normalized.append(arg)
+            continue
+
+        if arg in _AM_START_PASSTHROUGH_LONG_OPTIONS or arg.startswith(_AM_START_PASSTHROUGH_PREFIXES):
+            normalized.append(arg)
+            continue
+
+        if arg.startswith(("--es", "--ez", "--ei", "--el", "--ef", "--eu", "--ecn", "--eia", "--ela", "--efa", "--esa", "--esn")):
+            normalized.append(arg)
+            continue
+
+        raw = arg[2:]
+        if "=" in raw:
+            key, value = raw.split("=", 1)
+            extra_key = key.replace("-", "_")
+            lower_value = value.lower()
+            if lower_value in {"true", "false"}:
+                normalized.extend(["--ez", extra_key, lower_value])
+            elif re.fullmatch(r"-?\d+", value):
+                normalized.extend(["--ei", extra_key, value])
+            elif re.fullmatch(r"-?\d+\.\d+", value):
+                normalized.extend(["--ef", extra_key, value])
+            else:
+                normalized.extend(["--es", extra_key, value])
+            continue
+
+        normalized.extend(["--ez", raw.replace("-", "_"), "true"])
+
+    return normalized
+
 
 def _read_log_excerpt(log_path: Path, max_chars: int = 4000) -> str:
     try:
@@ -1057,6 +1119,7 @@ def launch(
       - "com.example.app"           → resolves main launcher activity
       - "com.example.app/.MainActivity"  → explicit activity
     """
+    args = _normalize_launch_args(args)
     expected_package = package_activity.split("/", 1)[0]
     if "/" not in package_activity:
         try:
