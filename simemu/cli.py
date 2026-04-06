@@ -1699,11 +1699,24 @@ def cmd_maestro(args):
             )
 
     flow_display = " ".join(Path(f).name for f in args.flow)
-    cmd = ["maestro", "--device", device_id, "test"] + args.flow + args.extra
+    cmd, env, debug_output = session_module._prepare_maestro_invocation(
+        session_id=args.slug,
+        platform=alloc.platform,
+        device_id=device_id,
+        flow_files=args.flow,
+        extra_args=args.extra,
+    )
     print(f"Running: {' '.join(cmd)}", flush=True)
     with _maestro_hud(flow_display):
-        result = _sp.run(cmd)
+        result = _sp.run(cmd, env=env)
     if result.returncode != 0:
+        message = session_module._summarize_maestro_failure(
+            session_id=args.slug,
+            platform=alloc.platform,
+            debug_output=debug_output,
+        )
+        if message:
+            print(message, file=sys.stderr, flush=True)
         raise SystemExit(result.returncode)
 
 

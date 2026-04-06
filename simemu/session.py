@@ -140,6 +140,10 @@ def _now_iso() -> str:
 
 
 _FLOW_APP_ID_RE = re.compile(r"^\s*appId\s*:\s*['\"]?([^'\"#\s]+)")
+_MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE = re.compile(
+    r"Not able to reach the gRPC server while processing deviceInfo command"
+    r"|Connection refused: localhost/(?:127\.0\.0\.1|\[[0-9a-fA-F:]+\]):7001"
+)
 
 
 def _extract_maestro_app_id(flow_path: str) -> str | None:
@@ -203,6 +207,100 @@ def _ensure_maestro_target_foreground(
         raise RuntimeError(
             f"Maestro handoff failed: expected '{expected_package}' foreground on Android, got '{actual}'."
         )
+
+
+def _maestro_has_flag(args: list[str], flag: str) -> bool:
+    return any(arg == flag or arg.startswith(f"{flag}=") for arg in args)
+
+
+def _extract_maestro_option(args: list[str], flag: str) -> str | None:
+    for idx, arg in enumerate(args):
+        if arg == flag and idx + 1 < len(args):
+            return args[idx + 1]
+        if arg.startswith(f"{flag}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _maestro_debug_output_dir(session_id: str) -> str:
+    root = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
+    root.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = root / "maestro-debug" / f"{session_id}_{ts}"
+    target.mkdir(parents=True, exist_ok=True)
+    return str(target)
+
+
+def _maestro_env(platform: str) -> dict[str, str]:
+    env = dict(os.environ)
+    if platform != "android":
+        return env
+
+    prefer_ipv4 = "-Djava.net.preferIPv4Stack=true"
+    current = env.get("JAVA_TOOL_OPTIONS", "").strip()
+    if prefer_ipv4 not in current.split():
+        env["JAVA_TOOL_OPTIONS"] = f"{current} {prefer_ipv4}".strip()
+    return env
+
+
+def _prepare_maestro_invocation(
+    *,
+    session_id: str,
+    platform: str,
+    device_id: str,
+    flow_files: list[str],
+    extra_args: list[str],
+) -> tuple[list[str], dict[str, str], str]:
+    final_args = list(extra_args)
+
+    debug_output = _extract_maestro_option(final_args, "--debug-output")
+    if not debug_output:
+        debug_output = _maestro_debug_output_dir(session_id)
+        final_args.extend(["--debug-output", debug_output])
+
+    if platform == "android":
+        if not (
+            _maestro_has_flag(final_args, "--reinstall-driver")
+            or _maestro_has_flag(final_args, "--no-reinstall-driver")
+        ):
+            final_args.append("--reinstall-driver")
+
+    cmd = ["maestro", "--device", device_id, "test"] + flow_files + final_args
+    return cmd, _maestro_env(platform), debug_output
+
+
+def _summarize_maestro_failure(
+    *,
+    session_id: str,
+    platform: str,
+    debug_output: str,
+) -> str | None:
+    debug_root = Path(debug_output)
+    log_candidates: list[Path] = []
+    direct_log = debug_root / "maestro.log"
+    if direct_log.exists():
+        log_candidates.append(direct_log)
+    log_candidates.extend(debug_root.rglob("maestro.log"))
+    if not log_candidates:
+        return None
+    log_path = max(log_candidates, key=lambda path: path.stat().st_mtime)
+
+    try:
+        log_text = log_path.read_text(errors="ignore")
+    except OSError:
+        return None
+
+    if platform == "android" and _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE.search(log_text):
+        reclaim = require_session(session_id).reclaim_command()
+        return (
+            "Android Maestro driver failed before the flow started. "
+            "The Maestro helper apps or instrumentation runner never brought up the local "
+            "gRPC bridge on port 7001. simemu already forced driver reinstall and IPv4 loopback; "
+            "if this still happens, treat it as a Maestro/emulator startup issue rather than an app "
+            f"selector bug. Debug output: {debug_output}. Re-claim to retry: {reclaim}"
+        )
+
+    return None
 
 
 def _compute_expires_at(status: str, heartbeat_at: str) -> str:
@@ -1426,10 +1524,28 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             android_kwargs=android_kwargs,
         )
 
-        cmd = ["maestro", "--device", device_id, "test"] + flow_files + extra_args
-        result = _sp.run(cmd)
+        cmd, env, debug_output = _prepare_maestro_invocation(
+            session_id=session_id,
+            platform=platform,
+            device_id=device_id,
+            flow_files=flow_files,
+            extra_args=extra_args,
+        )
+        result = _sp.run(cmd, env=env)
         if result.returncode != 0:
-            return {"status": "failed", "exit_code": result.returncode}
+            payload = {
+                "status": "failed",
+                "exit_code": result.returncode,
+                "debug_output": debug_output,
+            }
+            error = _summarize_maestro_failure(
+                session_id=session_id,
+                platform=platform,
+                debug_output=debug_output,
+            )
+            if error:
+                payload["error"] = error
+            return payload
         return {"status": "passed"}
 
     elif command == "url":

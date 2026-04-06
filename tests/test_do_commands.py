@@ -284,8 +284,9 @@ class TestDoMaestro(DoCommandBase):
     @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
     @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")
     @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_maestro(self, mock_serial, mock_run, mock_fg, mock_wait) -> None:
+    def test_do_maestro(self, mock_get_serial, mock_serial, mock_run, mock_fg, mock_wait) -> None:
         mock_run.return_value = MagicMock(returncode=0)
         flow = Path(self.tmpdir.name) / "flow.yaml"
         flow.write_text("appId: app.fitkind.dev\n---\n- assertVisible: Vault\n")
@@ -296,8 +297,9 @@ class TestDoMaestro(DoCommandBase):
         self.assertEqual(cmd_args[0], "maestro")
         self.assertIn(str(flow), cmd_args)
 
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_maestro_missing_arg(self, mock_serial) -> None:
+    def test_do_maestro_missing_arg(self, mock_get_serial, mock_serial) -> None:
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "maestro", [])
 
@@ -305,9 +307,11 @@ class TestDoMaestro(DoCommandBase):
     @patch("simemu.session.ios.launch")
     @patch("simemu.session.ios.foreground_app", return_value="com.other.app")
     @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_maestro_relaunches_expected_ios_app_from_flow_appid(
         self,
+        mock_get_serial,
         mock_serial,
         mock_run,
         mock_fg,
@@ -324,9 +328,11 @@ class TestDoMaestro(DoCommandBase):
     @patch("subprocess.run")
     @patch("simemu.session.android.launch")
     @patch("simemu.session.android.foreground_app", side_effect=["com.other.app", "app.fitkind.dev"])
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_maestro_relaunches_android_last_app_with_saved_launch_args(
         self,
+        mock_get_serial,
         mock_serial,
         mock_fg,
         mock_launch,
@@ -359,6 +365,90 @@ class TestDoMaestro(DoCommandBase):
             ["--debug-route=journey/root"],
             pinned_serial="emulator-5554",
         )
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_adds_reinstall_driver_and_ipv4(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        cmd_args = mock_run.call_args[0][0]
+        env = mock_run.call_args.kwargs["env"]
+        self.assertIn("--reinstall-driver", cmd_args)
+        self.assertIn("--debug-output", cmd_args)
+        self.assertIn("-Djava.net.preferIPv4Stack=true", env["JAVA_TOOL_OPTIONS"])
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_preserves_explicit_no_reinstall_driver(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow), "--no-reinstall-driver"])
+
+        self.assertEqual(result["status"], "passed")
+        cmd_args = mock_run.call_args[0][0]
+        self.assertIn("--no-reinstall-driver", cmd_args)
+        self.assertNotIn("--reinstall-driver", cmd_args)
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_reports_driver_boot_failure(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+
+        def _fake_run(cmd, env=None):
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            (debug_output / "maestro.log").write_text(
+                "Not able to reach the gRPC server while processing deviceInfo command\n"
+                "Caused by: io.netty.channel.AbstractChannel$AnnotatedConnectException: "
+                "Connection refused: localhost/[0:0:0:0:0:0:0:1]:7001\n"
+            )
+            return MagicMock(returncode=1)
+
+        mock_run.side_effect = _fake_run
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Android Maestro driver failed before the flow started", result["error"])
+        self.assertTrue(Path(result["debug_output"]).exists())
 
 
 # ── url ──────────────────────────────────────────────────────────────────────
