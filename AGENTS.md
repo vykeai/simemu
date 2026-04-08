@@ -174,3 +174,23 @@ ruff format .
 - [ ] Changes committed (frequent, progressive — not batched at end)
 - [ ] Keel task updated: `keel_update_task { status: "done" }` + `keel_add_note`
 - [ ] If using cloudy: all three validation phases pass
+
+---
+
+## Worktree Discipline (CRITICAL — applies to ALL skills and agents)
+
+Work is either **sequential** or **parallel**. Never orphan a worktree.
+
+**Sequential work (one task at a time):**
+- Stay on the active branch. Do NOT create a worktree.
+- Commit and push directly on that branch.
+
+**Parallel work (multiple tasks in flight — e.g. `/vy-go`, `/loop`, `/looperator-start`, multiple `Agent` calls):**
+- Each parallel task MUST run in its own `git worktree add .worktrees/<task-id> HEAD`.
+- Before the orchestrator exits, every worktree MUST be either:
+  1. **Merged back** into the active branch (`git merge --no-ff .worktrees/<id>`), gates re-run on the merged result, then `git worktree remove .worktrees/<id>`, OR
+  2. **Explicitly surfaced** to the user as "needs manual merge" with the branch name preserved — never silently left behind.
+- If a merge fails: keep the worktree, mark the task blocked, tell the user. Do NOT delete unmerged work.
+- Before finishing any session that spawned parallel agents, run `git worktree list` and account for every entry.
+
+**Why:** prior `/vy-go` runs lost work because independent worktrees were abandoned when the orchestrator exited without merging. This rule is non-negotiable.
