@@ -184,3 +184,63 @@ When narrowing scope:
 - [ ] `/review-self` passed
 - [ ] Changes committed (frequent, progressive)
 - [ ] Keel task updated: `keel_update_task { status: "done" }` + `keel_add_note`
+
+---
+
+## Git Branch & Worktree Lifecycle
+
+This section is mandatory for any agent that creates branches or worktrees.
+
+### 1. Discover the gitflow before branching
+
+Before creating any branch or worktree, determine the repo's integration model:
+
+```bash
+git remote show origin | grep "HEAD branch"   # default branch (usually main)
+git branch -r | grep develop                  # does a develop branch exist?
+```
+
+- If `develop` exists → feature branches target `develop`, not `main`
+- If only `main` exists → feature branches target `main`
+- Never guess. Always check.
+
+### 2. Worktree placement
+
+**Never** place a worktree in `/tmp` or `/private/tmp`. Those paths are wiped on reboot, leaving orphaned `.git/worktrees/` metadata with no working directory.
+
+Use one of these instead:
+- `<repo-root>/.worktrees/<branch-name>/` — co-located, automatically gitignored
+- `<repo-parent>/<repo-name>-<task-id>/` — sibling directory
+
+### 3. Complete the full merge cycle before declaring done
+
+A task is **not done** when code is written. It is done when:
+
+1. All commits are on the feature branch
+2. Feature branch is merged (via PR or `git merge`) into the target integration branch (`develop` or `main`)
+3. Feature branch is deleted: `git branch -d <branch> && git push origin --delete <branch>`
+4. Worktree is removed: `git worktree remove <path>`
+5. Keel task is updated to `done`
+
+Never leave a feature branch open after work is merged.
+
+### 4. Abandoned or blocked tasks
+
+If a task is blocked or abandoned mid-flight:
+- Keep the branch on the remote (don't delete — work may resume)
+- **Remove the local worktree**: `git worktree remove --force <path>`
+- Update Keel status to `blocked` with a note linking the branch name
+
+### 5. Audit before starting new work
+
+Before opening a new worktree, run:
+
+```bash
+git worktree list
+```
+
+If you see more than 2–3 open worktrees, stop and clean up stale ones first. Accumulating worktrees causes merge conflicts, confusion, and disk waste.
+
+### 6. Temporary/dirt branches
+
+`temp-dirt-*` branches created as safety snapshots must be deleted within the same session once the real branch is verified. Never push `temp-dirt-*` branches to the remote as a permanent artifact.
