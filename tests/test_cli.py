@@ -338,6 +338,30 @@ class CliHandlerTests(unittest.TestCase):
         self.assertIn(str(repo_root), plist)
         self.assertIn(expected_log, stdout.getvalue())
 
+    @patch("simemu.watchdog.check_menubar_app", return_value={"status": "running"})
+    @patch("subprocess.run")
+    def test_menubar_install_writes_launch_agent_plist(self, mock_run, mock_health) -> None:
+        args = Namespace(action="install")
+        stdout = io.StringIO()
+        fake_home = Path(self._tmpdir) / "home"
+        app_bundle = Path(self._tmpdir) / "SimEmuBar.app"
+        binary = app_bundle / "Contents" / "MacOS" / "SimEmuBar"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("")
+
+        with patch("simemu.cli.Path.home", return_value=fake_home):
+            with patch("simemu.cli._find_swift_menubar_app", return_value=app_bundle):
+                with redirect_stdout(stdout):
+                    cli.cmd_menubar(args)
+
+        plist_path = fake_home / "Library" / "LaunchAgents" / "com.simemu.menubar.plist"
+        plist = plist_path.read_text()
+        expected_log = str(Path(self._tmpdir) / "menubar.log")
+        self.assertIn(str(binary), plist)
+        self.assertIn("SuccessfulExit", plist)
+        self.assertIn(expected_log, plist)
+        self.assertIn(str(app_bundle), stdout.getvalue())
+
     @patch("simemu.watchdog.check_menubar_app", return_value={"status": "installed_not_running", "app_path": "/Applications/SimEmuBar.app"})
     @patch("simemu.cli.socket.create_connection")
     @patch("simemu.cli.list_android", return_value=[])
@@ -367,8 +391,39 @@ class CliHandlerTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn("Menubar: installed, not running", output)
-        self.assertIn("Menubar not running", output)
+        self.assertIn("Menubar auto-start is not installed", output)
         self.assertNotIn("Health: all good", output)
+
+    @patch("simemu.watchdog.check_menubar_app", return_value={"status": "agent_loaded_not_running", "app_path": "/Applications/SimEmuBar.app", "launch_agent_status": "loaded", "plist_path": "/tmp/com.simemu.menubar.plist"})
+    @patch("simemu.cli.socket.create_connection")
+    @patch("simemu.cli.list_android", return_value=[])
+    @patch("simemu.cli.list_ios", return_value=[])
+    @patch("simemu.cli.session_module.get_all_sessions", return_value={})
+    @patch("simemu.cli.window_mgr.list_displays", return_value=[])
+    @patch("simemu.cli.window_mgr.get_window_mode", return_value="hidden")
+    @patch("subprocess.run")
+    def test_status_overview_flags_loaded_menubar_agent_as_unhealthy(
+        self,
+        mock_run,
+        mock_window_mode,
+        mock_displays,
+        mock_sessions,
+        mock_ios,
+        mock_android,
+        mock_socket,
+        mock_menubar,
+    ) -> None:
+        mock_socket.return_value.__enter__ = lambda s: s
+        mock_socket.return_value.__exit__ = lambda s, *a: None
+        mock_run.return_value = MagicMock(returncode=0, stdout="Mac15,14\n")
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            cli.cmd_status_overview(Namespace(json=False))
+
+        output = stdout.getvalue()
+        self.assertIn("launchd-managed, stopped", output)
+        self.assertIn("Menubar launch agent is loaded but app is not running", output)
 
     @patch("simemu.watchdog.full_health_check")
     def test_doctor_flags_installed_but_stopped_menubar(self, mock_health) -> None:
@@ -385,8 +440,8 @@ class CliHandlerTests(unittest.TestCase):
             cli.cmd_doctor(Namespace())
 
         output = stdout.getvalue()
-        self.assertIn("Menubar app installed but not running", output)
-        self.assertIn("simemu menubar", output)
+        self.assertIn("Menubar app installed without auto-start", output)
+        self.assertIn("simemu menubar install", output)
 
 
 class CliInvocationWarningTests(unittest.TestCase):

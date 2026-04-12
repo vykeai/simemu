@@ -119,8 +119,12 @@ if [ -d "$SWIFT_DIR" ] && command -v swift >/dev/null 2>&1; then
             rm -rf "$APP_INSTALL_DIR/SimEmuBar.app"
             cp -R "$BUILT_APP" "$APP_INSTALL_DIR/SimEmuBar.app"
             ok "SimEmuBar installed to $APP_INSTALL_DIR/SimEmuBar.app"
-            # Launch it
-            open "$APP_INSTALL_DIR/SimEmuBar.app" 2>/dev/null || true
+            if "$PYTHON_ABS" -m simemu.cli menubar install >/dev/null 2>&1; then
+                ok "Menubar launch agent installed"
+            else
+                warn "Menubar launch agent install failed — falling back to one-shot launch"
+                open "$APP_INSTALL_DIR/SimEmuBar.app" 2>/dev/null || true
+            fi
         else
             warn "Build succeeded but .app bundle not found at $BUILT_APP"
         fi

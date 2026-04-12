@@ -61,6 +61,20 @@ class TestInstall(unittest.TestCase):
                 android.install("MyAVD", f.name, timeout=5)
             self.assertIn("timed out", str(ctx.exception))
 
+    @patch("simemu.android._apk_application_id", return_value=None)
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_install_uses_caller_timeout_for_readiness(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_app_id: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
+        with tempfile.NamedTemporaryFile(suffix=".apk") as f:
+            android.install("MyAVD", f.name, timeout=5)
+        mock_ready.assert_called_once_with("MyAVD", timeout=5, pinned_serial=None)
+
     @patch("simemu.android.verify_install")
     @patch("simemu.android._apk_application_id", return_value="app.fitkind.dev")
     @patch("simemu.android.subprocess.run")
@@ -140,6 +154,24 @@ class TestPackageVerification(unittest.TestCase):
         self.assertIn("package-manager state is inconsistent", msg)
         self.assertIn("pkg=null", msg)
         self.assertIn("repair-install", msg)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_verify_install_raises_transport_error_without_repair_hint(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            self._result(stderr="device offline", returncode=1),
+            self._result(stderr="timed out", returncode=1),
+            self._result(stderr="device offline", returncode=1),
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            android.verify_install("MyAVD", "app.sitches.dev", timeout=0)
+        msg = str(ctx.exception)
+        self.assertIn("transport was not ready", msg)
+        self.assertNotIn("repair-install", msg)
 
     @patch("simemu.android.verify_install", side_effect=[
         # step 0: simple reinstall — verify succeeds immediately

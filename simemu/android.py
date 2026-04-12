@@ -664,6 +664,8 @@ class PackageVerification:
     pm_path_ok: bool
     resolve_activity_ok: bool
     dumpsys_ok: bool
+    transport_ok: bool = True
+    transport_error: str = ""
 
     @property
     def ok(self) -> bool:
@@ -686,7 +688,27 @@ class PackageVerification:
             f"resolve-activity --brief:\n{self.resolve_activity or '(no output)'}",
             f"dumpsys package:\n{self.dumpsys or '(no output)'}",
         ]
+        if not self.transport_ok and self.transport_error:
+            sections.insert(0, f"transport:\n{self.transport_error}")
         return "\n\n".join(sections)
+
+
+def _transport_error_text(*values: str) -> str | None:
+    combined = "\n".join(value for value in values if value).lower()
+    if not combined:
+        return None
+    needles = (
+        "device offline",
+        "device still authorizing",
+        "no devices/emulators found",
+        "timed out",
+        "closed",
+        "broken pipe",
+    )
+    for needle in needles:
+        if needle in combined:
+            return combined
+    return None
 
 
 def verify_install(
@@ -710,6 +732,12 @@ def verify_install(
         last_probe = _probe_package_state(serial, package)
     if last_probe.ok:
         return last_probe
+    if not last_probe.transport_ok:
+        raise RuntimeError(
+            f"Android transport was not ready while verifying '{package}'.\n"
+            f"{last_probe.format_report()}\n\n"
+            "Retry in a few seconds or reboot the emulator: simemu do <session> reboot"
+        )
     raise RuntimeError(_format_install_verification_error(last_probe))
 
 
@@ -858,6 +886,7 @@ def _probe_package_state(serial: str, package: str) -> PackageVerification:
     resolved_text = resolved_launcher.stdout.strip() or resolved_launcher.stderr.strip()
     dumpsys_text = dumpsys.stdout.strip() or dumpsys.stderr.strip()
     dumpsys_lines = "\n".join(dumpsys_text.splitlines()[:200])
+    transport_error = _transport_error_text(pm_path_text, resolved_text, dumpsys_text)
 
     return PackageVerification(
         package=package,
@@ -867,6 +896,8 @@ def _probe_package_state(serial: str, package: str) -> PackageVerification:
         pm_path_ok=pm_path.returncode == 0 and "package:" in pm_path_text,
         resolve_activity_ok="/" in resolved_text and "No activity found" not in resolved_text,
         dumpsys_ok=_dumpsys_has_real_package(dumpsys_lines, package),
+        transport_ok=transport_error is None,
+        transport_error=transport_error or "",
     )
 
 
@@ -1021,7 +1052,7 @@ def install(
     repair_on_failure: bool = True,
     pinned_serial: Optional[str] = None,
 ) -> None:
-    serial = wait_until_ready(avd_name, timeout=max(timeout, 180), pinned_serial=pinned_serial)
+    serial = wait_until_ready(avd_name, timeout=timeout, pinned_serial=pinned_serial)
     path = Path(apk_path)
     if not path.exists():
         raise RuntimeError(f"APK not found: {apk_path}")

@@ -53,6 +53,47 @@ def _output_dir() -> Path:
     return d
 
 
+def _launch_agent_path(label: str) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _launchctl_label(label: str) -> str:
+    return f"gui/{os.getuid()}/{label}"
+
+
+def _launchctl_is_loaded(label: str) -> bool:
+    import subprocess as _sp
+
+    result = _sp.run(
+        ["launchctl", "list", label],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _launchctl_bootout(label: str, plist_path: Path) -> None:
+    import subprocess as _sp
+
+    _sp.run(["launchctl", "bootout", _launchctl_label(label)], capture_output=True, check=False)
+    _sp.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True, check=False)
+
+
+def _launchctl_bootstrap(plist_path: Path) -> None:
+    import subprocess as _sp
+
+    domain = f"gui/{os.getuid()}"
+    result = _sp.run(
+        ["launchctl", "bootstrap", domain, str(plist_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        _sp.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, check=False)
+
+
 def _auto_path(slug: str, ext: str) -> str:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     return str(_output_dir() / f"{slug}_{ts}.{ext}")
@@ -449,10 +490,14 @@ def cmd_doctor(args):
     menubar = health.get("menubar", {})
     if menubar.get("status") == "running":
         ok_items.append("Menubar running")
+    elif menubar.get("status") == "agent_loaded_not_running":
+        issues.append({"component": "menubar", "severity": "medium",
+                       "message": "Menubar launch agent loaded but app is not running",
+                       "fix": "simemu menubar launch"})
     elif menubar.get("status") == "installed_not_running":
         issues.append({"component": "menubar", "severity": "medium",
-                       "message": "Menubar app installed but not running",
-                       "fix": "simemu menubar"})
+                       "message": "Menubar app installed without auto-start",
+                       "fix": "simemu menubar install"})
     elif menubar.get("status") == "not_installed":
         issues.append({"component": "menubar", "severity": "medium",
                        "message": "Menubar app not installed",
@@ -710,17 +755,26 @@ def cmd_status_overview(args):
     menubar_health = check_menubar_app()
     menubar_status_map = {
         "running": "running",
+        "agent_loaded_not_running": "launchd-managed, stopped",
         "installed_not_running": "installed, not running",
         "not_installed": "not installed",
     }
     menubar_status = menubar_status_map.get(menubar_health.get("status"), "unknown")
     menubar_pid = menubar_health.get("pid")
     menubar_app_path = menubar_health.get("app_path")
+    menubar_plist_path = menubar_health.get("plist_path")
+    menubar_launch_agent_status = menubar_health.get("launch_agent_status")
 
     data["services"] = {
         "monitor": {"status": monitor_status, "last_tick": monitor_last_tick},
         "server": {"status": server_status, "port": 8765},
-        "menubar": {"status": menubar_status, "pid": menubar_pid, "app_path": menubar_app_path},
+        "menubar": {
+            "status": menubar_status,
+            "pid": menubar_pid,
+            "app_path": menubar_app_path,
+            "plist_path": menubar_plist_path,
+            "launch_agent_status": menubar_launch_agent_status,
+        },
     }
 
     data["version"] = "0.3.0"
@@ -787,6 +841,8 @@ def cmd_status_overview(args):
         menubar_detail = f"{menubar_status} (pid {menubar_pid})"
     elif menubar_app_path:
         menubar_detail = f"{menubar_status} ({menubar_app_path})"
+    if menubar_launch_agent_status in ("loaded", "installed_not_loaded"):
+        menubar_detail = f"{menubar_detail}; agent={menubar_launch_agent_status}"
 
     print(f"Monitor: {monitor_detail}")
     print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
@@ -810,8 +866,10 @@ def cmd_status_overview(args):
         issues.append("API server not running — start with: simemu serve")
     if monitor_status not in ("running", "loaded"):
         issues.append("Monitor not running — install with: bash install.sh")
-    if menubar_health.get("status") == "installed_not_running":
-        issues.append("Menubar not running — launch with: simemu menubar")
+    if menubar_health.get("status") == "agent_loaded_not_running":
+        issues.append("Menubar launch agent is loaded but app is not running — restart with: simemu menubar launch")
+    elif menubar_health.get("status") == "installed_not_running":
+        issues.append("Menubar auto-start is not installed — run: simemu menubar install")
     elif menubar_health.get("status") == "not_installed":
         issues.append("Menubar not installed — install with: bash install.sh")
 
@@ -1707,9 +1765,9 @@ def cmd_maestro(args):
     if alloc.platform == "ios":
         device_id = alloc.sim_id  # UDID
     else:
-        from .discover import get_android_serial
-        device_id = get_android_serial(alloc.sim_id)
-        if not device_id:
+        try:
+            device_id = android.wait_until_ready(alloc.sim_id, timeout=45)
+        except RuntimeError:
             raise RuntimeError(
                 f"Android emulator '{args.slug}' is not running. Boot it first: simemu boot {args.slug}"
             )
@@ -2982,7 +3040,10 @@ def build_parser() -> argparse.ArgumentParser:
     maint_p.set_defaults(func=cmd_maintenance)
 
     # menubar
-    mb_p = sub.add_parser("menubar", help="Launch the macOS menu bar status app")
+    mb_p = sub.add_parser("menubar", help="Manage the macOS menu bar status app")
+    mb_p.add_argument("action", nargs="?", default="launch",
+                      choices=["launch", "install", "status", "uninstall"],
+                      help="launch (default), install launch-agent autostart, status, or uninstall")
     mb_p.set_defaults(func=cmd_menubar)
 
     return p
@@ -3146,9 +3207,105 @@ def _find_swift_menubar_app() -> Path | None:
     return None
 
 
+def _menubar_binary_path(app_bundle: Path | None) -> Path | None:
+    if not app_bundle:
+        return None
+    candidate = app_bundle / "Contents" / "MacOS" / "SimEmuBar"
+    return candidate if candidate.exists() else None
+
+
 def cmd_menubar(args):
-    """Launch the macOS menu bar status app (SwiftUI or rumps fallback)."""
+    """Manage the macOS menu bar status app."""
     import subprocess as sp
+    from .watchdog import check_menubar_app
+
+    action = getattr(args, "action", "launch")
+    label = "com.simemu.menubar"
+    plist_path = _launch_agent_path(label)
+    menubar_log = state.state_dir() / "menubar.log"
+
+    if action == "install":
+        app_bundle = _find_swift_menubar_app()
+        binary_path = _menubar_binary_path(app_bundle)
+        if not app_bundle or not binary_path:
+            raise RuntimeError(
+                "SimEmuBar.app is not installed.\n"
+                "Run bash install.sh or build the Swift app first."
+            )
+
+        menubar_log.parent.mkdir(parents=True, exist_ok=True)
+        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary_path}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{app_bundle.parent}</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{menubar_log}</string>
+    <key>StandardErrorPath</key>
+    <string>{menubar_log}</string>
+</dict>
+</plist>
+"""
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        _launchctl_bootout(label, plist_path)
+        plist_path.write_text(plist_content)
+        _launchctl_bootstrap(plist_path)
+        time.sleep(1.0)
+        health = check_menubar_app()
+        print("simemu menubar installed.")
+        print(f"  App: {app_bundle}")
+        print(f"  Plist: {plist_path}")
+        print(f"  Log: {menubar_log}")
+        print(f"  Status: {health.get('status', 'unknown')}")
+        return
+
+    if action == "uninstall":
+        _launchctl_bootout(label, plist_path)
+        plist_path.unlink(missing_ok=True)
+        sp.run(["pkill", "-f", "SimEmuBar"], capture_output=True, check=False)
+        print("simemu menubar removed.")
+        return
+
+    if action == "status":
+        health = check_menubar_app()
+        print(f"Menubar status: {health.get('status', 'unknown')}")
+        if health.get("pid"):
+            print(f"  PID: {health['pid']}")
+        if health.get("app_path"):
+            print(f"  App: {health['app_path']}")
+        if health.get("launch_agent_status"):
+            print(f"  LaunchAgent: {health['launch_agent_status']}")
+        if health.get("plist_path"):
+            print(f"  Plist: {health['plist_path']}")
+        if health.get("hint"):
+            print(f"  Hint: {health['hint']}")
+        return
+
+    if action == "launch" and _launchctl_is_loaded(label):
+        sp.run(["launchctl", "kickstart", "-k", _launchctl_label(label)], check=False)
+        time.sleep(0.5)
+        if check_menubar_app().get("status") == "running":
+            return
+
     app_bundle = _find_swift_menubar_app()
     if app_bundle:
         sp.run(["open", str(app_bundle)], check=False)

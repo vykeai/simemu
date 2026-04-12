@@ -11,6 +11,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+_MENUBAR_LABEL = "com.simemu.menubar"
+
 
 def _menubar_app_candidates() -> list[Path]:
     repo_root = Path(__file__).resolve().parents[1]
@@ -20,18 +22,39 @@ def _menubar_app_candidates() -> list[Path]:
     ]
 
 
+def _launch_agent_path(label: str) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _check_launch_agent(label: str) -> dict:
+    plist_path = _launch_agent_path(label)
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        return {"status": "unknown", "hint": "launchctl not available", "plist_path": str(plist_path)}
+
+    if result.returncode == 0:
+        return {"status": "loaded", "label": label, "plist_path": str(plist_path)}
+    if plist_path.exists():
+        return {"status": "installed_not_loaded", "label": label, "plist_path": str(plist_path)}
+    return {"status": "not_installed", "label": label, "plist_path": str(plist_path)}
+
+
 def check_api_server(host: str = "127.0.0.1", port: int = 8765, timeout: float = 2.0) -> dict:
     """Check if the simemu API server is reachable."""
     import urllib.request
     try:
         url = f"http://{host}:{port}/health"
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            data = json.loads(resp.read())
+            json.loads(resp.read())
             return {"status": "healthy", "url": f"http://{host}:{port}"}
     except Exception as e:
         return {
             "status": "unreachable",
-            "hint": f"Start with: simemu serve\nOr run install.sh to set up the launchd agent.",
+            "hint": "Start with: simemu serve\nOr run install.sh to set up the launchd agent.",
             "error": str(e)[:100],
         }
 
@@ -39,23 +62,26 @@ def check_api_server(host: str = "127.0.0.1", port: int = 8765, timeout: float =
 def check_monitor_agent() -> dict:
     """Check if the monitor launchd agent is loaded and running."""
     label = "com.simemu.monitor"
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode == 0:
-            return {"status": "running", "label": label}
-        return {
-            "status": "not_loaded",
-            "hint": "Install with: bash install.sh",
-        }
-    except FileNotFoundError:
-        return {"status": "unknown", "hint": "launchctl not available"}
+    agent = _check_launch_agent(label)
+    if agent["status"] == "loaded":
+        return {"status": "running", "label": label, "plist_path": agent["plist_path"]}
+    if agent["status"] == "installed_not_loaded":
+        return {"status": "not_loaded", "hint": "Install with: bash install.sh", "plist_path": agent["plist_path"]}
+    if agent["status"] == "not_installed":
+        return {"status": "not_loaded", "hint": "Install with: bash install.sh", "plist_path": agent["plist_path"]}
+    return {"status": "unknown", "hint": "launchctl not available", "plist_path": agent["plist_path"]}
 
 
 def check_menubar_app() -> dict:
     """Check if SimEmuBar is running."""
+    agent = _check_launch_agent(_MENUBAR_LABEL)
+    app_path = None
+    for candidate in _menubar_app_candidates():
+        binary = candidate / "Contents" / "MacOS" / "SimEmuBar"
+        if candidate.exists() and binary.exists():
+            app_path = str(candidate)
+            break
+
     try:
         result = subprocess.run(
             ["pgrep", "-fl", "SimEmuBar"],
@@ -63,21 +89,40 @@ def check_menubar_app() -> dict:
         )
         if result.returncode == 0 and result.stdout.strip():
             pid = result.stdout.strip().split()[0]
-            return {"status": "running", "pid": int(pid)}
-        for candidate in _menubar_app_candidates():
-            binary = candidate / "Contents" / "MacOS" / "SimEmuBar"
-            if candidate.exists() and binary.exists():
-                return {
-                    "status": "installed_not_running",
-                    "app_path": str(candidate),
-                    "hint": "Launch with: simemu menubar",
-                }
+            return {
+                "status": "running",
+                "pid": int(pid),
+                "app_path": app_path,
+                "launch_agent_status": agent.get("status"),
+                "plist_path": agent.get("plist_path"),
+            }
+
+        if agent.get("status") == "loaded":
+            return {
+                "status": "agent_loaded_not_running",
+                "app_path": app_path,
+                "launch_agent_status": "loaded",
+                "plist_path": agent.get("plist_path"),
+                "hint": "Restart with: simemu menubar launch",
+            }
+
+        if app_path:
+            return {
+                "status": "installed_not_running",
+                "app_path": app_path,
+                "launch_agent_status": agent.get("status"),
+                "plist_path": agent.get("plist_path"),
+                "hint": "Enable auto-start with: simemu menubar install",
+            }
+
         return {
             "status": "not_installed",
+            "launch_agent_status": agent.get("status"),
+            "plist_path": agent.get("plist_path"),
             "hint": "Install with: bash install.sh",
         }
     except FileNotFoundError:
-        return {"status": "unknown"}
+        return {"status": "unknown", "launch_agent_status": agent.get("status"), "plist_path": agent.get("plist_path")}
 
 
 def check_stale_sessions() -> dict:

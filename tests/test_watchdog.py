@@ -17,8 +17,6 @@ from simemu.watchdog import (
     check_menubar_app,
     check_stale_sessions,
     check_state_file_health,
-    full_health_check,
-    is_healthy,
 )
 
 
@@ -73,6 +71,14 @@ class TestCheckMenubarApp(unittest.TestCase):
         result = check_menubar_app()
         self.assertEqual(result["status"], "installed_not_running")
         self.assertEqual(result["app_path"], str(tmp))
+
+    @patch("simemu.watchdog._check_launch_agent", return_value={"status": "loaded", "plist_path": "/tmp/com.simemu.menubar.plist"})
+    @patch("simemu.watchdog.subprocess.run")
+    def test_agent_loaded_not_running(self, mock_run, mock_agent) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        result = check_menubar_app()
+        self.assertEqual(result["status"], "agent_loaded_not_running")
+        self.assertEqual(result["launch_agent_status"], "loaded")
 
     @patch("simemu.watchdog._menubar_app_candidates", return_value=[])
     @patch("simemu.watchdog.subprocess.run")

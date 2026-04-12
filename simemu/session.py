@@ -15,6 +15,7 @@ import re
 import secrets
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -301,6 +302,44 @@ def _summarize_maestro_failure(
         )
 
     return None
+
+
+def _retry_android_maestro_bridge(
+    *,
+    session_id: str,
+    sim_id: str,
+    expected_app: str | None,
+    android_kwargs: dict,
+    flow_files: list[str],
+    extra_args: list[str],
+) -> tuple[bool, str, str | None]:
+    import subprocess as _sp
+
+    android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+    android.dismiss_system_dialogs(sim_id, **android_kwargs)
+    _ensure_maestro_target_foreground(
+        session_id=session_id,
+        platform="android",
+        sim_id=sim_id,
+        expected_app=expected_app,
+        android_kwargs=android_kwargs,
+    )
+    time.sleep(2.0)
+
+    device_id = android._serial(sim_id, pinned=android_kwargs.get("pinned_serial"))
+    cmd, env, retry_debug_output = _prepare_maestro_invocation(
+        session_id=session_id,
+        platform="android",
+        device_id=device_id,
+        flow_files=flow_files,
+        extra_args=extra_args,
+    )
+    retry_result = _sp.run(cmd, env=env)
+    return retry_result.returncode == 0, retry_debug_output, _summarize_maestro_failure(
+        session_id=session_id,
+        platform="android",
+        debug_output=retry_debug_output,
+    )
 
 
 def _compute_expires_at(status: str, heartbeat_at: str) -> str:
@@ -1533,16 +1572,42 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         )
         result = _sp.run(cmd, env=env)
         if result.returncode != 0:
-            payload = {
-                "status": "failed",
-                "exit_code": result.returncode,
-                "debug_output": debug_output,
-            }
             error = _summarize_maestro_failure(
                 session_id=session_id,
                 platform=platform,
                 debug_output=debug_output,
             )
+            if platform == "android" and error:
+                import sys as _sys
+
+                print(json.dumps({
+                    "diagnostic": "android_maestro_bridge_retry",
+                    "session": session_id,
+                    "sim_id": sim_id,
+                }), file=_sys.stderr, flush=True)
+                try:
+                    recovered, retry_debug_output, retry_error = _retry_android_maestro_bridge(
+                        session_id=session_id,
+                        sim_id=sim_id,
+                        expected_app=expected_app,
+                        android_kwargs=android_kwargs,
+                        flow_files=flow_files,
+                        extra_args=extra_args,
+                    )
+                except RuntimeError as exc:
+                    recovered = False
+                    retry_debug_output = debug_output
+                    retry_error = f"{error} Auto-retry could not stabilize the emulator: {exc}"
+                if recovered:
+                    return {"status": "passed", "recovered": "android_maestro_bridge_retry"}
+                debug_output = retry_debug_output
+                error = retry_error or error
+
+            payload = {
+                "status": "failed",
+                "exit_code": result.returncode,
+                "debug_output": debug_output,
+            }
             if error:
                 payload["error"] = error
             return payload
