@@ -297,6 +297,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var fallbackTimer: Timer?
 
     private static let panelWidth: CGFloat = 640
+    private static let panelScreenMargin: CGFloat = 72
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -312,7 +313,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let sessions = loadSessions()
         popover.contentSize = NSSize(
             width: Self.panelWidth,
-            height: SimEmuPanel.preferredHeight(for: sessions.count)
+            height: preferredPopoverHeight(for: sessions.count)
         )
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
@@ -377,7 +378,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             popover.contentViewController = hc
             popover.contentSize = NSSize(
                 width: Self.panelWidth,
-                height: SimEmuPanel.preferredHeight(for: sessions.count)
+                height: preferredPopoverHeight(for: sessions.count)
             )
         }
     }
@@ -385,33 +386,34 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     // T-007: Better menu bar label
     private func updateLabel() {
         let sessions = loadSessions()
-        let active = sessions.filter { $0.status == "active" }.count
         let booted = sessions.filter { $0.status != "parked" }.count
 
         if let button = statusItem.button {
-            func templateIcon(_ name: String) -> NSImage? {
-                let img = NSImage(systemSymbolName: name, accessibilityDescription: "SimEmu")
-                img?.isTemplate = true
-                return img
-            }
-
-            button.image = templateIcon("iphone")
-            button.imagePosition = .imageLeading
-            button.contentTintColor = nil  // reset — let system handle color
-
+            let symbolName: String
             if booted == 0 && !sessions.isEmpty {
-                button.image = templateIcon("moon.zzz")
-                button.title = ""
+                symbolName = "moon.zzz"
             } else if booted == 0 {
-                button.title = ""
+                symbolName = "iphone.slash"
             } else {
-                button.title = "\(booted)"
-                if active > 0 {
-                    button.contentTintColor = NSColor(Sim.Color.active)
-                } else {
-                    button.contentTintColor = NSColor(Sim.Color.idle)
-                }
+                symbolName = "iphone"
             }
+
+            button.image = templateIcon(symbolName)
+            button.imagePosition = .imageLeading
+            button.imageScaling = .scaleProportionallyDown
+            button.contentTintColor = nil
+            button.title = ""
+
+            guard booted > 0 else {
+                button.attributedTitle = NSAttributedString(string: "")
+                return
+            }
+
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold),
+                .foregroundColor: menuBarForegroundColor(for: button)
+            ]
+            button.attributedTitle = NSAttributedString(string: " \(booted)", attributes: attributes)
         }
     }
 
@@ -423,7 +425,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 let sessions = loadSessions()
                 popover.contentSize = NSSize(
                     width: Self.panelWidth,
-                    height: SimEmuPanel.preferredHeight(for: sessions.count)
+                    height: preferredPopoverHeight(for: sessions.count)
                 )
                 let hc = makeHostingController(sessionCount: sessions.count)
                 hc.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -441,7 +443,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func makeHostingController(sessionCount: Int) -> NSHostingController<AnyView> {
-        let preferredHeight = SimEmuPanel.preferredHeight(for: sessionCount)
+        let preferredHeight = preferredPopoverHeight(for: sessionCount)
         let root = SimEmuPanel(sessionCount: sessionCount) { [weak self] nextHeight in
             DispatchQueue.main.async {
                 self?.updatePopoverHeight(nextHeight)
@@ -457,15 +459,54 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func updatePopoverHeight(_ preferredHeight: CGFloat) {
-        let nextSize = NSSize(width: Self.panelWidth, height: preferredHeight)
+        let clampedHeight = clampedPopoverHeight(preferredHeight)
+        let nextSize = NSSize(width: Self.panelWidth, height: clampedHeight)
         guard popover.contentSize != nextSize else { return }
         popover.contentSize = nextSize
         popover.contentViewController?.view.frame = NSRect(
             x: 0,
             y: 0,
             width: Self.panelWidth,
-            height: preferredHeight
+            height: clampedHeight
         )
+    }
+
+    private func preferredPopoverHeight(for sessionCount: Int) -> CGFloat {
+        clampedPopoverHeight(SimEmuPanel.preferredHeight(for: sessionCount))
+    }
+
+    private func clampedPopoverHeight(_ preferredHeight: CGFloat) -> CGFloat {
+        min(max(preferredHeight, SimEmuPanel.minPanelHeight), availablePopoverHeight())
+    }
+
+    private func availablePopoverHeight() -> CGFloat {
+        guard let screen = statusItem.button?.window?.screen ?? NSScreen.main else {
+            return SimEmuPanel.maxPanelHeight
+        }
+        let visibleHeight = screen.visibleFrame.height
+        let boundedHeight = visibleHeight - Self.panelScreenMargin
+        return min(SimEmuPanel.maxPanelHeight, max(SimEmuPanel.minPanelHeight, boundedHeight))
+    }
+
+    private func templateIcon(_ name: String) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        let image = NSImage(
+            systemSymbolName: name,
+            accessibilityDescription: "SimEmu"
+        )?.withSymbolConfiguration(config)
+        image?.isTemplate = true
+        return image
+    }
+
+    private func menuBarForegroundColor(for button: NSStatusBarButton) -> NSColor {
+        let appearance = button.window?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let match = appearance.bestMatch(from: [.darkAqua, .vibrantDark, .aqua, .vibrantLight])
+        switch match {
+        case .darkAqua, .vibrantDark:
+            return NSColor.white.withAlphaComponent(0.95)
+        default:
+            return NSColor.labelColor
+        }
     }
 
     private func installOutsideClickMonitor() {
@@ -518,8 +559,8 @@ struct SimEmuPanel: View {
     @State private var panelHeight: CGFloat
     private let initialSessionCount: Int
     private let onPreferredHeightChange: ((CGFloat) -> Void)?
-    private static let minPanelHeight: CGFloat = 360
-    private static let maxPanelHeight: CGFloat = 920
+    static let minPanelHeight: CGFloat = 320
+    static let maxPanelHeight: CGFloat = 780
 
     init(sessionCount: Int? = nil, onPreferredHeightChange: ((CGFloat) -> Void)? = nil) {
         let count = sessionCount ?? loadSessions().count
@@ -531,8 +572,8 @@ struct SimEmuPanel: View {
     }
 
     static func preferredHeight(for sessionCount: Int) -> CGFloat {
-        let base: CGFloat = 260
-        let perRow: CGFloat = 150
+        let base: CGFloat = 210
+        let perRow: CGFloat = 118
         let rows = max(1, Int(ceil(Double(sessionCount) / 2.0)))
         return min(max(base + CGFloat(rows) * perRow, minPanelHeight), maxPanelHeight)
     }
@@ -583,16 +624,16 @@ struct SimEmuPanel: View {
     }
 
     private var dynamicPreferredHeight: CGFloat {
-        let headerBlock: CGFloat = 118
-        let footerBlock: CGFloat = 58
-        let sectionHeaderHeight: CGFloat = 34
-        let parkedHeaderHeight: CGFloat = parked.isEmpty || allParked ? 0 : 42
-        let settingsHeight: CGFloat = showSettings ? 112 : 0
+        let headerBlock: CGFloat = 96
+        let footerBlock: CGFloat = 50
+        let sectionHeaderHeight: CGFloat = 30
+        let parkedHeaderHeight: CGFloat = parked.isEmpty || allParked ? 0 : 36
+        let settingsHeight: CGFloat = showSettings ? 104 : 0
         let iosActiveRows = iosSessions.filter { $0.status != "parked" }.chunkedCount(size: 2)
         let androidActiveRows = androidSessions.filter { $0.status != "parked" }.chunkedCount(size: 2)
         let parkedRows = parked.chunkedCount(size: 2)
-        let tileRowHeight: CGFloat = 152
-        let verticalPadding: CGFloat = 32
+        let tileRowHeight: CGFloat = 118
+        let verticalPadding: CGFloat = 20
         var total = headerBlock + footerBlock + settingsHeight + verticalPadding
         if sessions.isEmpty || allParked {
             total += 220
