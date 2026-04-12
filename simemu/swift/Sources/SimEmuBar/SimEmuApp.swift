@@ -799,7 +799,6 @@ struct SimEmuPanel: View {
     // MARK: Grouped Grid
 
     private var groupedGrid: some View {
-        let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
         let iosActive = iosSessions.filter { $0.status != "parked" }
         let androidActive = androidSessions.filter { $0.status != "parked" }
 
@@ -813,11 +812,7 @@ struct SimEmuPanel: View {
                     color: Sim.Color.ios,
                     isSystemImage: true
                 )
-                LazyVGrid(columns: cols, spacing: 8) {
-                    ForEach(iosActive) { s in
-                        SessionTile(session: s)
-                    }
-                }
+                sessionTileRows(iosActive)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
             }
@@ -831,11 +826,7 @@ struct SimEmuPanel: View {
                     color: Sim.Color.android,
                     isSystemImage: false
                 )
-                LazyVGrid(columns: cols, spacing: 8) {
-                    ForEach(androidActive) { s in
-                        SessionTile(session: s)
-                    }
-                }
+                sessionTileRows(androidActive)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
             }
@@ -846,7 +837,6 @@ struct SimEmuPanel: View {
     // MARK: Parked Section (collapsed/compact)
 
     private var parkedSection: some View {
-        let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
         let iosParked = iosSessions.filter { $0.status == "parked" }
         let androidParked = androidSessions.filter { $0.status == "parked" }
         let allParkedSessions = iosParked + androidParked
@@ -873,11 +863,7 @@ struct SimEmuPanel: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
 
-            LazyVGrid(columns: cols, spacing: 8) {
-                ForEach(allParkedSessions) { s in
-                    SessionTile(session: s)
-                }
-            }
+            sessionTileRows(allParkedSessions)
             .padding(.horizontal, 10)
             .padding(.bottom, 8)
         }
@@ -909,6 +895,31 @@ struct SimEmuPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func sessionTileRows(_ sessions: [SimSession]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(Array(sessionRows(sessions).enumerated()), id: \.offset) { _, row in
+                if row.count == 1, let session = row.first {
+                    SessionTile(session: session)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    HStack(spacing: 8) {
+                        ForEach(row) { session in
+                            SessionTile(session: session)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func sessionRows(_ sessions: [SimSession]) -> [[SimSession]] {
+        stride(from: 0, to: sessions.count, by: 2).map { index in
+            Array(sessions[index..<min(index + 2, sessions.count)])
+        }
     }
 
     // MARK: Empty State
