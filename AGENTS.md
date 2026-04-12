@@ -194,3 +194,27 @@ Work is either **sequential** or **parallel**. Never orphan a worktree.
 - Before finishing any session that spawned parallel agents, run `git worktree list` and account for every entry.
 
 **Why:** prior `/vy-go` runs lost work because independent worktrees were abandoned when the orchestrator exited without merging. This rule is non-negotiable.
+
+---
+
+## Docker Container Naming
+
+When creating Docker containers (docker-compose, Dockerfile, scripts), **always prefix container names with the project name** so they are identifiable in Docker Desktop and `docker ps`.
+
+**Format:** `<project-name>-<variant>-local`
+
+Examples:
+- `univiirse-api-local`, `univiirse-db-local`, `univiirse-redis-local`
+- `fitkind-api-local`, `fitkind-worker-local`
+- `den-web-local`, `den-postgres-local`
+
+In `docker-compose.yml`, set `container_name:` explicitly on every service:
+```yaml
+services:
+  api:
+    container_name: myproject-api-local
+  db:
+    container_name: myproject-db-local
+```
+
+**Why:** Generic names like `api`, `infra`, `tmp`, `e2e` are unidentifiable when multiple projects run simultaneously. The `-local` suffix distinguishes dev containers from production.
