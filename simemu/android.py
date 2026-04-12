@@ -17,6 +17,7 @@ from typing import Optional
 
 from .discover import get_android_serial
 from . import device as real_device
+from . import state
 
 # Android screenrecord hard cap (3 minutes); warn agents approaching this
 SCREENRECORD_MAX_SECONDS = 180
@@ -1273,6 +1274,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
     triggers an activity-alias switch or app restart).
     Uses a temp file + rename to avoid leaving zero-byte files on timeout.
     """
+    state.check_maintenance()
     dismiss_system_dialogs(avd_name, pinned_serial=pinned_serial)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 

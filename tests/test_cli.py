@@ -338,6 +338,56 @@ class CliHandlerTests(unittest.TestCase):
         self.assertIn(str(repo_root), plist)
         self.assertIn(expected_log, stdout.getvalue())
 
+    @patch("simemu.watchdog.check_menubar_app", return_value={"status": "installed_not_running", "app_path": "/Applications/SimEmuBar.app"})
+    @patch("simemu.cli.socket.create_connection")
+    @patch("simemu.cli.list_android", return_value=[])
+    @patch("simemu.cli.list_ios", return_value=[])
+    @patch("simemu.cli.session_module.get_all_sessions", return_value={})
+    @patch("simemu.cli.window_mgr.list_displays", return_value=[])
+    @patch("simemu.cli.window_mgr.get_window_mode", return_value="hidden")
+    @patch("subprocess.run")
+    def test_status_overview_flags_menubar_not_running(
+        self,
+        mock_run,
+        mock_window_mode,
+        mock_displays,
+        mock_sessions,
+        mock_ios,
+        mock_android,
+        mock_socket,
+        mock_menubar,
+    ) -> None:
+        mock_socket.return_value.__enter__ = lambda s: s
+        mock_socket.return_value.__exit__ = lambda s, *a: None
+        mock_run.return_value = MagicMock(returncode=0, stdout="Mac15,14\n")
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            cli.cmd_status_overview(Namespace(json=False))
+
+        output = stdout.getvalue()
+        self.assertIn("Menubar: installed, not running", output)
+        self.assertIn("Menubar not running", output)
+        self.assertNotIn("Health: all good", output)
+
+    @patch("simemu.watchdog.full_health_check")
+    def test_doctor_flags_installed_but_stopped_menubar(self, mock_health) -> None:
+        mock_health.return_value = {
+            "api_server": {"status": "healthy"},
+            "monitor": {"status": "running"},
+            "menubar": {"status": "installed_not_running", "app_path": "/Applications/SimEmuBar.app"},
+            "state_files": {"status": "ok", "issues": []},
+            "sessions": {"status": "ok", "stale_count": 0},
+        }
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            cli.cmd_doctor(Namespace())
+
+        output = stdout.getvalue()
+        self.assertIn("Menubar app installed but not running", output)
+        self.assertIn("simemu menubar", output)
+
 
 class CliInvocationWarningTests(unittest.TestCase):
     def test_warns_for_module_invocation(self) -> None:

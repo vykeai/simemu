@@ -446,6 +446,18 @@ def cmd_doctor(args):
                        "message": f"Monitor: {health['monitor']['status']}",
                        "fix": "bash install.sh"})
 
+    menubar = health.get("menubar", {})
+    if menubar.get("status") == "running":
+        ok_items.append("Menubar running")
+    elif menubar.get("status") == "installed_not_running":
+        issues.append({"component": "menubar", "severity": "medium",
+                       "message": "Menubar app installed but not running",
+                       "fix": "simemu menubar"})
+    elif menubar.get("status") == "not_installed":
+        issues.append({"component": "menubar", "severity": "medium",
+                       "message": "Menubar app not installed",
+                       "fix": "bash install.sh"})
+
     if health["state_files"]["status"] == "ok":
         ok_items.append("State files healthy")
     else:
@@ -694,23 +706,21 @@ def cmd_status_overview(args):
         pass
 
     # Menubar app
-    menubar_status = "not running"
-    menubar_pid = None
-    try:
-        result = subprocess.run(
-            ["pgrep", "-fl", "SimEmuBar"],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            menubar_pid = result.stdout.strip().split()[0]
-            menubar_status = "running"
-    except FileNotFoundError:
-        pass
+    from .watchdog import check_menubar_app
+    menubar_health = check_menubar_app()
+    menubar_status_map = {
+        "running": "running",
+        "installed_not_running": "installed, not running",
+        "not_installed": "not installed",
+    }
+    menubar_status = menubar_status_map.get(menubar_health.get("status"), "unknown")
+    menubar_pid = menubar_health.get("pid")
+    menubar_app_path = menubar_health.get("app_path")
 
     data["services"] = {
         "monitor": {"status": monitor_status, "last_tick": monitor_last_tick},
         "server": {"status": server_status, "port": 8765},
-        "menubar": {"status": menubar_status, "pid": menubar_pid},
+        "menubar": {"status": menubar_status, "pid": menubar_pid, "app_path": menubar_app_path},
     }
 
     data["version"] = "0.3.0"
@@ -775,6 +785,8 @@ def cmd_status_overview(args):
     menubar_detail = menubar_status
     if menubar_pid:
         menubar_detail = f"{menubar_status} (pid {menubar_pid})"
+    elif menubar_app_path:
+        menubar_detail = f"{menubar_status} ({menubar_app_path})"
 
     print(f"Monitor: {monitor_detail}")
     print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
@@ -798,6 +810,10 @@ def cmd_status_overview(args):
         issues.append("API server not running — start with: simemu serve")
     if monitor_status not in ("running", "loaded"):
         issues.append("Monitor not running — install with: bash install.sh")
+    if menubar_health.get("status") == "installed_not_running":
+        issues.append("Menubar not running — launch with: simemu menubar")
+    elif menubar_health.get("status") == "not_installed":
+        issues.append("Menubar not installed — install with: bash install.sh")
 
     if issues:
         print("Health issues:")

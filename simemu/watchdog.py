@@ -12,6 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def _menubar_app_candidates() -> list[Path]:
+    repo_root = Path(__file__).resolve().parents[1]
+    return [
+        Path("/Applications/SimEmuBar.app"),
+        repo_root / "simemu" / "swift" / ".build" / "SimEmuBar.app",
+    ]
+
+
 def check_api_server(host: str = "127.0.0.1", port: int = 8765, timeout: float = 2.0) -> dict:
     """Check if the simemu API server is reachable."""
     import urllib.request
@@ -56,9 +64,17 @@ def check_menubar_app() -> dict:
         if result.returncode == 0 and result.stdout.strip():
             pid = result.stdout.strip().split()[0]
             return {"status": "running", "pid": int(pid)}
+        for candidate in _menubar_app_candidates():
+            binary = candidate / "Contents" / "MacOS" / "SimEmuBar"
+            if candidate.exists() and binary.exists():
+                return {
+                    "status": "installed_not_running",
+                    "app_path": str(candidate),
+                    "hint": "Launch with: simemu menubar",
+                }
         return {
-            "status": "not_running",
-            "hint": "Launch with: open /Applications/SimEmuBar.app\nOr run install.sh",
+            "status": "not_installed",
+            "hint": "Install with: bash install.sh",
         }
     except FileNotFoundError:
         return {"status": "unknown"}
@@ -192,6 +208,7 @@ def is_healthy() -> bool:
     return (
         report["api_server"]["status"] == "healthy"
         and report["monitor"]["status"] == "running"
+        and report["menubar"]["status"] == "running"
         and report["sessions"]["status"] == "ok"
         and report["state_files"]["status"] == "ok"
     )

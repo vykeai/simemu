@@ -54,6 +54,34 @@ class TestCheckMonitorAgent(unittest.TestCase):
         self.assertEqual(result["status"], "not_loaded")
 
 
+class TestCheckMenubarApp(unittest.TestCase):
+    @patch("simemu.watchdog.subprocess.run")
+    def test_running(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="123 SimEmuBar\n")
+        result = check_menubar_app()
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["pid"], 123)
+
+    @patch("simemu.watchdog._menubar_app_candidates")
+    @patch("simemu.watchdog.subprocess.run")
+    def test_installed_not_running(self, mock_run, mock_candidates) -> None:
+        tmp = Path(_tmpdir) / "SimEmuBar.app"
+        (tmp / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+        (tmp / "Contents" / "MacOS" / "SimEmuBar").write_text("")
+        mock_candidates.return_value = [tmp]
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        result = check_menubar_app()
+        self.assertEqual(result["status"], "installed_not_running")
+        self.assertEqual(result["app_path"], str(tmp))
+
+    @patch("simemu.watchdog._menubar_app_candidates", return_value=[])
+    @patch("simemu.watchdog.subprocess.run")
+    def test_not_installed(self, mock_run, mock_candidates) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        result = check_menubar_app()
+        self.assertEqual(result["status"], "not_installed")
+
+
 class TestCheckStaleSessions(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory(prefix="simemu-wd-")
