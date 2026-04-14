@@ -218,3 +218,19 @@ services:
 ```
 
 **Why:** Generic names like `api`, `infra`, `tmp`, `e2e` are unidentifiable when multiple projects run simultaneously. The `-local` suffix distinguishes dev containers from production.
+
+---
+
+## No CI/CD Pipelines
+
+**Do NOT create GitHub Actions workflows, CI configs, or automated pipeline files.**
+
+This means:
+- No `.github/workflows/*.yml`
+- No `.gitlab-ci.yml`, `Jenkinsfile`, `Taskfile`, `Makefile` for CI
+- No `circle.yml`, `bitbucket-pipelines.yml`, `azure-pipelines.yml`
+- No pre-commit hooks that phone home or run cloud services
+
+**Why:** CI/CD will be set up intentionally when the project approaches production. Agents creating workflows during early development generates thousands of notification emails and adds maintenance burden before it provides value. Build, test, and lint locally.
+
+If the project already has CI files, leave them alone -- but do not create new ones or extend existing ones without explicit instruction.
