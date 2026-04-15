@@ -62,14 +62,6 @@ def _agent() -> str:
     return os.environ.get("SIMEMU_AGENT") or f"pid-{os.getpid()}"
 
 
-def _is_real_device(alloc: state.Allocation) -> bool:
-    """Check if an allocation refers to a real device (not simulator/emulator).
-
-    Real devices have "(real)" in their device_name, set during acquire.
-    """
-    return "(real)" in alloc.device_name
-
-
 def _output_dir() -> Path:
     d = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
     d.mkdir(parents=True, exist_ok=True)
@@ -112,81 +104,6 @@ def _scouty_json(method: str, path: str, payload: dict | None = None, timeout: f
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read()
     return json.loads(raw.decode("utf-8")) if raw else {}
-
-
-_ACTION_EMOJI = {
-    "tap": "\U0001f446",       # 👆
-    "swipe": "\u2194\ufe0f",   # ↔️
-    "key": "\u2328\ufe0f",     # ⌨️
-    "input": "\U0001f4dd",     # 📝
-    "long-press": "\U0001f447",# 👇
-    "focus": "\U0001f50d",     # 🔍
-}
-
-
-class _DesktopLease:
-    def __init__(self, alloc: state.Allocation, action: str, reason: str,
-                 estimated_seconds: int = 5, **extra_metadata):
-        self.alloc = alloc
-        self.action = action
-        self.reason = reason
-        self.estimated_seconds = estimated_seconds
-        self.extra_metadata = extra_metadata
-        self.lease_id: str | None = None
-        self.enabled = False
-        self.countdown_seconds = int(os.environ.get("SIMEMU_DESKTOP_LEASE_COUNTDOWN", "3"))
-
-    def __enter__(self):
-        try:
-            payload = {
-                "tool": "simemu",
-                "project": _project_name(self.alloc),
-                "slug": self.alloc.slug,
-                "platform": self.alloc.platform,
-                "action": self.action,
-                "action_emoji": _ACTION_EMOJI.get(self.action, "\U0001f5a5\ufe0f"),
-                "reason": self.reason,
-                "estimated_seconds": self.estimated_seconds,
-                "countdown_seconds": self.countdown_seconds,
-                "stage": "Preparing desktop control",
-                "screen": self.alloc.device_name,
-                "device_type": "real" if _is_real_device(self.alloc) else "simulator",
-                **self.extra_metadata,
-            }
-            lease = _scouty_json("POST", "/desktop/lease/request", payload)
-            self.lease_id = lease.get("lease_id")
-            if self.lease_id:
-                self.enabled = True
-                remaining = lease.get("countdown_remaining_seconds")
-                delay = self.countdown_seconds if remaining is None else max(0.0, float(remaining))
-                if delay > 0:
-                    time.sleep(delay)
-                _scouty_json("POST", "/desktop/lease/activate", {"lease_id": self.lease_id})
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
-            self.enabled = False
-            self.lease_id = None
-        return self
-
-    def update(self, **metadata):
-        if not self.lease_id:
-            return
-        try:
-            _scouty_json("POST", "/desktop/lease/update", {"lease_id": self.lease_id, "metadata": metadata})
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
-            pass
-
-    def __exit__(self, exc_type, exc, tb):
-        if self.lease_id:
-            try:
-                _scouty_json("POST", "/desktop/lease/release", {"lease_id": self.lease_id})
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
-                pass
-        return False
-
-
-def _desktop_lease(alloc: state.Allocation, action: str, reason: str,
-                   estimated_seconds: int = 5, **extra_metadata):
-    return _DesktopLease(alloc, action, reason, estimated_seconds, **extra_metadata)
 
 
 def _autostart_disabled() -> bool:
@@ -585,108 +502,10 @@ def _reject_legacy(args):
 
 
 def cmd_acquire(args):
-    _reject_legacy(args)
-    # Dead code below — kept for reference only
-    wait = getattr(args, "wait", 0)
-    real = getattr(args, "real", False)
-    poll = 10  # seconds between retries
-    deadline = time.time() + wait
-    attempt = 0
-
-    while True:
-        try:
-            sim = find_simulator(args.platform, args.device, real_device=real)
-            break
-        except NoSimulatorAvailable as e:
-            if time.time() >= deadline:
-                raise RuntimeError(str(e)) from None
-            attempt += 1
-            remaining = int(deadline - time.time())
-            kind = "device" if real else "simulator"
-            print(f"No {kind} available, retrying in {poll}s (up to {remaining}s remaining)...",
-                  flush=True)
-            time.sleep(poll)
-
-    alloc = state.acquire(
-        slug=args.slug,
-        sim_id=sim.sim_id,
-        platform=sim.platform,
-        device_name=sim.device_name,
-        agent=_agent(),
-    )
-
-    if args.json:
-        _print_json({
-            "slug": args.slug,
-            "sim_id": sim.sim_id,
-            "platform": sim.platform,
-            "device_name": sim.device_name,
-            "runtime": sim.runtime,
-            "real_device": sim.real_device,
-            "agent": alloc.agent,
-            "acquired_at": alloc.acquired_at,
-        })
-    else:
-        label = "real device" if sim.real_device else "simulator"
-        print(f"Reserved '{args.slug}' → {sim.device_name} ({sim.runtime}) [{label}]")
-        print(f"  sim_id:  {sim.sim_id}")
-        print(f"  agent:   {alloc.agent}")
-
-    # Real devices are already booted — skip boot step
-    if sim.real_device:
-        if not args.json:
-            print("Ready (real device — already connected).")
-        return
-
-    if not args.no_boot:
-        if not args.json:
-            print("Booting...", flush=True)
-        if sim.platform == "ios":
-            ios.boot(sim.sim_id)
-        else:
-            android.boot(sim.sim_id, headless=not args.window)
-        placement = _maybe_apply_agent_workspace(args.slug)
-        if not args.json:
-            print("Ready.")
-            if placement and placement.get("applied"):
-                print(f"Placed '{args.slug}' in the '{alloc.agent}' workspace.")
-
+    pass
 
 def cmd_release(args):
-    alloc = state.release(args.slug, agent=_agent())
-    # If a recording was active, stop it cleanly
-    if alloc.recording_pid is not None:
-        if alloc.platform == "ios":
-            ios.record_stop(alloc.recording_pid)
-        else:
-            android.record_stop(alloc.recording_pid)
-    print(f"Released '{args.slug}' ({alloc.device_name})")
-
-
-def cmd_status(args):
-    allocations = state.get_all()
-    if not allocations:
-        if args.json:
-            _print_json([])
-        else:
-            print("No simulators currently reserved.")
-        return
-
-    if args.json:
-        rows = []
-        for slug, alloc in allocations.items():
-            d = alloc.__dict__.copy()
-            rows.append(alloc.__dict__.copy())
-        _print_json(rows)
-        return
-
-    print(f"{'SLUG':<22} {'PLATFORM':<10} {'DEVICE':<26} {'AGENT':<22} {'SINCE':<20} {'REC'}")
-    print("─" * 100)
-    for slug, alloc in allocations.items():
-        since = alloc.acquired_at[:19].replace("T", " ")
-        rec = "●REC" if alloc.recording_pid else ""
-        print(f"{slug:<22} {alloc.platform:<10} {alloc.device_name:<26} {alloc.agent:<22} {since:<20} {rec}")
-
+    pass
 
 def cmd_list_devices(args):
     """List connected real devices (not simulators/emulators)."""
@@ -744,1210 +563,155 @@ def cmd_list(args):
 
 
 def cmd_boot(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if _is_real_device(alloc):
-        print(f"'{args.slug}' is a real device — already connected.")
-        return
-    if alloc.platform == "ios":
-        ios.boot(alloc.sim_id)
-    else:
-        android.boot(alloc.sim_id, headless=not getattr(args, "window", False))
-    placement = _maybe_apply_agent_workspace(args.slug)
-    print(f"'{args.slug}' is booted.")
-    if placement and placement.get("applied"):
-        print(f"Placed '{args.slug}' in the '{alloc.agent}' workspace.")
-
+    pass
 
 def cmd_shutdown(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if _is_real_device(alloc):
-        raise RuntimeError(
-            f"'{args.slug}' is a real device — cannot shut down via simemu.\n"
-            f"Use 'simemu release {args.slug}' to release the reservation."
-        )
-    if alloc.platform == "ios":
-        ios.shutdown(alloc.sim_id)
-    else:
-        android.shutdown(alloc.sim_id)
-    print(f"'{args.slug}' shut down.")
-
+    pass
 
 def cmd_animations(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    enabled = args.mode == "on"
-    if alloc.platform == "ios":
-        ios.set_animations(alloc.sim_id, enabled)
-    else:
-        android.set_animations(alloc.sim_id, enabled)
-    state_str = "restored" if enabled else "disabled (slow-mode for stable Maestro flows)"
-    print(f"Animations {state_str} on '{args.slug}'.")
-
+    pass
 
 def cmd_clipboard(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform != "ios":
-        raise RuntimeError(
-            "'clipboard get' is iOS only. Android has no reliable CLI clipboard read command."
-        )
-    text = ios.clipboard_get(alloc.sim_id)
-    if args.json:
-        _print_json({"clipboard": text})
-    else:
-        print(text)
-
+    pass
 
 def cmd_focus(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        with _desktop_lease(alloc, "focus", f"Bring {args.slug} to the foreground", estimated_seconds=4) as lease:
-            lease.update(stage="Booting simulator if needed", screen="Simulator shell", scenario="Desktop focus")
-            _prepare_ios_interaction(args.slug, alloc.sim_id)
-            lease.update(stage="Bringing simulator window to foreground", screen=alloc.device_name, scenario="Desktop focus")
-            ios.focus(alloc.sim_id)
-        print(f"Simulator window for '{args.slug}' brought to front.")
-    else:
-        print(f"'{args.slug}' is an Android emulator. Android runs headless by default — "
-              f"boot with --window if you need a visible window.")
-
+    pass
 
 def cmd_present(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        clear_layout = getattr(args, "clear_layout", False)
-        save_layout = getattr(args, "save_layout", False)
-
-        if clear_layout:
-            removed = state.clear_presentation(args.slug)
-            message = f"Cleared saved layout for '{args.slug}'." if removed else f"No saved layout for '{args.slug}'."
-            if args.json:
-                _print_json({"cleared": removed, "slug": args.slug})
-            else:
-                print(message)
-            return
-
-        if save_layout:
-            layout = ios.current_presentation_layout(alloc.sim_id)
-            state.set_presentation(args.slug, layout)
-            if args.json:
-                _print_json({"saved": True, "slug": args.slug, "layout": layout})
-            else:
-                print(f"Saved current layout for '{args.slug}'.")
-            return
-
-        layout = state.get_presentation(args.slug)
-        result = ios.present(alloc.sim_id, layout=layout)
-        workspace_placement = _maybe_apply_agent_workspace(args.slug)
-        if workspace_placement and workspace_placement.get("applied"):
-            result["workspace_applied"] = True
-        if args.json:
-            _print_json(result)
-        else:
-            suffix = " using saved layout" if layout else ""
-            print(f"Presented '{args.slug}' ({alloc.device_name}){suffix}.")
-    else:
-        message = (
-            f"'{args.slug}' is Android — presentation is controlled at boot time "
-            f"with --window."
-        )
-        if args.json:
-            _print_json({"stable": True, "platform": "android", "message": message})
-        else:
-            print(message)
-
+    pass
 
 def cmd_stabilize(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        if getattr(args, "heal", False):
-            prep = _ensure_ios_ready_or_heal(args.slug, alloc.sim_id)
-            result = prep["stable"]
-            healed = prep["healed"]
-        else:
-            result = ios.stabilize(alloc.sim_id)
-            healed = False
-        presentation = _ios_presentation_status(args.slug, alloc.sim_id)
-        result.update(presentation)
-        result["healed"] = healed
-    else:
-        result = {
-            "stable": True,
-            "slug": args.slug,
-            "platform": alloc.platform,
-            "device_name": alloc.device_name,
-            "note": "Android presentation is already window-independent for most commands.",
-        }
-    if args.json:
-        _print_json(result)
-    else:
-        suffix = ""
-        if alloc.platform == "ios" and result.get("has_saved_layout"):
-            if result.get("healed"):
-                suffix = " (healed to saved layout)"
-            elif result.get("layout_drifted"):
-                suffix = " (layout drifted from saved presentation)"
-            else:
-                suffix = " (layout matches saved presentation)"
-        visibility_suffix = ""
-        if alloc.platform == "ios" and result.get("window_visible_on_active_desktop") is False:
-            visibility_suffix = " [window not visible on active desktop]"
-        print(f"'{args.slug}' is stable.{suffix}{visibility_suffix}")
-
+    pass
 
 def cmd_ready(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        prep = _ensure_ios_ready_or_heal(args.slug, alloc.sim_id)
-        result = prep["stable"]
-        result.update(_ios_presentation_status(args.slug, alloc.sim_id))
-        result["healed"] = prep["healed"]
-        result["ready"] = True
-    else:
-        serial = android.wait_until_ready(alloc.sim_id)
-        result = {
-            "ready": True,
-            "stable": True,
-            "slug": args.slug,
-            "platform": alloc.platform,
-            "device_name": alloc.device_name,
-            "serial": serial,
-            "note": "Android adb transport and package manager are ready.",
-        }
-    if args.json:
-        _print_json(result)
-    else:
-        suffix = ""
-        if alloc.platform == "ios":
-            if result.get("healed"):
-                suffix = " (healed)"
-            elif result.get("layout_matches_saved") is True:
-                suffix = " (already aligned)"
-        print(f"'{args.slug}' is ready.{suffix}")
-
+    pass
 
 def cmd_workspace_set(args):
-    agent = _agent()
-    workspace = _current_workspace_anchor()
-    state.set_workspace(agent, workspace)
-    if args.json:
-        _print_json({"agent": agent, "workspace": workspace})
-    else:
-        source = workspace.get("frontmost_app") or "current desktop"
-        print(
-            f"Saved workspace for '{agent}' on display {workspace.get('display_id')} "
-            f"from {source}."
-        )
-
+    pass
 
 def cmd_workspace_show(args):
-    agent = _agent()
-    workspace = state.get_workspace(agent)
-    if args.json:
-        _print_json({"agent": agent, "workspace": workspace})
-        return
-    if not workspace:
-        print(f"No workspace saved for '{agent}'.")
-        return
-    print(
-        f"Workspace for '{agent}': display {workspace.get('display_id')} "
-        f"({int(workspace.get('width', 0))}x{int(workspace.get('height', 0))} at "
-        f"{int(workspace.get('origin_x', 0))},{int(workspace.get('origin_y', 0))})"
-    )
-
+    pass
 
 def cmd_workspace_clear(args):
-    agent = _agent()
-    cleared = state.clear_workspace(agent)
-    if args.json:
-        _print_json({"agent": agent, "cleared": cleared})
-    else:
-        if cleared:
-            print(f"Cleared workspace for '{agent}'.")
-        else:
-            print(f"No workspace saved for '{agent}'.")
-
+    pass
 
 def cmd_workspace_apply(args):
-    agent = _agent()
-    workspace = state.get_workspace(agent)
-    if not workspace:
-        raise RuntimeError(
-            f"No workspace saved for '{agent}'. Run `simemu workspace set` from the desktop where you want "
-            f"this agent's simulator windows to live."
-        )
-    if args.slugs:
-        allocations = [state.require(slug) for slug in args.slugs]
-    else:
-        allocations = _agent_allocations(agent)
-    if not allocations:
-        raise RuntimeError(f"No simulators reserved for '{agent}'.")
-    placements = _apply_workspace_to_allocations(workspace, allocations)
-    if args.json:
-        _print_json({"agent": agent, "workspace": workspace, "placements": placements})
-        return
-    print(f"Applied workspace for '{agent}' to {len(placements)} simulator(s).")
-    for placement in placements:
-        suffix = "" if placement["applied"] else f" [{placement['note']}]"
-        print(
-            f"  {placement['slug']}: {int(placement['layout']['x'])},{int(placement['layout']['y'])} "
-            f"{int(placement['layout']['width'])}x{int(placement['layout']['height'])}{suffix}"
-        )
-
+    pass
 
 def cmd_install(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    timeout = args.timeout
-    print(f"Installing {args.app} on '{args.slug}' ({alloc.device_name})...")
-    if _is_real_device(alloc) and alloc.platform == "ios":
-        device.ios_install(alloc.sim_id, args.app, timeout=timeout)
-    elif alloc.platform == "ios":
-        ios.install(alloc.sim_id, args.app, timeout=timeout)
-    else:
-        # adb install works the same for real Android devices and emulators
-        android.install(alloc.sim_id, args.app, timeout=timeout)
-    print("Done.")
-
+    pass
 
 def cmd_apps(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        apps = ios.list_apps(alloc.sim_id)
-    else:
-        apps = android.list_apps(alloc.sim_id)
-
-    if args.json:
-        _print_json(apps)
-        return
-
-    if not apps:
-        print("No apps installed.")
-        return
-
-    if alloc.platform == "ios":
-        print(f"{'NAME':<35} {'BUNDLE ID':<50} {'VERSION'}")
-        print("─" * 90)
-        for a in apps:
-            print(f"{a['name']:<35} {a['bundle_id']:<50} {a['version']}")
-    else:
-        print(f"{'PACKAGE':<60} {'PATH'}")
-        print("─" * 90)
-        for a in apps:
-            print(f"{a['package']:<60} {a['path']}")
-
+    pass
 
 def cmd_launch(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    extra = args.extra or []
-    if _is_real_device(alloc) and alloc.platform == "ios":
-        device.ios_launch(alloc.sim_id, args.bundle_or_package)
-    elif alloc.platform == "ios":
-        ios.launch(alloc.sim_id, args.bundle_or_package, extra)
-    else:
-        android.launch(alloc.sim_id, args.bundle_or_package, extra)
-
+    pass
 
 def cmd_terminate(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.terminate(alloc.sim_id, args.bundle_or_package)
-    else:
-        android.terminate(alloc.sim_id, args.bundle_or_package)
-
+    pass
 
 def cmd_uninstall(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.uninstall(alloc.sim_id, args.bundle_or_package)
-    else:
-        android.uninstall(alloc.sim_id, args.bundle_or_package)
-
+    pass
 
 def cmd_screenshot(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-
-    ext = "png"
-    if args.format and args.format in ("jpeg", "jpg"):
-        ext = "jpg"
-    elif args.format:
-        ext = args.format
-
-    output = args.output or _auto_path(args.slug, ext)
-
-    max_size = args.max_size or (
-        int(os.environ["SIMEMU_SCREENSHOT_MAX_SIZE"])
-        if "SIMEMU_SCREENSHOT_MAX_SIZE" in os.environ else None
-    )
-
-    if _is_real_device(alloc) and alloc.platform == "ios":
-        device.ios_screenshot(alloc.sim_id, output, max_size=max_size)
-    elif alloc.platform == "ios":
-        ios.screenshot(alloc.sim_id, output, fmt=args.format, max_size=max_size)
-        if not max_size:
-            print("Tip: iOS screenshots are ~2600px tall. Pass --max-size 1000 (or set "
-                  "SIMEMU_SCREENSHOT_MAX_SIZE=1000) to auto-resize for Claude's vision.",
-                  file=sys.stderr)
-    else:
-        if args.format and args.format not in ("png",):
-            print(f"Warning: Android only supports PNG screenshots; ignoring --format.", file=sys.stderr)
-        # adb screencap works the same for real Android devices
-        android.screenshot(alloc.sim_id, output, max_size=max_size)
-
-    print(f"Screenshot saved: {output}")
-    if args.json:
-        _print_json({"path": output})
-
+    pass
 
 def cmd_record(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-
-    if args.action == "start":
-        if alloc.recording_pid is not None:
-            raise RuntimeError(
-                f"A recording is already active for '{args.slug}' (pid {alloc.recording_pid}). "
-                f"Stop it first with: simemu record stop {args.slug}"
-            )
-        output = args.output or _auto_path(args.slug, "mp4")
-        if alloc.platform == "ios":
-            pid = ios.record_start(alloc.sim_id, output, codec=args.codec)
-        else:
-            if args.codec:
-                print("Warning: --codec is not supported on Android.", file=sys.stderr)
-            pid = android.record_start(alloc.sim_id, output)
-            print(f"Note: Android screenrecord has a 3-minute hard limit.", file=sys.stderr)
-        state.set_recording(args.slug, pid, output)
-        if args.json:
-            _print_json({"pid": pid, "output": output})
-        else:
-            print(f"Recording started → {output}")
-            print(f"Stop with:  simemu record stop {args.slug}")
-
-    elif args.action == "stop":
-        if alloc.recording_pid is None:
-            raise RuntimeError(f"No active recording for '{args.slug}'.")
-        output = alloc.recording_output
-        if alloc.platform == "ios":
-            ios.record_stop(alloc.recording_pid)
-        else:
-            android.record_stop(alloc.recording_pid)
-        state.set_recording(args.slug, None, None)
-        if args.json:
-            _print_json({"output": output})
-        else:
-            print(f"Recording stopped → {output}")
-
+    pass
 
 def cmd_log(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.log_stream(alloc.sim_id, predicate=args.predicate, level=args.level or "debug")
-    else:
-        android.log_stream(alloc.sim_id, tag=args.tag, level=args.level)
-
+    pass
 
 def cmd_url(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.open_url(alloc.sim_id, args.url)
-    else:
-        android.open_url(alloc.sim_id, args.url)
-
+    pass
 
 def cmd_push(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform != "android":
-        raise RuntimeError("'push' is Android only. For iOS use 'simemu add-media' (photos/videos) or 'simemu push-notification'.")
-    android.push(alloc.sim_id, args.local, args.remote)
-
+    pass
 
 def cmd_pull(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform != "android":
-        raise RuntimeError("'pull' is Android only.")
-    android.pull(alloc.sim_id, args.remote, args.local)
-
+    pass
 
 def cmd_add_media(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.add_media(alloc.sim_id, args.file)
-    else:
-        android.add_media(alloc.sim_id, args.file)
-    print(f"Added {args.file} to Photos library on '{args.slug}'.")
-
+    pass
 
 def cmd_push_notification(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform != "ios":
-        raise RuntimeError("'push-notification' is iOS only.")
-    ios.push_notification(alloc.sim_id, args.bundle_id, args.payload)
-    print("Push notification sent.")
-
+    pass
 
 def cmd_rename(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.rename(alloc.sim_id, args.name)
-    else:
-        android.rename(alloc.sim_id, args.name)
-    # Update the stored device_name (and sim_id for Android, where AVD name = sim_id)
-    with state._locked_state() as (s, save):
-        if args.slug in s["allocations"]:
-            s["allocations"][args.slug]["device_name"] = args.name
-            if alloc.platform == "android":
-                # AVD filesystem id uses underscores (matches android.rename() convention)
-                s["allocations"][args.slug]["sim_id"] = args.name.replace(" ", "_")
-            save(s)
-    print(f"Renamed '{args.slug}' → {args.name}")
-
+    pass
 
 def cmd_delete(args):
-    """Permanently remove a simulator/AVD. Releases reservation if held."""
-    alloc = state.get(args.slug)
-    if alloc:
-        if not args.yes:
-            try:
-                confirm = input(
-                    f"Permanently DELETE '{args.slug}' ({alloc.device_name})? "
-                    f"This cannot be undone. [y/N] "
-                )
-            except EOFError:
-                raise RuntimeError("Non-interactive: pass --yes to confirm delete.")
-            if confirm.strip().lower() != "y":
-                print("Aborted.")
-                return
-        if alloc.recording_pid:
-            if alloc.platform == "ios":
-                ios.record_stop(alloc.recording_pid)
-            else:
-                android.record_stop(alloc.recording_pid)
-        state.release(args.slug, agent=None)  # admin release
-        if alloc.platform == "ios":
-            ios.delete(alloc.sim_id)
-        else:
-            android.delete(alloc.sim_id)
-        print(f"Deleted '{args.slug}' ({alloc.device_name}).")
-    else:
-        # Not in simemu state — delete by raw sim_id/avd
-        raise RuntimeError(
-            f"No reservation for '{args.slug}'. "
-            f"Use 'simemu acquire' first, or delete directly via the platform tools."
-        )
-
+    pass
 
 def cmd_erase(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if not args.yes:
-        try:
-            confirm = input(f"Erase all data on '{args.slug}' ({alloc.device_name})? [y/N] ")
-        except EOFError:
-            raise RuntimeError("Non-interactive mode: pass --yes to confirm erase.")
-        if confirm.strip().lower() != "y":
-            print("Aborted.")
-            return
-    if alloc.platform == "ios":
-        ios.erase(alloc.sim_id)
-    else:
-        android.erase(alloc.sim_id)
-    print(f"'{args.slug}' erased.")
-
+    pass
 
 def cmd_env(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if _is_real_device(alloc) and alloc.platform == "ios":
-        info = device.ios_get_env(alloc.sim_id)
-        info["maestro_device"] = alloc.sim_id
-    elif alloc.platform == "ios":
-        info = ios.get_env(alloc.sim_id)
-        info["maestro_device"] = alloc.sim_id  # UDID for maestro --device
-    else:
-        info = android.get_env(alloc.sim_id)
-        from .discover import get_android_serial
-        serial = get_android_serial(alloc.sim_id)
-        info["maestro_device"] = serial or alloc.sim_id  # real Android: serial is the sim_id
-    info["slug"] = args.slug
-    info["agent"] = alloc.agent
-    info["acquired_at"] = alloc.acquired_at
-    info["real_device"] = _is_real_device(alloc)
-    _print_json(info)
-
+    pass
 
 def cmd_check(args):
-    """Verify a reserved simulator is booted and the specified app is in the foreground."""
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    issues = []
-
-    if alloc.platform == "ios":
-        env = ios.get_env(alloc.sim_id)
-        if env.get("state") != "Booted":
-            issues.append(f"Simulator is not booted (state: {env.get('state')}). Run: simemu boot {args.slug}")
-    else:
-        try:
-            android.wait_until_ready(alloc.sim_id, timeout=45)
-        except Exception as exc:
-            issues.append(str(exc))
-
-    if args.bundle and not issues:
-        if alloc.platform == "ios":
-            result = ios.get_foreground_app(alloc.sim_id) if hasattr(ios, "get_foreground_app") else None
-        else:
-            from .discover import get_android_serial
-            serial = get_android_serial(alloc.sim_id)
-            import subprocess as _sp2
-            r = _sp2.run(["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
-                         capture_output=True, text=True)
-            if args.bundle not in r.stdout:
-                issues.append(f"App '{args.bundle}' does not appear to be in foreground. Run: simemu launch {args.slug} {args.bundle}")
-
-    if issues:
-        for issue in issues:
-            print(f"✗ {issue}", file=sys.stderr)
-        raise SystemExit(1)
-    else:
-        print(f"✓ {args.slug} is ready")
-        if args.json:
-            _print_json({"slug": args.slug, "ready": True, "platform": alloc.platform})
-
+    pass
 
 @contextmanager
-def _maestro_hud(flow_name: str):
-    """Context manager that shows a blocking HUD overlay during Maestro flows."""
-    import subprocess as _sp
-    import shutil
-
-    _CUTE_HUD_PATHS = [
-        "cute-hud",  # on PATH
-        str(Path.home() / "dev" / "cute-hud" / ".build" / "release" / "cute-hud"),
-    ]
-
-    binary = None
-    for candidate in _CUTE_HUD_PATHS:
-        if "/" in candidate:
-            if Path(candidate).exists():
-                binary = candidate
-                break
-        else:
-            found = shutil.which(candidate)
-            if found:
-                binary = found
-                break
-
-    if not binary:
-        yield
-        return
-
-    proc = None
-    try:
-        proc = _sp.Popen(
-            [binary],
-            stdin=_sp.PIPE,
-            stdout=_sp.DEVNULL,
-            stderr=_sp.DEVNULL,
-        )
-        msg = json.dumps({
-            "mode": "critical",
-            "blocking": True,
-            "title": "SIMEMU",
-            "badge": "MAESTRO",
-            "action": flow_name,
-            "detail": "Running Maestro flow — do not interact with the desktop",
-            "task": "simemu maestro",
-        })
-        if proc.stdin:
-            proc.stdin.write(msg.encode("utf-8") + b"\n")
-            proc.stdin.flush()
-    except Exception:
-        proc = None
-
-    try:
-        yield
-    finally:
-        if proc and proc.poll() is None:
-            try:
-                if proc.stdin:
-                    idle_msg = json.dumps({"mode": "idle"}).encode("utf-8") + b"\n"
-                    proc.stdin.write(idle_msg)
-                    proc.stdin.flush()
-            except (BrokenPipeError, OSError):
-                pass
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-
-
 def cmd_maestro(args):
-    """Run a Maestro flow against a reserved simulator, with the correct --device flag resolved automatically."""
-    import subprocess as _sp
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-
-    if alloc.platform == "ios":
-        device_id = alloc.sim_id  # UDID
-    else:
-        from .discover import get_android_serial
-        device_id = get_android_serial(alloc.sim_id)
-        if not device_id:
-            raise RuntimeError(
-                f"Android emulator '{args.slug}' is not running. Boot it first: simemu boot {args.slug}"
-            )
-
-    flow_display = " ".join(Path(f).name for f in args.flow)
-    cmd = ["maestro", "--device", device_id, "test"] + args.flow + args.extra
-    print(f"Running: {' '.join(cmd)}", flush=True)
-    with _maestro_hud(flow_display):
-        result = _sp.run(cmd)
-    if result.returncode != 0:
-        raise SystemExit(result.returncode)
-
-
-def _resolve_coords(args, alloc, x_attr="x", y_attr="y"):
-    """Resolve tap/swipe coordinates. If --pct, converts fractions to pixels."""
-    x = getattr(args, x_attr)
-    y = getattr(args, y_attr)
-    if getattr(args, "pct", False):
-        if alloc.platform == "ios":
-            env = ios.get_env(alloc.sim_id)
-            w, h = env["screen_width_pt"], env["screen_height_pt"]
-        else:
-            w, h = android.get_screen_size(alloc.sim_id)
-        x = round(x * w)
-        y = round(y * h)
-    return x, y
-
-
-def _layout_differs(current: dict, saved: dict, tolerance: float = 2.0) -> bool:
-    for key in ("x", "y", "width", "height"):
-        if abs(float(current[key]) - float(saved[key])) > tolerance:
-            return True
-    if (
-        current.get("display_id") is not None
-        and saved.get("display_id") is not None
-        and int(current["display_id"]) != int(saved["display_id"])
-    ):
-        return True
-    return False
-
-
-def _agent_allocations(agent: str) -> list[state.Allocation]:
-    return sorted(
-        [alloc for alloc in state.get_all().values() if alloc.agent == agent],
-        key=lambda alloc: alloc.slug,
-    )
-
-
-def _current_workspace_anchor() -> dict:
-    anchor = ios.current_desktop_anchor()
-    display = anchor.get("display")
-    if not display:
-        raise RuntimeError("Could not determine the current display/desktop anchor.")
-    return {
-        "display_id": display.get("id"),
-        "origin_x": display.get("origin_x"),
-        "origin_y": display.get("origin_y"),
-        "width": display.get("width"),
-        "height": display.get("height"),
-        "frontmost_app": anchor.get("frontmost_app"),
-        "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-
-
-def _workspace_frame_for_slot(display: dict, slot: int, total: int, base_width: float, base_height: float) -> dict:
-    padding = 32.0
-    gap = 24.0
-    columns = 1 if total <= 1 else 2
-    rows = max(1, (total + columns - 1) // columns)
-    usable_width = max(display["width"] - (padding * 2) - (gap * (columns - 1)), base_width)
-    usable_height = max(display["height"] - (padding * 2) - (gap * (rows - 1)), base_height)
-    cell_width = usable_width / columns
-    cell_height = usable_height / rows
-    scale = min(cell_width / base_width, cell_height / base_height, 1.0)
-    width = max(320.0, round(base_width * scale))
-    height = max(640.0, round(base_height * scale))
-    column = slot % columns
-    row = slot // columns
-    x = display["origin_x"] + padding + (column * (cell_width + gap)) + max(0.0, (cell_width - width) / 2.0)
-    y = display["origin_y"] + padding + (row * (cell_height + gap)) + max(0.0, (cell_height - height) / 2.0)
-    return {
-        "x": round(x),
-        "y": round(y),
-        "width": width,
-        "height": height,
-        "display_id": display.get("display_id"),
-    }
-
-
-def _current_or_saved_window_size(alloc: state.Allocation) -> tuple[float, float]:
-    if alloc.platform == "ios":
-        try:
-            layout = ios.current_presentation_layout(alloc.sim_id)
-            return float(layout["width"]), float(layout["height"])
-        except Exception:
-            saved = state.get_presentation(alloc.slug)
-            if saved:
-                return float(saved["width"]), float(saved["height"])
-            return 494.0, 1054.0
-    frame = android.current_window_frame(alloc.sim_id)
-    if frame:
-        return float(frame["width"]), float(frame["height"])
-    return 411.0, 914.0
-
-
-def _apply_workspace_to_allocations(workspace: dict, allocations: list[state.Allocation]) -> list[dict]:
-    display = {
-        "display_id": workspace.get("display_id"),
-        "origin_x": float(workspace["origin_x"]),
-        "origin_y": float(workspace["origin_y"]),
-        "width": float(workspace["width"]),
-        "height": float(workspace["height"]),
-    }
-    placements = []
-    for idx, alloc in enumerate(allocations):
-        base_width, base_height = _current_or_saved_window_size(alloc)
-        layout = _workspace_frame_for_slot(display, idx, len(allocations), base_width, base_height)
-        applied = False
-        note = None
-        if alloc.platform == "ios":
-            ios.present(alloc.sim_id, layout=layout)
-            state.set_presentation(alloc.slug, layout)
-            applied = True
-        else:
-            applied = android.set_window_frame(
-                alloc.sim_id,
-                layout["x"],
-                layout["y"],
-                layout["width"],
-                layout["height"],
-            )
-            if not applied:
-                note = "Android emulator window not visible; launch with --window to place it in the workspace."
-        placements.append(
-            {
-                "slug": alloc.slug,
-                "platform": alloc.platform,
-                "layout": layout,
-                "applied": applied,
-                "note": note,
-            }
-        )
-    return placements
-
-
-def _maybe_apply_agent_workspace(slug: str) -> Optional[dict]:
-    alloc = state.require(slug)
-    workspace = state.get_workspace(alloc.agent)
-    if not workspace:
-        return None
-    placements = _apply_workspace_to_allocations(workspace, [alloc])
-    return placements[0] if placements else None
-
-
-def _ensure_ios_ready_or_heal(slug: str, sim_id: str) -> dict:
-    saved_layout = state.get_presentation(slug)
-    stable = ios.stabilize(sim_id)
-    if not saved_layout:
-        if stable.get("window_visible_on_active_desktop") is False:
-            raise RuntimeError(
-                f"Simulator window for '{slug}' is not visible on the active desktop. "
-                f"Run `simemu present {slug}` or save a layout with `simemu present {slug} --save-layout`."
-            )
-        return {"healed": False, "stable": stable}
-
-    if stable.get("window_visible_on_active_desktop") is False:
-        ios.present(sim_id, layout=saved_layout)
-        return {"healed": True, "stable": ios.stabilize(sim_id)}
-    try:
-        current_layout = ios.current_presentation_layout(sim_id)
-    except Exception:
-        ios.present(sim_id, layout=saved_layout)
-        return {"healed": True, "stable": ios.stabilize(sim_id)}
-    if _layout_differs(current_layout, saved_layout):
-        ios.present(sim_id, layout=saved_layout)
-        return {"healed": True, "stable": ios.stabilize(sim_id)}
-    return {"healed": False, "stable": stable}
-
-
-def _prepare_ios_interaction(slug: str, sim_id: str) -> None:
-    _ensure_ios_ready_or_heal(slug, sim_id)
-
-
-def _ios_presentation_status(slug: str, sim_id: str) -> dict:
-    saved_layout = state.get_presentation(slug)
-    if not saved_layout:
-        return {
-            "has_saved_layout": False,
-            "layout_matches_saved": None,
-            "layout_drifted": None,
-            "saved_layout": None,
-            "display_matches_saved": None,
-            "display_drifted": None,
-        }
-    try:
-        current_layout = ios.current_presentation_layout(sim_id)
-    except Exception:
-        return {
-            "has_saved_layout": True,
-            "layout_matches_saved": False,
-            "layout_drifted": True,
-            "saved_layout": saved_layout,
-            "display_matches_saved": None,
-            "display_drifted": None,
-        }
-    drifted = _layout_differs(current_layout, saved_layout)
-    display_matches_saved = None
-    display_drifted = None
-    if saved_layout.get("display_id") is not None:
-        current_display_id = current_layout.get("display_id")
-        display_matches_saved = current_display_id == saved_layout["display_id"]
-        display_drifted = not display_matches_saved
-    return {
-        "has_saved_layout": True,
-        "layout_matches_saved": not drifted,
-        "layout_drifted": drifted,
-        "saved_layout": saved_layout,
-        "display_matches_saved": display_matches_saved,
-        "display_drifted": display_drifted,
-    }
-
+    pass
 
 def cmd_tap(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    x, y = _resolve_coords(args, alloc)
-    if alloc.platform == "ios":
-        lease = _desktop_lease(alloc, "tap", f"Tap {x},{y} on {args.slug}",
-                               estimated_seconds=5, coordinates=f"{x},{y}")
-        with lease:
-            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name, scenario="UI interaction")
-            _prepare_ios_interaction(args.slug, alloc.sim_id)
-            lease.update(stage="Tapping interface", screen=f"{alloc.device_name} @ {x},{y}",
-                         scenario="UI interaction", coordinates=f"{x},{y}")
-            ios.tap(alloc.sim_id, x, y)
-    else:
-        android.tap(alloc.sim_id, x, y)
-
+    pass
 
 def cmd_swipe(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    x1, y1 = _resolve_coords(args, alloc, "x1", "y1")
-    x2, y2 = _resolve_coords(args, alloc, "x2", "y2")
-    if alloc.platform == "ios":
-        lease = _desktop_lease(alloc, "swipe", f"Swipe {x1},{y1} to {x2},{y2} on {args.slug}",
-                               estimated_seconds=6, coordinates=f"{x1},{y1}->{x2},{y2}",
-                               duration_ms=args.duration)
-        with lease:
-            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name, scenario="Gesture")
-            _prepare_ios_interaction(args.slug, alloc.sim_id)
-            lease.update(stage="Swiping interface", screen=f"{alloc.device_name} {x1},{y1}->{x2},{y2}",
-                         scenario="Gesture", coordinates=f"{x1},{y1}->{x2},{y2}")
-            ios.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration / 1000.0)
-    else:
-        android.swipe(alloc.sim_id, x1, y1, x2, y2, duration=args.duration)
-    print(f"Swiped ({x1},{y1}) → ({x2},{y2}) on '{args.slug}'.")
-
+    pass
 
 def cmd_appearance(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.set_appearance(alloc.sim_id, args.mode)
-    else:
-        android.set_appearance(alloc.sim_id, args.mode)
-    print(f"'{args.slug}' appearance set to {args.mode}.")
-
+    pass
 
 def cmd_shake(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.shake(alloc.sim_id)
-    else:
-        android.shake(alloc.sim_id)
-    print(f"Shake sent to '{args.slug}'.")
-
+    pass
 
 def cmd_input(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        lease = _desktop_lease(alloc, "input", f"Enter text on {args.slug}",
-                               estimated_seconds=4, text_preview=args.text[:40])
-        with lease:
-            lease.update(stage="Preparing text input", screen=alloc.device_name,
-                         scenario="Keyboard input", text_preview=args.text[:40])
-            ios.input_text(alloc.sim_id, args.text)
-        print(f"Text copied to '{args.slug}' pasteboard (paste with Cmd+V or long-press).")
-    else:
-        android.input_text(alloc.sim_id, args.text)
-        print(f"Text typed into '{args.slug}'.")
-
+    pass
 
 def cmd_privacy(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.privacy(alloc.sim_id, args.bundle_or_package, args.action, args.permission)
-    else:
-        android.privacy(alloc.sim_id, args.bundle_or_package, args.action, args.permission)
-    print(f"Privacy '{args.action}' {args.permission} for '{args.bundle_or_package}' on '{args.slug}'.")
-
+    pass
 
 def cmd_rotate(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        ios.rotate(alloc.sim_id, args.orientation)
-    else:
-        android.rotate(alloc.sim_id, args.orientation)
-    print(f"'{args.slug}' rotated to {args.orientation}.")
-
+    pass
 
 def cmd_key(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        lease = _desktop_lease(alloc, "key", f"Send {args.key} key to {args.slug}",
-                               estimated_seconds=4, key_name=args.key)
-        with lease:
-            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name,
-                         scenario="Keyboard input", key_name=args.key)
-            _prepare_ios_interaction(args.slug, alloc.sim_id)
-            lease.update(stage="Sending key event", screen=f"{alloc.device_name} · {args.key}",
-                         scenario="Keyboard input", key_name=args.key)
-            ios.key(alloc.sim_id, args.key)
-    else:
-        android.key(alloc.sim_id, args.key)
-    print(f"Key '{args.key}' sent to '{args.slug}'.")
-
+    pass
 
 def cmd_long_press(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    x, y = _resolve_coords(args, alloc)
-    if alloc.platform == "ios":
-        lease = _desktop_lease(alloc, "long-press", f"Long press {x},{y} on {args.slug}",
-                               estimated_seconds=6, coordinates=f"{x},{y}",
-                               duration_ms=getattr(args, "duration", 1000))
-        with lease:
-            lease.update(stage="Stabilizing simulator window", screen=alloc.device_name,
-                         scenario="Gesture", coordinates=f"{x},{y}")
-            _prepare_ios_interaction(args.slug, alloc.sim_id)
-            lease.update(stage="Holding press", screen=f"{alloc.device_name} @ {x},{y}",
-                         scenario="Gesture", coordinates=f"{x},{y}")
-            ios.long_press(alloc.sim_id, x, y, duration=args.duration / 1000.0)
-    else:
-        android.long_press(alloc.sim_id, x, y, duration=args.duration)
-    print(f"Long-pressed ({x},{y}) on '{args.slug}'.")
-
+    pass
 
 def cmd_clear_data(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform != "android":
-        raise RuntimeError(
-            "'clear-data' is Android only. "
-            "For iOS, uninstall and reinstall the app to reset its data."
-        )
-    android.clear_data(alloc.sim_id, args.package)
-    print(f"Cleared data for '{args.package}' on '{args.slug}'.")
-
+    pass
 
 def cmd_status_bar(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if args.clear:
-        if alloc.platform == "ios":
-            ios.status_bar_clear(alloc.sim_id)
-        else:
-            android.status_bar_clear(alloc.sim_id)
-        print(f"Status bar restored on '{args.slug}'.")
-    else:
-        if alloc.platform == "ios":
-            ios.status_bar(alloc.sim_id, time_str=args.time, battery=args.battery,
-                           wifi=args.wifi, network=args.network)
-        else:
-            ios_only = args.network
-            if ios_only:
-                print("Warning: --network is iOS only, ignoring.", file=sys.stderr)
-            android.status_bar(alloc.sim_id, time_str=args.time,
-                               battery=args.battery, wifi=args.wifi)
-        print(f"Status bar overridden on '{args.slug}'.")
-
+    pass
 
 def cmd_biometrics(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    match = args.result == "match"
-    if alloc.platform == "ios":
-        ios.biometrics(alloc.sim_id, match)
-    else:
-        android.biometrics(alloc.sim_id, match)
-    result_str = "match" if match else "fail"
-    print(f"Biometrics '{result_str}' sent to '{args.slug}'.")
-
+    pass
 
 def cmd_reboot(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    print(f"Rebooting '{args.slug}'...", flush=True)
-    if alloc.platform == "ios":
-        ios.reboot(alloc.sim_id)
-    else:
-        android.reboot(alloc.sim_id)
-    print(f"'{args.slug}' rebooted.")
-
+    pass
 
 def cmd_network(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        raise RuntimeError(
-            "'network' is Android only. iOS Simulator does not support runtime network "
-            "toggling via CLI.\nUse Network Link Conditioner (macOS System Preferences) "
-            "to simulate poor network conditions on iOS."
-        )
-    android.network(alloc.sim_id, args.mode)
-    print(f"Network mode set to '{args.mode}' on '{args.slug}'.")
-
+    pass
 
 def cmd_battery(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        raise RuntimeError(
-            "'battery' is Android only. iOS Simulator does not support battery level overrides via CLI."
-        )
-    if args.reset:
-        android.battery(alloc.sim_id, reset=True)
-        print(f"Battery level reset to real value on '{args.slug}'.")
-    else:
-        if args.level is None:
-            raise RuntimeError("Specify --level 0-100 or --reset")
-        android.battery(alloc.sim_id, level=args.level)
-        print(f"Battery level set to {args.level}% on '{args.slug}'.")
-
+    pass
 
 def cmd_location(args):
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    if alloc.platform == "ios":
-        if args.clear:
-            ios.location_clear(alloc.sim_id)
-            print(f"Location cleared on '{args.slug}'.")
-        else:
-            ios.location(alloc.sim_id, args.lat, args.lng)
-            print(f"Location set to {args.lat},{args.lng} on '{args.slug}'.")
-    else:
-        if args.clear:
-            raise RuntimeError("Location clear not supported on Android emulator.")
-        android.location(alloc.sim_id, args.lat, args.lng)
-        print(f"Location set to {args.lat},{args.lng} on '{args.slug}'.")
-
+    pass
 
 def cmd_reset_app(args):
-    """Force-stop + clear app data + relaunch in one command."""
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    bundle = args.bundle_or_package
-    print(f"Resetting '{bundle}' on '{args.slug}'...", flush=True)
-    if alloc.platform == "ios":
-        ios.reset_app(alloc.sim_id, bundle)
-    else:
-        android.reset_app(alloc.sim_id, bundle, launch=not args.no_launch)
-    print("Done — app data cleared and app relaunched.")
-
+    pass
 
 def cmd_crash_log(args):
-    """Show the most recent crash log for the simulator or a specific app."""
-    alloc = state.require(args.slug)
-    state.touch(args.slug)
-    since = args.since or 60
-    if alloc.platform == "ios":
-        log = ios.crash_log(alloc.sim_id, bundle_id=args.bundle, since_minutes=since)
-    else:
-        log = android.crash_log(alloc.sim_id, package=args.bundle, since_minutes=since)
-
-    if log is None:
-        print(f"No crashes found in the last {since} minutes on '{args.slug}'.")
-        if args.json:
-            _print_json({"crash": None})
-        return
-
-    if args.json:
-        _print_json({"crash": log})
-    else:
-        print(log)
-
+    pass
 
 def cmd_compare(args):
-    """Take screenshots of two slugs and combine them side by side."""
-    import subprocess as _sp
-    alloc_a = state.require(args.slug_a)
-    alloc_b = state.require(args.slug_b)
-    state.touch(args.slug_a)
-    state.touch(args.slug_b)
-
-    max_size = args.max_size or int(os.environ.get("SIMEMU_SCREENSHOT_MAX_SIZE", 1000))
-
-    path_a = _auto_path(args.slug_a, "png")
-    path_b = _auto_path(args.slug_b, "png")
-
-    print(f"Screenshotting '{args.slug_a}'...", flush=True)
-    if alloc_a.platform == "ios":
-        ios.screenshot(alloc_a.sim_id, path_a, max_size=max_size)
-    else:
-        android.screenshot(alloc_a.sim_id, path_a, max_size=max_size)
-
-    print(f"Screenshotting '{args.slug_b}'...", flush=True)
-    if alloc_b.platform == "ios":
-        ios.screenshot(alloc_b.sim_id, path_b, max_size=max_size)
-    else:
-        android.screenshot(alloc_b.sim_id, path_b, max_size=max_size)
-
-    output = args.output or _auto_path(f"{args.slug_a}_vs_{args.slug_b}", "png")
-
-    # Use sips + ImageMagick convert if available, else fall back to sips tiling
-    convert = _sp.run(["which", "convert"], capture_output=True, text=True)
-    if convert.returncode == 0:
-        _sp.run(["convert", "+append", path_a, path_b, output], check=True)
-    else:
-        # sips can append images horizontally via --padColor and canvas tricks;
-        # simpler fallback: just report both paths separately
-        print("Note: install ImageMagick ('brew install imagemagick') for side-by-side compositing.")
-        print(f"  {args.slug_a}: {path_a}")
-        print(f"  {args.slug_b}: {path_b}")
-        if args.json:
-            _print_json({"path_a": path_a, "path_b": path_b})
-        return
-
-    print(f"Comparison saved: {output}")
-    if args.json:
-        _print_json({"path": output, "path_a": path_a, "path_b": path_b})
-
+    pass
 
 def cmd_create(args):
     from . import create as c
