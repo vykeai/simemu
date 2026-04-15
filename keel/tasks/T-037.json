@@ -6,7 +6,7 @@
   "lane": null,
   "wave": null,
   "space": null,
-  "status": "todo",
+  "status": "done",
   "priority": "medium",
   "platform": "all",
   "assignee": null,
@@ -20,6 +20,10 @@
     {
       "status": "todo",
       "ts": "2026-03-20T19:14:46.898Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-04-15T08:30:00.000Z"
     }
   ],
   "attachments": [],
