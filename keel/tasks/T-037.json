@@ -1,18 +1,20 @@
 {
   "id": "T-037",
   "title": "pip publish simemu package and install.sh improvements",
-  "description": "Finish simemu's packaging story so the public install path is stable and reproducible across wrapper, monitor, and menu bar surfaces.\n\nAcceptance criteria:\n- simemu can be installed cleanly through a supported package flow\n- install.sh repairs broken wrappers and confirms the active binary path\n- the menu bar app and monitor setup are validated after install\n- release and install docs match the shipped commands exactly",
+  "description": "",
   "product": null,
   "lane": null,
-  "wave": "wave-1",
-  "space": "space-core",
+  "wave": null,
+  "space": null,
   "status": "done",
   "priority": "medium",
   "platform": "all",
-  "assignee": "claude",
+  "assignee": null,
+  "depends_on": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
+  "notes": [],
   "cloudy_run": null,
   "statusHistory": [
     {
@@ -20,37 +22,19 @@
       "ts": "2026-03-20T19:14:46.898Z"
     },
     {
-      "status": "active",
-      "ts": "2026-03-24T22:32:29.614Z"
-    },
-    {
       "status": "done",
-      "ts": "2026-03-24T22:34:08.552Z"
+      "ts": "2026-04-15T08:30:00.000Z"
     }
   ],
   "attachments": [],
   "stage": null,
+  "run_status": null,
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-20T19:14:46.898Z",
-  "updatedAt": "2026-03-24T22:34:08.808Z",
+  "updatedAt": "2026-03-20T19:14:46.898Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
-  "cloudy": null,
-  "dependsOn": [],
-  "context": [
-    {
-      "at": "2026-03-24T22:34:08.808Z",
-      "by": "human",
-      "text": "Version bump 0.1.0→0.3.0. install.sh wrapper repair: detects broken symlinks, missing PATH, auto-creates ~/bin/simemu fallback. README updated to match actual installer steps. 328 tests pass."
-    }
-  ],
-  "runStatus": null,
-  "acceptanceCriteria": [
-    "a supported package distribution path works end to end",
-    "install.sh repairs stale wrappers and validates the active binary",
-    "monitor and menu bar setup are validated after install",
-    "release and install docs match the shipped commands"
-  ]
+  "cloudy": null
 }

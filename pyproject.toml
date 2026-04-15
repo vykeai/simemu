@@ -4,17 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simemu"
-version = "0.3.0"
-description = "Session-based simulator and emulator allocation manager for multi-agent iOS/Android development"
-requires-python = ">=3.11"
-dependencies = []
+version = "0.1.0"
+description = "Simulator allocation manager for multi-agent iOS/Android development"
 readme = "README.md"
 license = {text = "MIT"}
-authors = [{name = "vykeai"}]
-keywords = ["simulator", "emulator", "ios", "android", "testing", "automation"]
+requires-python = ">=3.11"
+keywords = ["ios", "android", "simulator", "emulator", "testing", "agents"]
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Environment :: Console",
     "Environment :: MacOS X",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -23,12 +20,9 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Testing",
 ]
-
-[project.urls]
-Repository = "https://github.com/vykeai/simemu"
+dependencies = []
 
 [project.optional-dependencies]
 api = [
@@ -38,13 +32,17 @@ api = [
     "zeroconf>=0.131.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/vykeai/simemu"
+Repository = "https://github.com/vykeai/simemu"
+Issues = "https://github.com/vykeai/simemu/issues"
+
 [project.scripts]
 simemu = "simemu.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["simemu*"]
-exclude = ["tests*", "simemu/swift*"]
 
 [tool.setuptools.package-data]
 simemu = ["py.typed"]
