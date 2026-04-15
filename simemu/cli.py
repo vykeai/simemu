@@ -34,6 +34,26 @@ from .session import ClaimSpec, SessionError
 _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
 
 
+def _resolve_port() -> int:
+    """Resolve simemu port: SIMEMU_PORT env var > ~/.fed/config.json > 7803."""
+    env_val = os.environ.get("SIMEMU_PORT", "")
+    if env_val.isdigit():
+        return int(env_val)
+    try:
+        import json as _json
+        cfg_path = Path.home() / ".fed" / "config.json"
+        cfg = _json.loads(cfg_path.read_text())
+        dash = cfg.get("tools", {}).get("simemu", {}).get("dash")
+        if isinstance(dash, int) and dash > 0:
+            return dash
+    except Exception:
+        pass
+    return 7803
+
+
+_SIMEMU_PORT = _resolve_port()
+
+
 def _agent() -> str:
     return os.environ.get("SIMEMU_AGENT") or f"pid-{os.getpid()}"
 
@@ -173,7 +193,9 @@ def _autostart_disabled() -> bool:
     return no_value in {"1", "true", "yes", "on"}
 
 
-def _server_reachable(host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.5) -> bool:
+def _server_reachable(host: str = "127.0.0.1", port: int | None = None, timeout: float = 0.5) -> bool:
+    if port is None:
+        port = _SIMEMU_PORT
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -462,7 +484,7 @@ def cmd_status_overview(args):
     # Server
     server_status = "stopped"
     try:
-        with socket.create_connection(("127.0.0.1", 8765), timeout=0.5):
+        with socket.create_connection(("127.0.0.1", _SIMEMU_PORT), timeout=0.5):
             server_status = "running"
     except OSError:
         pass
@@ -483,7 +505,7 @@ def cmd_status_overview(args):
 
     data["services"] = {
         "monitor": {"status": monitor_status, "last_tick": monitor_last_tick},
-        "server": {"status": server_status, "port": 8765},
+        "server": {"status": server_status, "port": _SIMEMU_PORT},
         "menubar": {"status": menubar_status, "pid": menubar_pid},
     }
 
@@ -544,7 +566,7 @@ def cmd_status_overview(args):
         menubar_detail = f"{menubar_status} (pid {menubar_pid})"
 
     print(f"Monitor: {monitor_detail}")
-    print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
+    print(f"Server: {server_status}" + (f" on :{_SIMEMU_PORT}" if server_status == "running" else ""))
     print(f"Menubar: {menubar_detail}")
 
 
@@ -2541,7 +2563,7 @@ def build_parser() -> argparse.ArgumentParser:
     # serve
     serve_p = sub.add_parser("serve", help="Start the HTTP API server (with idle-shutdown)")
     serve_p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
-    serve_p.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
+    serve_p.add_argument("--port", type=int, default=_SIMEMU_PORT, help=f"Port (default: {_SIMEMU_PORT})")
     serve_p.add_argument("--idle-timeout", type=int, default=None, metavar="MINUTES",
                          help="Shut down idle simulators after N minutes (default: 20, env: SIMEMU_IDLE_TIMEOUT)")
     serve_p.set_defaults(func=cmd_serve)
@@ -2673,7 +2695,7 @@ def cmd_daemon(args):
 
     elif args.action == "status":
         manual_server = None
-        for url in ("http://127.0.0.1:8765/health", "http://127.0.0.1:8765/status"):
+        for url in (f"http://127.0.0.1:{_SIMEMU_PORT}/health", f"http://127.0.0.1:{_SIMEMU_PORT}/status"):
             try:
                 with urllib.request.urlopen(url, timeout=1.5) as resp:
                     manual_server = {
