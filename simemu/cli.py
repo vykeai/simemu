@@ -29,10 +29,29 @@ from .discover import (
 from . import session as session_module
 from . import window as window_mgr
 from .session import ClaimSpec, SessionError
-from .device_aliases import set_device_alias
 
 # Apple platforms all use xcrun simctl — same as iOS
 _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
+
+
+def _resolve_port() -> int:
+    """Resolve simemu port: SIMEMU_PORT env var > ~/.fed/config.json > 7803."""
+    env_val = os.environ.get("SIMEMU_PORT", "")
+    if env_val.isdigit():
+        return int(env_val)
+    try:
+        import json as _json
+        cfg_path = Path.home() / ".fed" / "config.json"
+        cfg = _json.loads(cfg_path.read_text())
+        dash = cfg.get("tools", {}).get("simemu", {}).get("dash")
+        if isinstance(dash, int) and dash > 0:
+            return dash
+    except Exception:
+        pass
+    return 7803
+
+
+_SIMEMU_PORT = _resolve_port()
 
 
 def _agent() -> str:
@@ -51,47 +70,6 @@ def _output_dir() -> Path:
     d = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def _launch_agent_path(label: str) -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-
-
-def _launchctl_label(label: str) -> str:
-    return f"gui/{os.getuid()}/{label}"
-
-
-def _launchctl_is_loaded(label: str) -> bool:
-    import subprocess as _sp
-
-    result = _sp.run(
-        ["launchctl", "list", label],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _launchctl_bootout(label: str, plist_path: Path) -> None:
-    import subprocess as _sp
-
-    _sp.run(["launchctl", "bootout", _launchctl_label(label)], capture_output=True, check=False)
-    _sp.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True, check=False)
-
-
-def _launchctl_bootstrap(plist_path: Path) -> None:
-    import subprocess as _sp
-
-    domain = f"gui/{os.getuid()}"
-    result = _sp.run(
-        ["launchctl", "bootstrap", domain, str(plist_path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        _sp.run(["launchctl", "load", "-w", str(plist_path)], capture_output=True, check=False)
 
 
 def _auto_path(slug: str, ext: str) -> str:
@@ -215,7 +193,9 @@ def _autostart_disabled() -> bool:
     return no_value in {"1", "true", "yes", "on"}
 
 
-def _server_reachable(host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.5) -> bool:
+def _server_reachable(host: str = "127.0.0.1", port: int | None = None, timeout: float = 0.5) -> bool:
+    if port is None:
+        port = _SIMEMU_PORT
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -251,29 +231,13 @@ def _autostart_server_if_needed() -> None:
 # ── v2 session-based command handlers ────────────────────────────────────────
 
 def cmd_claim(args):
-    """Claim a device session. Supports aliases (iphone, ipad, pixel, watch)."""
-    from .claim_policy import resolve_alias, apply_defaults
-
-    # Resolve alias → platform + defaults
-    resolved = resolve_alias(args.platform)
-    platform = resolved.get("platform", args.platform)
-    real_device = bool(getattr(args, "real", False) or resolved.get("real_device", False))
-
-    # User-provided flags override alias defaults
-    form_factor = getattr(args, "form_factor", None) or resolved.get("form_factor") or "phone"
-    version = getattr(args, "version", None) or resolved.get("version")
-    device_selector = getattr(args, "device", None) or resolved.get("device")
+    """Claim a device session."""
     visible = getattr(args, "visible", False)
-
-    # Apply per-platform defaults from policy config
-    spec_dict = apply_defaults(platform, {"version": version, "form_factor": form_factor})
-
     spec = ClaimSpec(
-        platform=platform,
-        form_factor=spec_dict.get("form_factor") or "phone",
-        os_version=spec_dict.get("version"),
-        real_device=real_device,
-        device_selector=device_selector,
+        platform=args.platform,
+        form_factor=getattr(args, "form_factor", None) or "phone",
+        os_version=getattr(args, "version", None),
+        real_device=getattr(args, "real", False),
         label=getattr(args, "label", None) or "",
         visible=visible,
     )
@@ -340,229 +304,12 @@ def cmd_config(args):
             print()
             print(f"Set display:  simemu config window-mode display --display <#>")
 
-    elif args.config_command == "reserve":
-        config = window_mgr._read_config()
-        reservations = config.setdefault("reservations", {})
-        pools = config.setdefault("reservation_pools", {})
-
-        if args.reserve_action == "set":
-            form_factor = getattr(args, "form_factor", "phone") or "phone"
-            pool_mode = getattr(args, "pool", False)
-
-            if pool_mode:
-                # Pool mode: add device to the agent's pool for platform-formfactor
-                agent_pool = pools.setdefault(args.agent_name, {})
-                pool_key = f"{args.platform}-{form_factor}"
-                device_list = agent_pool.setdefault(pool_key, [])
-                if args.device not in device_list:
-                    device_list.append(args.device)
-                window_mgr._write_config(config)
-                print(f"Added '{args.device}' to pool {pool_key} for '{args.agent_name}'")
-                print(f"  Pool now: {device_list}")
-            else:
-                # Simple mode: single device reservation
-                agent_res = reservations.setdefault(args.agent_name, {})
-                agent_res[args.platform] = {"device": args.device}
-                if getattr(args, "version", None):
-                    agent_res[args.platform]["version"] = args.version
-                window_mgr._write_config(config)
-                print(f"Reserved {args.platform} device '{args.device}' for agent '{args.agent_name}'")
-
-        elif args.reserve_action == "remove":
-            removed = False
-            if args.agent_name in reservations:
-                if getattr(args, "platform", None):
-                    reservations[args.agent_name].pop(args.platform, None)
-                    if not reservations[args.agent_name]:
-                        del reservations[args.agent_name]
-                else:
-                    del reservations[args.agent_name]
-                removed = True
-            if args.agent_name in pools:
-                if getattr(args, "platform", None):
-                    # Remove all pool keys matching this platform
-                    keys_to_remove = [k for k in pools[args.agent_name] if k.startswith(args.platform)]
-                    for k in keys_to_remove:
-                        del pools[args.agent_name][k]
-                    if not pools[args.agent_name]:
-                        del pools[args.agent_name]
-                else:
-                    del pools[args.agent_name]
-                removed = True
-            if removed:
-                window_mgr._write_config(config)
-                print(f"Removed reservation for '{args.agent_name}'" +
-                      (f" ({args.platform})" if getattr(args, "platform", None) else ""))
-            else:
-                print(f"No reservations found for '{args.agent_name}'")
-
-        elif args.reserve_action == "list":
-            has_any = bool(reservations) or bool(pools)
-            if not has_any:
-                print("No permanent reservations configured.")
-            else:
-                print(f"{'AGENT':<20} {'KEY':<16} {'DEVICES'}")
-                print("─" * 80)
-                for agent_name, platforms in sorted(reservations.items()):
-                    for plat, res in sorted(platforms.items()):
-                        print(f"{agent_name:<20} {plat:<16} {res.get('device', '?')}")
-                for agent_name, agent_pools in sorted(pools.items()):
-                    for pool_key, devices in sorted(agent_pools.items()):
-                        print(f"{agent_name:<20} {pool_key:<16} {', '.join(devices)}")
-
     elif args.config_command == "show":
         config = window_mgr._read_config()
         if config:
             _print_json(config)
         else:
             print("No config set (using defaults)")
-
-
-def cmd_completions(args):
-    """Generate shell completions."""
-    from .completions import zsh_completion, bash_completion
-    if args.shell == "zsh":
-        print(zsh_completion())
-    else:
-        print(bash_completion())
-
-
-def cmd_doctor(args):
-    """Diagnose simemu setup issues and suggest fixes."""
-    from .watchdog import full_health_check
-    import shutil
-
-    output_json = getattr(args, "json", False)
-    issues: list[dict] = []
-    ok_items: list[str] = []
-
-    # 1. Python version
-    import sys as _sys
-    py_ver = f"{_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro}"
-    if _sys.version_info >= (3, 11):
-        ok_items.append(f"Python {py_ver}")
-    else:
-        issues.append({"component": "python", "severity": "critical",
-                       "message": f"Python {py_ver} — requires 3.11+",
-                       "fix": "brew install python"})
-
-    # 2. simemu on PATH
-    simemu_bin = shutil.which("simemu")
-    if simemu_bin:
-        ok_items.append(f"simemu binary: {simemu_bin}")
-    else:
-        issues.append({"component": "simemu", "severity": "critical",
-                       "message": "simemu not on PATH",
-                       "fix": "pip install -e . && hash -r"})
-
-    # 3. Xcode tools
-    if shutil.which("xcrun"):
-        ok_items.append("Xcode CLI tools")
-    else:
-        issues.append({"component": "xcode", "severity": "high",
-                       "message": "xcrun not found — iOS simulators unavailable",
-                       "fix": "xcode-select --install"})
-
-    # 4. adb (optional)
-    if shutil.which("adb"):
-        ok_items.append("Android SDK (adb)")
-    else:
-        issues.append({"component": "android", "severity": "low",
-                       "message": "adb not found — Android emulators unavailable",
-                       "fix": "Install Android Studio or: brew install android-platform-tools"})
-
-    # 5. Health checks
-    health = full_health_check()
-    if health["api_server"]["status"] == "healthy":
-        ok_items.append("API server running")
-    else:
-        issues.append({"component": "server", "severity": "medium",
-                       "message": "API server not reachable",
-                       "fix": "simemu serve"})
-
-    if health["monitor"]["status"] == "running":
-        ok_items.append("Monitor agent running")
-    else:
-        issues.append({"component": "monitor", "severity": "medium",
-                       "message": f"Monitor: {health['monitor']['status']}",
-                       "fix": "bash install.sh"})
-
-    menubar = health.get("menubar", {})
-    if menubar.get("status") == "running":
-        ok_items.append("Menubar running")
-    elif menubar.get("status") == "agent_loaded_not_running":
-        issues.append({"component": "menubar", "severity": "medium",
-                       "message": "Menubar launch agent loaded but app is not running",
-                       "fix": "simemu menubar launch"})
-    elif menubar.get("status") == "installed_not_running":
-        issues.append({"component": "menubar", "severity": "medium",
-                       "message": "Menubar app installed without auto-start",
-                       "fix": "simemu menubar install"})
-    elif menubar.get("status") == "not_installed":
-        issues.append({"component": "menubar", "severity": "medium",
-                       "message": "Menubar app not installed",
-                       "fix": "bash install.sh"})
-
-    if health["state_files"]["status"] == "ok":
-        ok_items.append("State files healthy")
-    else:
-        for issue in health["state_files"].get("issues", []):
-            issues.append({"component": "state", "severity": "high",
-                           "message": issue,
-                           "fix": "Will auto-recover on next read"})
-
-    if health["sessions"]["status"] == "stale":
-        count = health["sessions"]["stale_count"]
-        issues.append({"component": "sessions", "severity": "low",
-                       "message": f"{count} stale session(s) idle >2h",
-                       "fix": "simemu sessions — review and release idle sessions"})
-
-    # 6. Guard hook
-    guard = Path.home() / ".claude" / "simemu-guard.py"
-    if guard.exists():
-        ok_items.append("Guard hook installed")
-    else:
-        issues.append({"component": "guard", "severity": "medium",
-                       "message": "Guard hook not installed — agents can bypass simemu",
-                       "fix": "bash install.sh"})
-
-    # 7. Data directory
-    data_dir = state.state_dir()
-    if data_dir.exists() and os.access(data_dir, os.W_OK):
-        ok_items.append(f"Data dir: {data_dir}")
-    else:
-        issues.append({"component": "data_dir", "severity": "high",
-                       "message": f"Data dir not writable: {data_dir}",
-                       "fix": f"mkdir -p {data_dir} && chmod 755 {data_dir}"})
-
-    if output_json:
-        _print_json({"ok": ok_items, "issues": issues,
-                      "healthy": len([i for i in issues if i["severity"] in ("critical", "high")]) == 0})
-        return
-
-    # Human output
-    print("simemu doctor")
-    print("─" * 40)
-    print()
-    for item in ok_items:
-        print(f"  \u2713 {item}")
-    print()
-    if issues:
-        critical = [i for i in issues if i["severity"] == "critical"]
-        high = [i for i in issues if i["severity"] == "high"]
-        medium = [i for i in issues if i["severity"] == "medium"]
-        low = [i for i in issues if i["severity"] == "low"]
-        for severity_label, group in [("CRITICAL", critical), ("HIGH", high), ("MEDIUM", medium), ("LOW", low)]:
-            for i in group:
-                print(f"  \u26a0 [{severity_label}] {i['message']}")
-                print(f"    Fix: {i['fix']}")
-        print()
-        if critical or high:
-            print("Run the suggested fixes, then re-run: simemu doctor")
-        else:
-            print("No critical issues. simemu is operational.")
-    else:
-        print("  All checks passed. simemu is healthy.")
 
 
 def cmd_sessions(args):
@@ -579,15 +326,8 @@ def cmd_sessions(args):
         _print_json([s.to_agent_json() for s in sessions.values()])
         return
 
-    # Reconcile live visibility
-    from .visibility import reconcile_all_sessions
-    try:
-        live_vis = reconcile_all_sessions()
-    except Exception:
-        live_vis = {}
-
-    print(f"{'SESSION':<12} {'PLATFORM':<10} {'FORM':<8} {'STATUS':<8} {'WINDOW':<10} {'OS':<12} {'LABEL':<20} {'IDLE'}")
-    print("─" * 100)
+    print(f"{'SESSION':<12} {'PLATFORM':<10} {'FORM':<8} {'STATUS':<8} {'OS':<12} {'LABEL':<20} {'IDLE'}")
+    print("─" * 90)
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     for sid, s in sessions.items():
@@ -595,8 +335,7 @@ def cmd_sessions(args):
         idle_min = int((now - hb).total_seconds() / 60)
         os_ver = s.resolved_os_version or s.os_version or "latest"
         label = (s.label or "")[:20]
-        vis = live_vis.get(sid, "?")
-        print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {vis:<10} {os_ver:<12} {label:<20} {idle_min}m")
+        print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {os_ver:<12} {label:<20} {idle_min}m")
 
 
 # ── status overview ──────────────────────────────────────────────────────────
@@ -745,46 +484,32 @@ def cmd_status_overview(args):
     # Server
     server_status = "stopped"
     try:
-        with socket.create_connection(("127.0.0.1", 8765), timeout=0.5):
+        with socket.create_connection(("127.0.0.1", _SIMEMU_PORT), timeout=0.5):
             server_status = "running"
     except OSError:
         pass
 
     # Menubar app
-    from .watchdog import check_menubar_app
-    menubar_health = check_menubar_app()
-    menubar_status_map = {
-        "running": "running",
-        "agent_loaded_not_running": "launchd-managed, stopped",
-        "installed_not_running": "installed, not running",
-        "not_installed": "not installed",
-    }
-    menubar_status = menubar_status_map.get(menubar_health.get("status"), "unknown")
-    menubar_pid = menubar_health.get("pid")
-    menubar_app_path = menubar_health.get("app_path")
-    menubar_plist_path = menubar_health.get("plist_path")
-    menubar_launch_agent_status = menubar_health.get("launch_agent_status")
+    menubar_status = "not running"
+    menubar_pid = None
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fl", "SimEmuBar"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            menubar_pid = result.stdout.strip().split()[0]
+            menubar_status = "running"
+    except FileNotFoundError:
+        pass
 
     data["services"] = {
         "monitor": {"status": monitor_status, "last_tick": monitor_last_tick},
-        "server": {"status": server_status, "port": 8765},
-        "menubar": {
-            "status": menubar_status,
-            "pid": menubar_pid,
-            "app_path": menubar_app_path,
-            "plist_path": menubar_plist_path,
-            "launch_agent_status": menubar_launch_agent_status,
-        },
+        "server": {"status": server_status, "port": _SIMEMU_PORT},
+        "menubar": {"status": menubar_status, "pid": menubar_pid},
     }
 
     data["version"] = "0.3.0"
-
-    # ── Watchdog ──────────────────────────────────────────────────────────
-    from .watchdog import full_health_check
-    try:
-        data["health"] = full_health_check()
-    except Exception:
-        data["health"] = {"status": "check_failed"}
 
     # ── Output ───────────────────────────────────────────────────────────
     if output_json:
@@ -839,46 +564,10 @@ def cmd_status_overview(args):
     menubar_detail = menubar_status
     if menubar_pid:
         menubar_detail = f"{menubar_status} (pid {menubar_pid})"
-    elif menubar_app_path:
-        menubar_detail = f"{menubar_status} ({menubar_app_path})"
-    if menubar_launch_agent_status in ("loaded", "installed_not_loaded"):
-        menubar_detail = f"{menubar_detail}; agent={menubar_launch_agent_status}"
 
     print(f"Monitor: {monitor_detail}")
-    print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
+    print(f"Server: {server_status}" + (f" on :{_SIMEMU_PORT}" if server_status == "running" else ""))
     print(f"Menubar: {menubar_detail}")
-
-    # Watchdog health check
-    from .watchdog import check_stale_sessions, check_state_file_health
-    print()
-    stale = check_stale_sessions()
-    state_health = check_state_file_health()
-    issues: list[str] = []
-
-    if stale["status"] == "stale":
-        for ss in stale.get("stale_sessions", []):
-            issues.append(f"Session {ss['session']} idle {ss['idle_hours']}h (status: {ss['status']})")
-    if stale["status"] == "corrupted":
-        issues.append(f"sessions.json: {stale.get('hint', 'corrupted')}")
-    for issue in state_health.get("issues", []):
-        issues.append(issue)
-    if server_status != "running":
-        issues.append("API server not running — start with: simemu serve")
-    if monitor_status not in ("running", "loaded"):
-        issues.append("Monitor not running — install with: bash install.sh")
-    if menubar_health.get("status") == "agent_loaded_not_running":
-        issues.append("Menubar launch agent is loaded but app is not running — restart with: simemu menubar launch")
-    elif menubar_health.get("status") == "installed_not_running":
-        issues.append("Menubar auto-start is not installed — run: simemu menubar install")
-    elif menubar_health.get("status") == "not_installed":
-        issues.append("Menubar not installed — install with: bash install.sh")
-
-    if issues:
-        print("Health issues:")
-        for issue in issues:
-            print(f"  \u26a0 {issue}")
-    else:
-        print("Health: all good")
 
 
 # ── legacy command handlers (DISCONTINUED) ──────────────────────────────────
@@ -893,6 +582,70 @@ def _reject_legacy(args):
 
 def cmd_acquire(args):
     _reject_legacy(args)
+    # Dead code below — kept for reference only
+    wait = getattr(args, "wait", 0)
+    real = getattr(args, "real", False)
+    poll = 10  # seconds between retries
+    deadline = time.time() + wait
+    attempt = 0
+
+    while True:
+        try:
+            sim = find_simulator(args.platform, args.device, real_device=real)
+            break
+        except NoSimulatorAvailable as e:
+            if time.time() >= deadline:
+                raise RuntimeError(str(e)) from None
+            attempt += 1
+            remaining = int(deadline - time.time())
+            kind = "device" if real else "simulator"
+            print(f"No {kind} available, retrying in {poll}s (up to {remaining}s remaining)...",
+                  flush=True)
+            time.sleep(poll)
+
+    alloc = state.acquire(
+        slug=args.slug,
+        sim_id=sim.sim_id,
+        platform=sim.platform,
+        device_name=sim.device_name,
+        agent=_agent(),
+    )
+
+    if args.json:
+        _print_json({
+            "slug": args.slug,
+            "sim_id": sim.sim_id,
+            "platform": sim.platform,
+            "device_name": sim.device_name,
+            "runtime": sim.runtime,
+            "real_device": sim.real_device,
+            "agent": alloc.agent,
+            "acquired_at": alloc.acquired_at,
+        })
+    else:
+        label = "real device" if sim.real_device else "simulator"
+        print(f"Reserved '{args.slug}' → {sim.device_name} ({sim.runtime}) [{label}]")
+        print(f"  sim_id:  {sim.sim_id}")
+        print(f"  agent:   {alloc.agent}")
+
+    # Real devices are already booted — skip boot step
+    if sim.real_device:
+        if not args.json:
+            print("Ready (real device — already connected).")
+        return
+
+    if not args.no_boot:
+        if not args.json:
+            print("Booting...", flush=True)
+        if sim.platform == "ios":
+            ios.boot(sim.sim_id)
+        else:
+            android.boot(sim.sim_id, headless=not args.window)
+        placement = _maybe_apply_agent_workspace(args.slug)
+        if not args.json:
+            print("Ready.")
+            if placement and placement.get("applied"):
+                print(f"Placed '{args.slug}' in the '{alloc.agent}' workspace.")
 
 
 def cmd_release(args):
@@ -953,118 +706,10 @@ def cmd_list_devices(args):
         _print_json([r.__dict__ for r in rows])
         return
 
-    print(f"{'PLATFORM':<10} {'STATE':<8} {'ALIAS':<20} {'DEVICE':<34} {'RUNTIME':<16} {'ID'}")
-    print("─" * 124)
+    print(f"{'PLATFORM':<10} {'STATE':<8} {'DEVICE':<30} {'RUNTIME':<16} {'ID'}")
+    print("─" * 96)
     for s in rows:
-        print(
-            f"{s.platform:<10} {'On' if s.booted else 'Off':<8} "
-            f"{(s.label or ''):<20} {s.device_name:<34} {s.runtime:<16} {s.sim_id}"
-        )
-
-
-def _candidate_pool(platform: str, real_device: bool) -> list:
-    if real_device:
-        if platform == "ios":
-            return list_real_ios(set())
-        if platform == "android":
-            return list_real_android(set())
-        raise RuntimeError(f"Real device relabeling is not supported for platform '{platform}'.")
-
-    if platform == "ios":
-        return list_ios(set())
-    if platform == "android":
-        return list_android(set())
-    raise RuntimeError(f"Simulator renaming is not supported for platform '{platform}'.")
-
-
-def _match_candidate(target: str, candidates: list) -> object:
-    wanted = target.strip().lower()
-    exact_id = [c for c in candidates if c.sim_id.lower() == wanted]
-    if exact_id:
-        return exact_id[0]
-
-    exact_name = [c for c in candidates if c.device_name.lower() == wanted]
-    if len(exact_name) == 1:
-        return exact_name[0]
-    if len(exact_name) > 1:
-        names = ", ".join(c.device_name for c in exact_name)
-        raise RuntimeError(f"Target '{target}' is ambiguous. Matches: {names}")
-
-    contains = [c for c in candidates if wanted in c.device_name.lower()]
-    if len(contains) == 1:
-        return contains[0]
-    if len(contains) > 1:
-        names = ", ".join(c.device_name for c in contains)
-        raise RuntimeError(f"Target '{target}' is ambiguous. Matches: {names}")
-
-    raise RuntimeError(f"No device matched '{target}'.")
-
-
-def _update_session_device_refs(platform: str, old_sim_id: str, new_name: str) -> None:
-    new_sim_id = new_name.replace(" ", "_") if platform == "android" else old_sim_id
-    with session_module._locked_sessions() as (data, save):
-        changed = False
-        for sid, raw in data.get("sessions", {}).items():
-            if raw.get("platform") != platform:
-                continue
-            if raw.get("sim_id") != old_sim_id:
-                continue
-            raw["device_name"] = new_name
-            if platform == "android" and not raw.get("real_device"):
-                raw["sim_id"] = new_sim_id
-            changed = True
-        if changed:
-            save(data)
-
-
-def _resolve_real_device_target(target: str, platform: str | None) -> tuple[str, str, str]:
-    if target.startswith("s-"):
-        session = session_module.require_session(target)
-        if not session.real_device:
-            raise RuntimeError(f"Session '{target}' is not a real device session.")
-        device_rows = device.list_ios_devices() if session.platform == "ios" else device.list_android_devices()
-        for row in device_rows:
-            if row.device_id == session.sim_id:
-                return session.platform, session.sim_id, row.device_name
-        return session.platform, session.sim_id, session.device_name
-
-    platforms = [platform] if platform else ["ios", "android"]
-    candidates = []
-    for plat in platforms:
-        candidates.extend(_candidate_pool(plat, real_device=True))
-    match = _match_candidate(target, candidates)
-    device_name = match.device_name.replace(" (real)", "")
-    if getattr(match, "label", ""):
-        prefix = f"{match.label} · "
-        if device_name.startswith(prefix):
-            device_name = device_name[len(prefix):]
-    return match.platform, match.sim_id, device_name
-
-
-def _resolve_simulator_target(target: str, platform: str | None) -> tuple[str, str]:
-    if target.startswith("s-"):
-        session = session_module.require_session(target)
-        if session.real_device:
-            raise RuntimeError(f"Session '{target}' is a real device. Use relabel instead of rename.")
-        return session.platform, session.sim_id
-
-    legacy_alloc = state.get(target)
-    if legacy_alloc:
-        return legacy_alloc.platform, legacy_alloc.sim_id
-
-    platforms = [platform] if platform else ["ios", "android"]
-    candidates = []
-    for plat in platforms:
-        candidates.extend(_candidate_pool(plat, real_device=False))
-    match = _match_candidate(target, candidates)
-    return match.platform, match.sim_id
-
-
-def cmd_relabel(args):
-    """Persist a slug-like alias for a connected real device."""
-    platform, device_id, device_name = _resolve_real_device_target(args.target, getattr(args, "platform", None))
-    alias = set_device_alias(platform=platform, device_id=device_id, device_name=device_name, alias=args.label)
-    print(f"Labeled {platform} device '{device_name}' as '{alias}'.")
+        print(f"{s.platform:<10} {'On' if s.booted else 'Off':<8} {s.device_name:<30} {s.runtime:<16} {s.sim_id}")
 
 
 def cmd_list(args):
@@ -1555,27 +1200,21 @@ def cmd_push_notification(args):
 
 
 def cmd_rename(args):
-    platform, sim_id = _resolve_simulator_target(args.target, getattr(args, "platform", None))
-    if platform == "ios":
-        ios.rename(sim_id, args.name)
+    alloc = state.require(args.slug)
+    state.touch(args.slug)
+    if alloc.platform == "ios":
+        ios.rename(alloc.sim_id, args.name)
     else:
-        android.rename(sim_id, args.name)
-
-    # Update any legacy allocation record still pointing at this simulator.
+        android.rename(alloc.sim_id, args.name)
+    # Update the stored device_name (and sim_id for Android, where AVD name = sim_id)
     with state._locked_state() as (s, save):
-        changed = False
-        for slug, raw in s.get("allocations", {}).items():
-            if raw.get("platform") != platform or raw.get("sim_id") != sim_id:
-                continue
-            raw["device_name"] = args.name
-            if platform == "android":
-                raw["sim_id"] = args.name.replace(" ", "_")
-            changed = True
-        if changed:
+        if args.slug in s["allocations"]:
+            s["allocations"][args.slug]["device_name"] = args.name
+            if alloc.platform == "android":
+                # AVD filesystem id uses underscores (matches android.rename() convention)
+                s["allocations"][args.slug]["sim_id"] = args.name.replace(" ", "_")
             save(s)
-
-    _update_session_device_refs(platform, sim_id, args.name)
-    print(f"Renamed {platform} device '{args.target}' → {args.name}")
+    print(f"Renamed '{args.slug}' → {args.name}")
 
 
 def cmd_delete(args):
@@ -1608,7 +1247,7 @@ def cmd_delete(args):
         # Not in simemu state — delete by raw sim_id/avd
         raise RuntimeError(
             f"No reservation for '{args.slug}'. "
-            f"Use 'simemu claim' first, or delete directly via the platform tools."
+            f"Use 'simemu acquire' first, or delete directly via the platform tools."
         )
 
 
@@ -1765,32 +1404,19 @@ def cmd_maestro(args):
     if alloc.platform == "ios":
         device_id = alloc.sim_id  # UDID
     else:
-        try:
-            device_id = android.wait_until_ready(alloc.sim_id, timeout=45)
-        except RuntimeError:
+        from .discover import get_android_serial
+        device_id = get_android_serial(alloc.sim_id)
+        if not device_id:
             raise RuntimeError(
                 f"Android emulator '{args.slug}' is not running. Boot it first: simemu boot {args.slug}"
             )
 
     flow_display = " ".join(Path(f).name for f in args.flow)
-    cmd, env, debug_output = session_module._prepare_maestro_invocation(
-        session_id=args.slug,
-        platform=alloc.platform,
-        device_id=device_id,
-        flow_files=args.flow,
-        extra_args=args.extra,
-    )
+    cmd = ["maestro", "--device", device_id, "test"] + args.flow + args.extra
     print(f"Running: {' '.join(cmd)}", flush=True)
     with _maestro_hud(flow_display):
-        result = _sp.run(cmd, env=env)
+        result = _sp.run(cmd)
     if result.returncode != 0:
-        message = session_module._summarize_maestro_failure(
-            session_id=args.slug,
-            platform=alloc.platform,
-            debug_output=debug_output,
-        )
-        if message:
-            print(message, file=sys.stderr, flush=True)
         raise SystemExit(result.returncode)
 
 
@@ -2323,27 +1949,8 @@ def cmd_create(args):
     from . import create as c
 
     if args.platform == "ios":
-        device_list_fn = c.list_ios_device_types
-        runtime_list_fn = c.list_ios_runtimes
-        create_fn = c.create_ios
-        usage_platform = "ios"
-        display_platform = "iOS"
-    elif args.platform == "watchos":
-        device_list_fn = c.list_watchos_device_types
-        runtime_list_fn = c.list_watchos_runtimes
-        create_fn = c.create_watchos
-        usage_platform = "watchos"
-        display_platform = "watchOS"
-    else:
-        device_list_fn = None
-        runtime_list_fn = None
-        create_fn = None
-        usage_platform = ""
-        display_platform = ""
-
-    if args.platform in {"ios", "watchos"}:
         if args.list_devices:
-            devices = device_list_fn()
+            devices = c.list_ios_device_types()
             if args.json:
                 _print_json([{"name": d.name, "identifier": d.identifier} for d in devices])
             else:
@@ -2351,7 +1958,7 @@ def cmd_create(args):
                     print(f"{d.name:<40} {d.identifier}")
             return
         if args.list_runtimes:
-            runtimes = runtime_list_fn()
+            runtimes = c.list_ios_runtimes()
             if args.json:
                 _print_json([{"name": r.name, "identifier": r.identifier} for r in runtimes])
             else:
@@ -2359,15 +1966,15 @@ def cmd_create(args):
                     print(f"{r.name:<20} {r.identifier}")
             return
         if not args.name or not args.device or not args.os:
-            print(f"Usage: simemu create {usage_platform} <name> --device <type> --os <runtime>", file=sys.stderr)
-            print(f"       simemu create {usage_platform} --list-devices", file=sys.stderr)
-            print(f"       simemu create {usage_platform} --list-runtimes", file=sys.stderr)
+            print("Usage: simemu create ios <name> --device <type> --os <runtime>", file=sys.stderr)
+            print("       simemu create ios --list-devices", file=sys.stderr)
+            print("       simemu create ios --list-runtimes", file=sys.stderr)
             sys.exit(1)
-        udid = create_fn(args.name, args.device, args.os)
+        udid = c.create_ios(args.name, args.device, args.os)
         if args.json:
-            _print_json({"name": args.name, "udid": udid, "platform": args.platform})
+            _print_json({"name": args.name, "udid": udid, "platform": "ios"})
         else:
-            print(f"Created {display_platform} simulator '{args.name}': {udid}")
+            print(f"Created iOS simulator '{args.name}': {udid}")
 
     elif args.platform == "genymotion":
         from . import genymotion as gen
@@ -2406,7 +2013,7 @@ def cmd_create(args):
             _print_json({"name": args.name, "uuid": uuid, "platform": "android", "backend": "genymotion"})
         else:
             print(f"Created Genymotion VM '{args.name}': {uuid}")
-            print(f"Claim with: simemu claim android --device \"{args.name}\"")
+            print(f"Acquire with: simemu acquire android <slug> --device \"{args.name}\"")
 
     elif args.platform == "android":
         if args.list_images:
@@ -2461,14 +2068,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # claim
     claim_p = sub.add_parser("claim", help="Claim a device session (v2 API)")
-    claim_p.add_argument("platform",
-                         help="Platform or alias: ios, android, macos, iphone, ipad, pixel, watch, tv, vision, mac")
+    claim_p.add_argument("platform", choices=["ios", "android", "macos"])
     claim_p.add_argument("--version", help="OS version (e.g. 26, 18, 15)")
     claim_p.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
                          default="phone", help="Device form factor (default: phone)")
     claim_p.add_argument("--real", action="store_true",
                          help="Prefer real device over simulator")
-    claim_p.add_argument("--device", help="Specific device id, current name, or configured alias")
     claim_p.add_argument("--show", action="store_true", dest="visible",
                          help="Keep simulator window visible (default: hidden)")
     claim_p.add_argument("--label", help="Human label for display (e.g. 'proof capture')")
@@ -2504,40 +2109,6 @@ def build_parser() -> argparse.ArgumentParser:
     config_disp_p = config_sub.add_parser("displays", help="List connected displays")
     config_disp_p.add_argument("--json", action="store_true")
     config_disp_p.set_defaults(func=cmd_config)
-
-    # config reserve
-    res_p = config_sub.add_parser("reserve", help="Manage permanent device reservations per product")
-    res_sub = res_p.add_subparsers(dest="reserve_action", required=True)
-
-    res_set_p = res_sub.add_parser("set", help="Reserve a device for a product agent")
-    res_set_p.add_argument("agent_name", help="Agent/product name (e.g. sitches, fitkind)")
-    res_set_p.add_argument("platform", choices=["ios", "android"],
-                           help="Platform to reserve")
-    res_set_p.add_argument("device", help="Device name to reserve (e.g. 'iPhone 17 Pro Max')")
-    res_set_p.add_argument("--version", help="Preferred OS version")
-    res_set_p.add_argument("--pool", action="store_true",
-                           help="Add device to a reservation pool (multiple devices per product)")
-    res_set_p.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
-                           default="phone", help="Form factor for pool key (default: phone)")
-    res_set_p.set_defaults(func=cmd_config)
-
-    res_rm_p = res_sub.add_parser("remove", help="Remove a reservation")
-    res_rm_p.add_argument("agent_name", help="Agent/product name")
-    res_rm_p.add_argument("platform", nargs="?", help="Platform (omit to remove all)")
-    res_rm_p.set_defaults(func=cmd_config)
-
-    res_ls_p = res_sub.add_parser("list", help="List all reservations")
-    res_ls_p.set_defaults(func=cmd_config)
-
-    # completions
-    comp_p = sub.add_parser("completions", help="Generate shell completions (zsh or bash)")
-    comp_p.add_argument("shell", choices=["zsh", "bash"], help="Shell type")
-    comp_p.set_defaults(func=cmd_completions)
-
-    # doctor
-    doc_p = sub.add_parser("doctor", help="Diagnose simemu setup issues and suggest fixes")
-    doc_p.add_argument("--json", action="store_true", help="Output as JSON")
-    doc_p.set_defaults(func=cmd_doctor)
 
     # sessions
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
@@ -2795,20 +2366,10 @@ def build_parser() -> argparse.ArgumentParser:
     erase.set_defaults(func=cmd_erase)
 
     # rename
-    rename_p = sub.add_parser("rename", help="Rename a simulator by session id, legacy slug, device id, or current name")
-    rename_p.add_argument("target")
+    rename_p = sub.add_parser("rename", help="Rename a simulator or Android AVD")
+    rename_p.add_argument("slug")
     rename_p.add_argument("name", help="New display name")
-    rename_p.add_argument("--platform", choices=["ios", "android"],
-                          help="Platform hint when renaming by raw device name")
     rename_p.set_defaults(func=cmd_rename)
-
-    # relabel
-    relabel_p = sub.add_parser("relabel", help="Assign a persistent alias to a connected real device")
-    relabel_p.add_argument("target", help="Session id, real device id, or current device name")
-    relabel_p.add_argument("label", help="Slug-like alias (e.g. luke-iphone)")
-    relabel_p.add_argument("--platform", choices=["ios", "android"],
-                           help="Platform hint when relabeling by raw device name")
-    relabel_p.set_defaults(func=cmd_relabel)
 
     # delete
     delete_p = sub.add_parser("delete", help="Permanently remove a simulator or Android AVD")
@@ -2978,15 +2539,6 @@ def build_parser() -> argparse.ArgumentParser:
     cr_ios.add_argument("--json", action="store_true", help="Output as JSON")
     cr_ios.set_defaults(func=cmd_create)
 
-    cr_watch = cr_sub.add_parser("watchos", help="Create watchOS simulator")
-    cr_watch.add_argument("name", nargs="?", help="Name for the new simulator")
-    cr_watch.add_argument("--device", help="Device type, e.g. 'Apple Watch Series 10 (46mm)'")
-    cr_watch.add_argument("--os", help="Runtime, e.g. 'watchOS 26.2' or '26.2'")
-    cr_watch.add_argument("--list-devices", action="store_true", help="List available device types")
-    cr_watch.add_argument("--list-runtimes", action="store_true", help="List installed runtimes")
-    cr_watch.add_argument("--json", action="store_true", help="Output as JSON")
-    cr_watch.set_defaults(func=cmd_create)
-
     cr_gen = cr_sub.add_parser("genymotion", help="Create Genymotion VM (requires Genymotion Desktop)")
     cr_gen.add_argument("name", nargs="?", help="Name for the new VM")
     cr_gen.add_argument("--hwprofile", help="Hardware profile name or UUID (e.g. 'Samsung Galaxy S24')")
@@ -3011,7 +2563,7 @@ def build_parser() -> argparse.ArgumentParser:
     # serve
     serve_p = sub.add_parser("serve", help="Start the HTTP API server (with idle-shutdown)")
     serve_p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
-    serve_p.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
+    serve_p.add_argument("--port", type=int, default=_SIMEMU_PORT, help=f"Port (default: {_SIMEMU_PORT})")
     serve_p.add_argument("--idle-timeout", type=int, default=None, metavar="MINUTES",
                          help="Shut down idle simulators after N minutes (default: 20, env: SIMEMU_IDLE_TIMEOUT)")
     serve_p.set_defaults(func=cmd_serve)
@@ -3040,10 +2592,7 @@ def build_parser() -> argparse.ArgumentParser:
     maint_p.set_defaults(func=cmd_maintenance)
 
     # menubar
-    mb_p = sub.add_parser("menubar", help="Manage the macOS menu bar status app")
-    mb_p.add_argument("action", nargs="?", default="launch",
-                      choices=["launch", "install", "status", "uninstall"],
-                      help="launch (default), install launch-agent autostart, status, or uninstall")
+    mb_p = sub.add_parser("menubar", help="Launch the macOS menu bar status app")
     mb_p.set_defaults(func=cmd_menubar)
 
     return p
@@ -3089,29 +2638,20 @@ def cmd_idle_shutdown(args):
 
 def cmd_daemon(args):
     """Manage the simemu background daemon (launchd agent on macOS)."""
-    import sys as _sys
+    import shutil
     import subprocess as _sp
     import urllib.request
     label = "com.simemu.daemon"
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-    daemon_log = state.state_dir() / "daemon.log"
 
     if args.action == "install":
-        python_bin = _sys.executable
-        repo_root = Path(__file__).resolve().parents[1]
-        if not python_bin:
+        simemu_bin = shutil.which("simemu")
+        if not simemu_bin:
             raise RuntimeError(
-                "Python executable not found for simemu daemon install.\n"
-                "Run simemu from a working Python environment and retry."
+                "simemu binary not found on PATH.\n"
+                "Install simemu first: pip install -e ~/dev/simemu/"
             )
         timeout = args.idle_timeout
-        daemon_log.parent.mkdir(parents=True, exist_ok=True)
-        path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-        pythonpath_parts = [str(repo_root)]
-        existing_pythonpath = os.environ.get("PYTHONPATH")
-        if existing_pythonpath:
-            pythonpath_parts.append(existing_pythonpath)
-        pythonpath_env = ":".join(pythonpath_parts)
         plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -3121,28 +2661,19 @@ def cmd_daemon(args):
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{python_bin}</string>
-        <string>-m</string>
-        <string>simemu.cli</string>
+        <string>{simemu_bin}</string>
         <string>serve</string>
         <string>--idle-timeout</string>
         <string>{timeout}</string>
     </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>{path_env}</string>
-        <key>PYTHONPATH</key>
-        <string>{pythonpath_env}</string>
-    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{daemon_log}</string>
+    <string>/tmp/simemu/daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>{daemon_log}</string>
+    <string>/tmp/simemu/daemon.log</string>
 </dict>
 </plist>
 """
@@ -3151,7 +2682,7 @@ def cmd_daemon(args):
         _sp.run(["launchctl", "load", "-w", str(plist_path)], check=False)
         print(f"simemu daemon installed and started.")
         print(f"  Idle-shutdown timeout: {timeout} minutes")
-        print(f"  Logs:  {daemon_log}")
+        print(f"  Logs:  /tmp/simemu/daemon.log")
         print(f"  Plist: {plist_path}")
 
     elif args.action == "uninstall":
@@ -3164,7 +2695,7 @@ def cmd_daemon(args):
 
     elif args.action == "status":
         manual_server = None
-        for url in ("http://127.0.0.1:8765/health", "http://127.0.0.1:8765/status"):
+        for url in (f"http://127.0.0.1:{_SIMEMU_PORT}/health", f"http://127.0.0.1:{_SIMEMU_PORT}/status"):
             try:
                 with urllib.request.urlopen(url, timeout=1.5) as resp:
                     manual_server = {
@@ -3181,7 +2712,7 @@ def cmd_daemon(args):
         )
         if result.returncode == 0:
             print(f"simemu daemon is RUNNING  (launchd label: {label})")
-            print(f"  Logs: {daemon_log}")
+            print(f"  Logs: /tmp/simemu/daemon.log")
             if plist_path.exists():
                 print(f"  Plist: {plist_path}")
         else:
@@ -3207,105 +2738,9 @@ def _find_swift_menubar_app() -> Path | None:
     return None
 
 
-def _menubar_binary_path(app_bundle: Path | None) -> Path | None:
-    if not app_bundle:
-        return None
-    candidate = app_bundle / "Contents" / "MacOS" / "SimEmuBar"
-    return candidate if candidate.exists() else None
-
-
 def cmd_menubar(args):
-    """Manage the macOS menu bar status app."""
+    """Launch the macOS menu bar status app (SwiftUI or rumps fallback)."""
     import subprocess as sp
-    from .watchdog import check_menubar_app
-
-    action = getattr(args, "action", "launch")
-    label = "com.simemu.menubar"
-    plist_path = _launch_agent_path(label)
-    menubar_log = state.state_dir() / "menubar.log"
-
-    if action == "install":
-        app_bundle = _find_swift_menubar_app()
-        binary_path = _menubar_binary_path(app_bundle)
-        if not app_bundle or not binary_path:
-            raise RuntimeError(
-                "SimEmuBar.app is not installed.\n"
-                "Run bash install.sh or build the Swift app first."
-            )
-
-        menubar_log.parent.mkdir(parents=True, exist_ok=True)
-        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{binary_path}</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>{app_bundle.parent}</string>
-    <key>ProcessType</key>
-    <string>Interactive</string>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>{menubar_log}</string>
-    <key>StandardErrorPath</key>
-    <string>{menubar_log}</string>
-</dict>
-</plist>
-"""
-        plist_path.parent.mkdir(parents=True, exist_ok=True)
-        _launchctl_bootout(label, plist_path)
-        plist_path.write_text(plist_content)
-        _launchctl_bootstrap(plist_path)
-        time.sleep(1.0)
-        health = check_menubar_app()
-        print("simemu menubar installed.")
-        print(f"  App: {app_bundle}")
-        print(f"  Plist: {plist_path}")
-        print(f"  Log: {menubar_log}")
-        print(f"  Status: {health.get('status', 'unknown')}")
-        return
-
-    if action == "uninstall":
-        _launchctl_bootout(label, plist_path)
-        plist_path.unlink(missing_ok=True)
-        sp.run(["pkill", "-f", "SimEmuBar"], capture_output=True, check=False)
-        print("simemu menubar removed.")
-        return
-
-    if action == "status":
-        health = check_menubar_app()
-        print(f"Menubar status: {health.get('status', 'unknown')}")
-        if health.get("pid"):
-            print(f"  PID: {health['pid']}")
-        if health.get("app_path"):
-            print(f"  App: {health['app_path']}")
-        if health.get("launch_agent_status"):
-            print(f"  LaunchAgent: {health['launch_agent_status']}")
-        if health.get("plist_path"):
-            print(f"  Plist: {health['plist_path']}")
-        if health.get("hint"):
-            print(f"  Hint: {health['hint']}")
-        return
-
-    if action == "launch" and _launchctl_is_loaded(label):
-        sp.run(["launchctl", "kickstart", "-k", _launchctl_label(label)], check=False)
-        time.sleep(0.5)
-        if check_menubar_app().get("status") == "running":
-            return
-
     app_bundle = _find_swift_menubar_app()
     if app_bundle:
         sp.run(["open", str(app_bundle)], check=False)
@@ -3346,48 +2781,21 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar", "cmd_completions", "cmd_doctor"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
 # v2 + admin commands — everything else is legacy and rejected
 _V2_COMMANDS = {
-    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config", "cmd_completions", "cmd_doctor",
+    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config",
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
-    "cmd_list", "cmd_list_devices", "cmd_rename", "cmd_relabel",  # discovery/admin actions
+    "cmd_list", "cmd_list_devices",  # discovery is still useful
     "cmd_status_overview",  # v2 system overview
 }
 
 
-def _warn_if_module_invocation() -> None:
-    """Warn when simemu is invoked through a module path instead of the public CLI."""
-    if Path(sys.argv[0]).name == "cli.py":
-        print(
-            "Warning: invoked via 'python -m simemu.cli'. Use the public CLI instead: 'simemu ...'",
-            file=sys.stderr,
-        )
-
-
-def _get_subparser(parser: argparse.ArgumentParser, name: str) -> argparse.ArgumentParser | None:
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return action.choices.get(name)
-    return None
-
-
-def _maybe_print_help_and_exit(parser: argparse.ArgumentParser, raw_args: list[str]) -> None:
-    if raw_args[:2] == ["do", "help"] or raw_args[:2] == ["do", "--help"] or raw_args[:2] == ["do", "-h"]:
-        do_parser = _get_subparser(parser, "do")
-        if do_parser is not None:
-            do_parser.print_help()
-            raise SystemExit(0)
-
-
 def main():
-    _warn_if_module_invocation()
     parser = build_parser()
-    raw_args = sys.argv[1:]
-    _maybe_print_help_and_exit(parser, raw_args)
-    args = parser.parse_args(raw_args)
+    args = parser.parse_args()
     if getattr(args, "no_autostart", False):
         os.environ["SIMEMU_NO_AUTOSTART"] = "1"
     if getattr(args.func, "__name__", "") not in {"cmd_serve", "cmd_daemon"}:
