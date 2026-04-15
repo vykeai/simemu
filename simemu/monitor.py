@@ -22,8 +22,12 @@ from pathlib import Path
 
 def _resolve_port() -> int:
     env_val = os.environ.get("SIMEMU_PORT", "")
-    if env_val.isdigit():
-        return int(env_val)
+    try:
+        port = int(env_val)
+        if 1 <= port <= 65535:
+            return port
+    except (ValueError, TypeError):
+        pass
     try:
         cfg = json.loads((Path.home() / ".fed" / "config.json").read_text())
         dash = cfg.get("tools", {}).get("simemu", {}).get("dash")
