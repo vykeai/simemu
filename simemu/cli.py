@@ -1360,7 +1360,14 @@ def build_parser() -> argparse.ArgumentParser:
     maint_p.set_defaults(func=cmd_maintenance)
 
     # menubar
-    mb_p = sub.add_parser("menubar", help="Launch the macOS menu bar status app")
+    mb_p = sub.add_parser("menubar", help="Launch or manage the macOS menu bar status app")
+    mb_p.add_argument(
+        "action",
+        nargs="?",
+        choices=["install", "uninstall", "status"],
+        default=None,
+        help="install/uninstall/status — manage the LaunchAgent that auto-starts the menu bar on login",
+    )
     mb_p.set_defaults(func=cmd_menubar)
 
     return p
@@ -1509,6 +1516,83 @@ def _find_swift_menubar_app() -> Path | None:
 def cmd_menubar(args):
     """Launch the macOS menu bar status app (SwiftUI or rumps fallback)."""
     import subprocess as sp
+
+    action = getattr(args, "action", None)
+    label = "com.simemu.menubar"
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+    if action in ("install", "uninstall", "status"):
+        if action == "install":
+            app_bundle = _find_swift_menubar_app()
+            if not app_bundle:
+                raise RuntimeError(
+                    "SimEmuBar.app not found.\n"
+                    "Build it first: cd ~/dev/simemu/simemu/swift && swift build -c release\n"
+                    "Or install to /Applications/SimEmuBar.app"
+                )
+            binary = app_bundle / "Contents" / "MacOS" / "SimEmuBar"
+            plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/simemu/menubar.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/simemu/menubar.log</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+</dict>
+</plist>
+"""
+            plist_path.parent.mkdir(parents=True, exist_ok=True)
+            Path("/tmp/simemu").mkdir(parents=True, exist_ok=True)
+            plist_path.write_text(plist_content)
+            sp.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+            sp.run(["launchctl", "load", "-w", str(plist_path)], check=False)
+            print(f"SimEmuBar LaunchAgent installed and started.")
+            print(f"  App:   {app_bundle}")
+            print(f"  Logs:  /tmp/simemu/menubar.log")
+            print(f"  Plist: {plist_path}")
+
+        elif action == "uninstall":
+            if plist_path.exists():
+                sp.run(["launchctl", "unload", "-w", str(plist_path)], check=False)
+                plist_path.unlink()
+                print("SimEmuBar LaunchAgent stopped and removed.")
+            else:
+                print("SimEmuBar LaunchAgent is not installed.")
+
+        elif action == "status":
+            result = sp.run(
+                ["launchctl", "list", label],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print(f"SimEmuBar LaunchAgent is RUNNING  (label: {label})")
+                if plist_path.exists():
+                    print(f"  Plist: {plist_path}")
+            else:
+                print("SimEmuBar LaunchAgent is NOT running.")
+                if plist_path.exists():
+                    print(f"  Plist exists — run 'simemu menubar install' to start it.")
+                else:
+                    print("  Run 'simemu menubar install' to set it up.")
+        return
+
+    # No action — just launch it now
     app_bundle = _find_swift_menubar_app()
     if app_bundle:
         sp.run(["open", str(app_bundle)], check=False)
