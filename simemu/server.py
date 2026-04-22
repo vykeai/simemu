@@ -86,6 +86,69 @@ def _shutdown_idle_simulators(timeout_minutes: int) -> list[str]:
     return shut_down
 
 
+def _kill_rogue_emulators() -> list[int]:
+    """Kill qemu/emulator processes not tracked by simemu state.
+
+    An emulator is 'rogue' if:
+    - Its process name matches qemu-system-aarch64 or the Android emulator binary
+    - AND its AVD name is not found in simemu's active state
+
+    Returns list of PIDs killed.
+    """
+    import subprocess, signal, re as _re
+
+    # Get AVD names currently tracked by simemu
+    tracked_avds: set[str] = set()
+    for slug, alloc in state.get_all().items():
+        if alloc.platform == "android" and alloc.device_name:
+            tracked_avds.add(alloc.device_name.lower())
+
+    # Find all qemu/emulator processes
+    try:
+        out = subprocess.run(
+            ["ps", "-Ao", "pid,command"],
+            capture_output=True, text=True
+        ).stdout
+    except Exception:
+        return []
+
+    killed = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not any(x in line for x in ("qemu-system-aarch64", "emulator -avd")):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+
+        # Extract AVD name if present (-avd <name>)
+        avd_match = _re.search(r'-avd\s+(\S+)', parts[1])
+        avd_name = avd_match.group(1).lower() if avd_match else None
+
+        # If we can identify the AVD and simemu is tracking it, leave it alone
+        if avd_name and avd_name in tracked_avds:
+            continue
+
+        # Rogue — kill it
+        try:
+            import os as _os
+            _os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+            print(
+                f"[simemu-daemon] killed rogue emulator PID {pid}"
+                + (f" (avd={avd_name})" if avd_name else ""),
+                flush=True,
+            )
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    return killed
+
+
 async def _idle_shutdown_loop(timeout_minutes: int) -> None:
     """Background coroutine: check and shut down idle simulators every minute."""
     print(
@@ -96,6 +159,10 @@ async def _idle_shutdown_loop(timeout_minutes: int) -> None:
     while True:
         await asyncio.sleep(60)
         _shutdown_idle_simulators(timeout_minutes)
+        # Kill any qemu/emulator processes not tracked by simemu
+        rogue_pids = _kill_rogue_emulators()
+        if rogue_pids:
+            print(f"[simemu-daemon] killed {len(rogue_pids)} rogue emulator(s): {rogue_pids}", flush=True)
         # v2 session lifecycle tick
         try:
             session_module.lifecycle_tick()
