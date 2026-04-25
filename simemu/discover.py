@@ -273,6 +273,42 @@ def get_reservation(agent: str, platform: str) -> dict | None:
     return agent_res.get(platform)
 
 
+def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
+    """Return all available devices matching a ClaimSpec without choosing one."""
+    allocated_ids = _get_claimed_sim_ids()
+    platform = {
+        "watch": "watchos",
+        "tv": "tvos",
+        "vision": "visionos",
+    }.get(spec.form_factor, spec.platform)
+
+    if spec.real_device:
+        if platform == "ios":
+            candidates = list_real_ios(allocated_ids)
+        elif platform == "android":
+            candidates = list_real_android(allocated_ids)
+        else:
+            return []
+    else:
+        list_fn = {
+            "ios": list_ios,
+            "watchos": list_watchos,
+            "tvos": list_tvos,
+            "visionos": list_visionos,
+            "android": list_android,
+        }.get(platform)
+        if not list_fn:
+            return []
+        candidates = list_fn(allocated_ids)
+
+    if spec.form_factor in {"phone", "tablet"}:
+        candidates = [
+            sim for sim in candidates
+            if _classify_form_factor(sim) == spec.form_factor
+        ]
+    return candidates
+
+
 def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
     """Find the best available device matching a ClaimSpec.
 

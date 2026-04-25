@@ -2096,19 +2096,39 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "deeplink-proof":
         import time as _time
         if not args:
-            raise RuntimeError("Usage: simemu do <session> deeplink-proof <url> [-o output]")
+            raise RuntimeError("Usage: simemu do <session> deeplink-proof <url> [-o output] [--wait seconds] [--expect-package package]")
         url = args[0]
         output = None
-        if "-o" in args:
-            idx = args.index("-o")
-            if idx + 1 < len(args):
-                output = args[idx + 1]
+        explicit_expect = None
+        wait_seconds = 3.0
+        if platform == "android":
+            # Android deep links often dispatch before Compose has applied route state.
+            wait_seconds = 5.0
+        i = 1
+        while i < len(args):
+            arg = args[i]
+            if arg in ("-o", "--output") and i + 1 < len(args):
+                output = args[i + 1]
+                i += 2
+                continue
+            if arg in ("--wait", "-w") and i + 1 < len(args):
+                try:
+                    wait_seconds = float(args[i + 1])
+                except ValueError:
+                    raise RuntimeError(f"Invalid deeplink-proof wait value: {args[i + 1]}")
+                i += 2
+                continue
+            if arg == "--expect-package" and i + 1 < len(args):
+                explicit_expect = args[i + 1]
+                i += 2
+                continue
+            i += 1
         # Open the URL
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
-            expected_bundle = None
+            expected_bundle = explicit_expect
             with _locked_sessions() as (data, save):
-                expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+                expected_bundle = expected_bundle or data["sessions"].get(session_id, {}).get("last_app")
             if expected_bundle and not ios.complete_open_url_handoff(sim_id, expected_bundle):
                 raise RuntimeError(
                     f"Opened deep link but '{expected_bundle}' never became foreground on iOS."
@@ -2116,9 +2136,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if not expected_bundle:
                 ios.accept_open_app_alert(sim_id)
         else:
-            android.open_url(sim_id, url, **android_kwargs)
+            expected_package = explicit_expect
+            with _locked_sessions() as (data, save):
+                expected_package = expected_package or data["sessions"].get(session_id, {}).get("last_app")
+            android.open_url(sim_id, url, expected_package=expected_package, **android_kwargs)
         # Wait for render
-        _time.sleep(3)
+        if wait_seconds > 0:
+            _time.sleep(wait_seconds)
         # Screenshot
         if not output:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2131,7 +2155,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.screenshot(sim_id, output)
         else:
             android.screenshot(sim_id, output, **android_kwargs)
-        return {"status": "captured", "url": url, "path": output}
+        update_provenance(session_id, last_url=url, last_deep_link=url, last_screenshot=output)
+        return {"status": "captured", "url": url, "waited": wait_seconds, "path": output}
 
     elif command == "proof":
         return _do_proof(session, sim_id, platform, is_real, session_id, args)
