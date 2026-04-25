@@ -306,6 +306,12 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
             sim for sim in candidates
             if _classify_form_factor(sim) == spec.form_factor
         ]
+    if spec.device_selector:
+        selector = spec.device_selector.lower()
+        candidates = [
+            sim for sim in candidates
+            if selector in sim.device_name.lower() or selector in sim.sim_id.lower()
+        ]
     return candidates
 
 
@@ -379,6 +385,20 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
             raise NoSimulatorAvailable(
                 f"No available {platform} {kind} matching form factor "
                 f"'{spec.form_factor}'. Available unclaimed devices: {available}{ownership_hint}"
+            )
+        candidates = filtered
+
+    if spec.device_selector:
+        selector = spec.device_selector.lower()
+        filtered = [
+            sim for sim in candidates
+            if selector in sim.device_name.lower() or selector in sim.sim_id.lower()
+        ]
+        if not filtered:
+            available = ", ".join(sim.device_name for sim in candidates)
+            raise NoSimulatorAvailable(
+                f"No available {platform} {kind} matching device selector "
+                f"'{spec.device_selector}'. Available unclaimed devices: {available}"
             )
         candidates = filtered
 

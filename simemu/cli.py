@@ -216,6 +216,7 @@ def cmd_claim(args):
         form_factor=getattr(args, "form_factor", None) or "phone",
         os_version=getattr(args, "version", None),
         real_device=getattr(args, "real", False),
+        device_selector=getattr(args, "device", None),
         label=getattr(args, "label", None) or "",
         visible=visible,
     )
@@ -2024,6 +2025,8 @@ def build_parser() -> argparse.ArgumentParser:
                          default="phone", help="Device form factor (default: phone)")
     claim_p.add_argument("--real", action="store_true",
                          help="Prefer real device over simulator")
+    claim_p.add_argument("--device",
+                         help="Claim a specific device by name, id, or substring")
     claim_p.add_argument("--show", action="store_true", dest="visible",
                          help="Keep simulator window visible (default: hidden)")
     claim_p.add_argument("--label", help="Human label for display (e.g. 'proof capture')")
