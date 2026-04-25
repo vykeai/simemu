@@ -97,11 +97,26 @@ def _kill_rogue_emulators() -> list[int]:
     """
     import subprocess, signal, re as _re
 
-    # Get AVD names currently tracked by simemu
+    def _norm_avd(value: str | None) -> str:
+        return (value or "").strip().lower().replace(" ", "_")
+
+    # Get AVD names currently tracked by simemu. Include both the legacy
+    # allocation file and the v2 session store; otherwise the daemon can kill a
+    # freshly claimed v2 Android session as "rogue" before proof capture runs.
     tracked_avds: set[str] = set()
     for slug, alloc in state.get_all().items():
         if alloc.platform == "android" and alloc.device_name:
-            tracked_avds.add(alloc.device_name.lower())
+            tracked_avds.add(_norm_avd(alloc.device_name))
+            tracked_avds.add(_norm_avd(alloc.sim_id))
+    try:
+        for session in session_module.get_active_sessions().values():
+            if session.platform == "android":
+                tracked_avds.add(_norm_avd(session.device_name))
+                tracked_avds.add(_norm_avd(session.sim_id))
+    except Exception:
+        # Rogue cleanup should never take down known emulators just because the
+        # session store is temporarily unreadable.
+        pass
 
     # Find all qemu/emulator processes
     try:
@@ -127,7 +142,7 @@ def _kill_rogue_emulators() -> list[int]:
 
         # Extract AVD name if present (-avd <name>)
         avd_match = _re.search(r'-avd\s+(\S+)', parts[1])
-        avd_name = avd_match.group(1).lower() if avd_match else None
+        avd_name = _norm_avd(avd_match.group(1)) if avd_match else None
 
         # If we can identify the AVD and simemu is tracking it, leave it alone
         if avd_name and avd_name in tracked_avds:
