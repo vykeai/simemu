@@ -242,6 +242,12 @@ def _classify_form_factor(sim: SimulatorInfo) -> str | None:
         return "tablet"
     if any(hint in name for hint in ("iphone", "pixel", "galaxy", "phone", "nexus")):
         return "phone"
+    if any(hint in name for hint in ("apple tv", "appletv", "tv", "roku")):
+        return "tv"
+    if any(hint in name for hint in ("apple watch", "watch", "wear", "gear")):
+        return "watch"
+    if any(hint in name for hint in ("vision", "visionpro", "xr", "quest")):
+        return "vision"
     return None
 
 
