@@ -235,6 +235,7 @@ class TestFindBestDevice(unittest.TestCase):
             form_factor="phone",
             os_version=None,
             real_device=False,
+            device_selector=None,
         )
         result = find_best_device(spec)
         self.assertEqual(result.sim_id, "iphone-1")
@@ -250,6 +251,7 @@ class TestFindBestDevice(unittest.TestCase):
             form_factor="phone",
             os_version=None,
             real_device=False,
+            device_selector=None,
         )
         with self.assertRaises(NoSimulatorAvailable) as ctx:
             find_best_device(spec)
