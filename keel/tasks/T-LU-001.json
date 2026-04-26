@@ -19,6 +19,11 @@
       "at": "2026-03-25T21:09:21.421Z",
       "by": "human",
       "text": "Schema versioning with auto-migration pipeline. Current version 2. v1→v2 adds provenance and claim spec fields. Auto-migrates on read, stamps on write. 4 tests."
+    },
+    {
+      "at": "2026-04-26T08:58:44.041Z",
+      "by": "human",
+      "text": "Fixed: tv/watch/vision form factor classifier, missing device_selector in tests. Branch fix/rogue-emulator-watchdog has 201 commits with watchdog.py, monitor, visibility, session management. Tests: 520 pass, 9 fail (CLI tests for new relabel/menubar/daemon commands need updates). Remaining CLI test fixes tracked separately."
     }
   ],
   "acceptanceCriteria": [],
@@ -43,7 +48,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:38.800Z",
-  "updatedAt": "2026-04-26T08:58:43.660Z",
+  "updatedAt": "2026-04-26T08:58:44.041Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
