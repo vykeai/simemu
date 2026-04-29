@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # simemu installer — idempotent, safe to re-run
-# Usage: bash /Users/luke/dev/simemu/install.sh
+# Usage: bash /Users/luke/dev/onlytools/simemu/install.sh
 #    or: curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bash
 set -e
 
 REPO_URL="https://github.com/vykeai/simemu.git"
-DEFAULT_CLONE_DIR="$HOME/dev/simemu"
+DEFAULT_CLONE_DIR="$HOME/dev/onlytools/simemu"
 
 # When piped via curl, BASH_SOURCE[0] is empty — detect and clone the repo first
 if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "bash" || "${BASH_SOURCE[0]}" == "/dev/stdin" ]]; then
