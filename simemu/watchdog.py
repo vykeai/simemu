@@ -244,6 +244,45 @@ def full_health_check() -> dict:
         "sessions": check_stale_sessions(),
         "state_files": check_state_file_health(),
         "memory": check_memory_pressure(),
+        "cpu_runaway": check_cpu_runaway(),
+    }
+
+
+def check_cpu_runaway() -> dict:
+    """Detect qemu/emulator processes consuming excessive CPU."""
+    threshold = int(os.environ.get("SIMEMU_RUNAWAY_CPU_THRESHOLD", "800"))
+    try:
+        result = subprocess.run(
+            ["ps", "axww", "-o", "pid=", "-o", "pcpu=", "-o", "comm="],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {"status": "unknown"}
+
+    offenders = []
+    for line in result.stdout.splitlines():
+        if "qemu-system" not in line and "emulator" not in line.lower():
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            cpu_pct = float(parts[1])
+            if cpu_pct >= threshold:
+                offenders.append({
+                    "pid": pid,
+                    "cpu_percent": round(cpu_pct),
+                    "process": parts[2][:40],
+                })
+        except ValueError:
+            continue
+
+    return {
+        "status": "alert" if offenders else "ok",
+        "threshold_percent": threshold,
+        "offenders": offenders,
+        "hint": f"Kill with: kill {' '.join(str(o['pid']) for o in offenders)}" if offenders else None,
     }
 
 

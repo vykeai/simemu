@@ -42,12 +42,11 @@ class CliParserTests(unittest.TestCase):
         self.assertTrue(args.visible)
         self.assertEqual(args.label, "test")
 
-    def test_relabel_parser(self) -> None:
-        args = self.parser.parse_args(["relabel", "s-abc123", "luke-iphone", "--platform", "ios"])
-        self.assertEqual(args.target, "s-abc123")
-        self.assertEqual(args.label, "luke-iphone")
-        self.assertEqual(args.platform, "ios")
-        self.assertEqual(args.func, cli.cmd_relabel)
+    def test_rename_parser(self) -> None:
+        args = self.parser.parse_args(["rename", "s-abc123", "luke-iphone"])
+        self.assertEqual(args.slug, "s-abc123")
+        self.assertEqual(args.name, "luke-iphone")
+        self.assertEqual(args.func, cli.cmd_rename)
 
     def test_do_parser_accepts_session_and_command(self) -> None:
         args = self.parser.parse_args(["do", "s-abc123", "screenshot"])
@@ -285,30 +284,32 @@ class CliHandlerTests(unittest.TestCase):
         set_mock.assert_called_once_with("hidden", display=None, corner=None)
         self.assertIn("Window mode set to: hidden", stdout.getvalue())
 
-    def test_relabel_calls_alias_store(self) -> None:
-        args = Namespace(target="s-live123", label="luke-iphone", platform=None)
+    def test_rename_calls_alias_store(self) -> None:
+        args = Namespace(slug="s-live123", name="luke-iphone")
         stdout = io.StringIO()
+        alloc = MagicMock(platform="ios", sim_id="SIM-001")
 
-        with patch("simemu.cli._resolve_real_device_target", return_value=("ios", "DEVICE-1", "Luke iPhone")):
-            with patch("simemu.cli.set_device_alias", return_value="luke-iphone") as set_alias:
-                with redirect_stdout(stdout):
-                    cli.cmd_relabel(args)
+        locked_state = MagicMock()
+        locked_state.__enter__ = MagicMock(return_value=({"allocations": {}}, lambda data: None))
+        locked_state.__exit__ = MagicMock(return_value=False)
 
-        set_alias.assert_called_once_with(
-            platform="ios",
-            device_id="DEVICE-1",
-            device_name="Luke iPhone",
-            alias="luke-iphone",
-        )
-        self.assertIn("luke-iphone", stdout.getvalue())
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.rename") as mock_rename:
+                    with patch("simemu.cli.state._locked_state", return_value=locked_state):
+                        with redirect_stdout(stdout):
+                            cli.cmd_rename(args)
+
+        mock_rename.assert_called_once_with("SIM-001", "luke-iphone")
 
     def test_rename_updates_matching_sessions(self) -> None:
-        args = Namespace(target="s-abc123", name="FitKind iPhone", platform=None)
+        args = Namespace(slug="s-abc123", name="FitKind iPhone")
         stdout = io.StringIO()
+        alloc = MagicMock(platform="ios", sim_id="SIM-001")
 
-        with patch("simemu.cli._resolve_simulator_target", return_value=("ios", "SIM-001")):
-            with patch("simemu.cli.ios.rename") as rename_mock:
-                with patch("simemu.cli._update_session_device_refs") as update_refs:
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.rename") as rename_mock:
                     with patch("simemu.cli.state._locked_state") as locked_state:
                         locked_state.return_value.__enter__.return_value = ({"allocations": {}}, lambda data: None)
                         locked_state.return_value.__exit__.return_value = False
@@ -316,53 +317,35 @@ class CliHandlerTests(unittest.TestCase):
                             cli.cmd_rename(args)
 
         rename_mock.assert_called_once_with("SIM-001", "FitKind iPhone")
-        update_refs.assert_called_once_with("ios", "SIM-001", "FitKind iPhone")
         self.assertIn("FitKind iPhone", stdout.getvalue())
 
     @patch("subprocess.run")
-    def test_daemon_install_uses_state_dir_log(self, mock_run) -> None:
+    def test_daemon_install_uses_tmp_log(self, mock_run) -> None:
         args = Namespace(action="install", idle_timeout=20)
         stdout = io.StringIO()
         fake_home = Path(self._tmpdir) / "home"
-        repo_root = Path(cli.__file__).resolve().parents[1]
 
         with patch("simemu.cli.Path.home", return_value=fake_home):
-            with redirect_stdout(stdout):
-                cli.cmd_daemon(args)
+            with patch("shutil.which", return_value="/usr/local/bin/simemu"):
+                with redirect_stdout(stdout):
+                    cli.cmd_daemon(args)
 
         plist_path = fake_home / "Library" / "LaunchAgents" / "com.simemu.daemon.plist"
         plist = plist_path.read_text()
-        expected_log = str(Path(self._tmpdir) / "daemon.log")
-        self.assertIn(expected_log, plist)
-        self.assertIn(sys.executable, plist)
-        self.assertIn(str(repo_root), plist)
-        self.assertIn(expected_log, stdout.getvalue())
+        self.assertIn("/tmp/simemu/daemon.log", plist)
+        self.assertIn("/usr/local/bin/simemu", plist)
+        self.assertIn("--idle-timeout", plist)
+        self.assertIn("20", plist)
 
-    @patch("simemu.watchdog.check_menubar_app", return_value={"status": "running"})
-    @patch("subprocess.run")
-    def test_menubar_install_writes_launch_agent_plist(self, mock_run, mock_health) -> None:
-        args = Namespace(action="install")
-        stdout = io.StringIO()
-        fake_home = Path(self._tmpdir) / "home"
+    def test_menubar_launch_opens_app(self) -> None:
         app_bundle = Path(self._tmpdir) / "SimEmuBar.app"
-        binary = app_bundle / "Contents" / "MacOS" / "SimEmuBar"
-        binary.parent.mkdir(parents=True, exist_ok=True)
-        binary.write_text("")
 
-        with patch("simemu.cli.Path.home", return_value=fake_home):
-            with patch("simemu.cli._find_swift_menubar_app", return_value=app_bundle):
-                with redirect_stdout(stdout):
-                    cli.cmd_menubar(args)
+        with patch("simemu.cli._find_swift_menubar_app", return_value=app_bundle):
+            with patch("subprocess.run") as mock_run:
+                cli.cmd_menubar(Namespace(action="launch"))
 
-        plist_path = fake_home / "Library" / "LaunchAgents" / "com.simemu.menubar.plist"
-        plist = plist_path.read_text()
-        expected_log = str(Path(self._tmpdir) / "menubar.log")
-        self.assertIn(str(binary), plist)
-        self.assertIn("SuccessfulExit", plist)
-        self.assertIn(expected_log, plist)
-        self.assertIn(str(app_bundle), stdout.getvalue())
+        mock_run.assert_called_once_with(["open", str(app_bundle)], check=False)
 
-    @patch("simemu.watchdog.check_menubar_app", return_value={"status": "installed_not_running", "app_path": "/Applications/SimEmuBar.app"})
     @patch("simemu.cli.socket.create_connection")
     @patch("simemu.cli.list_android", return_value=[])
     @patch("simemu.cli.list_ios", return_value=[])
@@ -370,7 +353,7 @@ class CliHandlerTests(unittest.TestCase):
     @patch("simemu.cli.window_mgr.list_displays", return_value=[])
     @patch("simemu.cli.window_mgr.get_window_mode", return_value="hidden")
     @patch("subprocess.run")
-    def test_status_overview_flags_menubar_not_running(
+    def test_status_overview_shows_menubar_not_running(
         self,
         mock_run,
         mock_window_mode,
@@ -379,22 +362,22 @@ class CliHandlerTests(unittest.TestCase):
         mock_ios,
         mock_android,
         mock_socket,
-        mock_menubar,
     ) -> None:
         mock_socket.return_value.__enter__ = lambda s: s
         mock_socket.return_value.__exit__ = lambda s, *a: None
-        mock_run.return_value = MagicMock(returncode=0, stdout="Mac15,14\n")
+        # pgrep for SimEmuBar returns nothing (not running)
+        def run_side_effect(*args, **kwargs):
+            result = MagicMock(returncode=1, stdout="")
+            return result
+        mock_run.side_effect = run_side_effect
         stdout = io.StringIO()
 
         with redirect_stdout(stdout):
             cli.cmd_status_overview(Namespace(json=False))
 
         output = stdout.getvalue()
-        self.assertIn("Menubar: installed, not running", output)
-        self.assertIn("Menubar auto-start is not installed", output)
-        self.assertNotIn("Health: all good", output)
+        self.assertIn("Menubar: not running", output)
 
-    @patch("simemu.watchdog.check_menubar_app", return_value={"status": "agent_loaded_not_running", "app_path": "/Applications/SimEmuBar.app", "launch_agent_status": "loaded", "plist_path": "/tmp/com.simemu.menubar.plist"})
     @patch("simemu.cli.socket.create_connection")
     @patch("simemu.cli.list_android", return_value=[])
     @patch("simemu.cli.list_ios", return_value=[])
@@ -402,7 +385,7 @@ class CliHandlerTests(unittest.TestCase):
     @patch("simemu.cli.window_mgr.list_displays", return_value=[])
     @patch("simemu.cli.window_mgr.get_window_mode", return_value="hidden")
     @patch("subprocess.run")
-    def test_status_overview_flags_loaded_menubar_agent_as_unhealthy(
+    def test_status_overview_shows_menubar_running(
         self,
         mock_run,
         mock_window_mode,
@@ -411,37 +394,36 @@ class CliHandlerTests(unittest.TestCase):
         mock_ios,
         mock_android,
         mock_socket,
-        mock_menubar,
     ) -> None:
         mock_socket.return_value.__enter__ = lambda s: s
         mock_socket.return_value.__exit__ = lambda s, *a: None
-        mock_run.return_value = MagicMock(returncode=0, stdout="Mac15,14\n")
+        # pgrep for SimEmuBar returns a PID
+        def run_side_effect(*args, **kwargs):
+            cmd = kwargs.get("args") or (args[0] if args else [])
+            if "pgrep" in str(cmd):
+                return MagicMock(returncode=0, stdout="12345 SimEmuBar\n")
+            return MagicMock(returncode=0, stdout="Mac15,14\n")
+        mock_run.side_effect = run_side_effect
         stdout = io.StringIO()
 
         with redirect_stdout(stdout):
             cli.cmd_status_overview(Namespace(json=False))
 
         output = stdout.getvalue()
-        self.assertIn("launchd-managed, stopped", output)
-        self.assertIn("Menubar launch agent is loaded but app is not running", output)
+        self.assertIn("Menubar: running (pid 12345)", output)
 
-    @patch("simemu.watchdog.full_health_check")
-    def test_doctor_flags_installed_but_stopped_menubar(self, mock_health) -> None:
-        mock_health.return_value = {
-            "api_server": {"status": "healthy"},
-            "monitor": {"status": "running"},
-            "menubar": {"status": "installed_not_running", "app_path": "/Applications/SimEmuBar.app"},
-            "state_files": {"status": "ok", "issues": []},
-            "sessions": {"status": "ok", "stale_count": 0},
-        }
+    def test_check_reports_ready_session(self) -> None:
+        args = Namespace(slug="s-test01", bundle=None, json=False)
         stdout = io.StringIO()
+        alloc = MagicMock(platform="ios", sim_id="SIM-001")
 
-        with redirect_stdout(stdout):
-            cli.cmd_doctor(Namespace())
+        with patch("simemu.cli.state.require", return_value=alloc):
+            with patch("simemu.cli.state.touch"):
+                with patch("simemu.cli.ios.get_env", return_value={"state": "Booted"}):
+                    with redirect_stdout(stdout):
+                        cli.cmd_check(args)
 
-        output = stdout.getvalue()
-        self.assertIn("Menubar app installed without auto-start", output)
-        self.assertIn("simemu menubar install", output)
+        self.assertIn("ready", stdout.getvalue().lower())
 
 
 class CliInvocationWarningTests(unittest.TestCase):

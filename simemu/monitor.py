@@ -52,6 +52,15 @@ MAX_HISTORY = 50
 # agent is gone, so the monitor reaps orphaned/overlong helpers every tick.
 UI_PROCESS_MAX_AGE_SECONDS = int(os.environ.get("SIMEMU_UI_PROCESS_MAX_AGE_SECONDS", "1800"))
 
+# Runaway emulator CPU thresholds
+# Sustained: if a qemu/emulator process is above this CPU% for longer than
+# RUNAWAY_GRACE_SECONDS, it gets killed. Covers slow-burn runaways.
+RUNAWAY_CPU_THRESHOLD = int(os.environ.get("SIMEMU_RUNAWAY_CPU_THRESHOLD", "800"))
+RUNAWAY_GRACE_SECONDS = int(os.environ.get("SIMEMU_RUNAWAY_GRACE_SECONDS", "300"))
+# Immediate: if a qemu/emulator process is above this CPU%, kill it right away
+# regardless of age. Covers "entire machine is locked up" scenarios.
+RUNAWAY_CPU_CRITICAL = int(os.environ.get("SIMEMU_RUNAWAY_CPU_CRITICAL", "1200"))
+
 
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
@@ -128,6 +137,14 @@ def run():
             issues.extend(f"reaped {item}" for item in killed)
     except Exception as e:
         log(f"ui reaper error: {e}")
+
+    # 3c. Kill runaway emulator processes (CPU starvation guard).
+    try:
+        killed = _check_runaway_emulators()
+        if killed:
+            issues.extend(f"killed {item}" for item in killed)
+    except Exception as e:
+        log(f"runaway check error: {e}")
 
     # T-21: Prune old expired/released sessions
     try:
@@ -264,6 +281,74 @@ def _kill_process(pid: int) -> None:
         return
     except PermissionError:
         return
+
+
+def _check_runaway_emulators() -> list[str]:
+    """Kill qemu/emulator processes consuming excessive CPU.
+
+    Two tiers:
+    - CRITICAL (>1200%): killed immediately — these pin all cores and lock up
+      the machine. A normal Android emulator boot peaks around 200-400%.
+    - SUSTAINED (>800% for >5 min): killed after a grace period. Covers slow
+      burns that degrade the machine over time.
+
+    Returns a list of kill descriptions for logging.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "axww", "-o", "pid=", "-o", "pcpu=", "-o", "etime=", "-o", "comm="],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+    killed: list[str] = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) != 4:
+            continue
+        pid_str, cpu_str, etime_str, comm = parts
+
+        # Only target emulator processes
+        if "qemu-system" not in comm and "emulator" not in comm.lower():
+            continue
+
+        try:
+            pid = int(pid_str)
+            cpu_pct = float(cpu_str)
+            age_seconds = _parse_etime_seconds(etime_str)
+        except ValueError:
+            continue
+
+        if pid == os.getpid():
+            continue
+
+        reason = None
+        if cpu_pct >= RUNAWAY_CPU_CRITICAL:
+            reason = f"cpu={cpu_pct:.0f}% >= critical {RUNAWAY_CPU_CRITICAL}%"
+        elif cpu_pct >= RUNAWAY_CPU_THRESHOLD and age_seconds >= RUNAWAY_GRACE_SECONDS:
+            reason = f"cpu={cpu_pct:.0f}% >= {RUNAWAY_CPU_THRESHOLD}% for {age_seconds}s"
+
+        if not reason:
+            continue
+
+        log(f"runaway: killing {pid} ({comm}): {reason}")
+        # SIGTERM first, then SIGKILL if still alive after 1s
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+        time.sleep(1)
+        try:
+            os.kill(pid, 0)
+            # Still alive — escalate to SIGKILL
+            os.kill(pid, signal.SIGKILL)
+            killed.append(f"{pid}:{comm} ({reason}, SIGKILL)")
+        except ProcessLookupError:
+            killed.append(f"{pid}:{comm} ({reason}, SIGTERM)")
+
+    return killed
 
 
 def _reap_orphan_ui_processes(max_age_seconds: int = UI_PROCESS_MAX_AGE_SECONDS) -> list[str]:

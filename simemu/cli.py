@@ -211,12 +211,27 @@ def _autostart_server_if_needed() -> None:
 def cmd_claim(args):
     """Claim a device session."""
     visible = getattr(args, "visible", False)
+    platform = args.platform
+    real_device = getattr(args, "real", False)
+    device_selector = getattr(args, "device", None)
+
+    # Resolve device alias — if the platform or device selector is a known alias
+    # that maps to a real device, update the spec accordingly.
+    from .claim_policy import resolve_alias
+    resolved = resolve_alias(device_selector or platform)
+    if resolved.get("real_device"):
+        real_device = True
+        if resolved.get("device"):
+            device_selector = resolved["device"]
+        if resolved.get("platform"):
+            platform = resolved["platform"]
+
     spec = ClaimSpec(
-        platform=args.platform,
+        platform=platform,
         form_factor=getattr(args, "form_factor", None) or "phone",
         os_version=getattr(args, "version", None),
-        real_device=getattr(args, "real", False),
-        device_selector=getattr(args, "device", None),
+        real_device=real_device,
+        device_selector=device_selector,
         label=getattr(args, "label", None) or "",
         visible=visible,
     )
