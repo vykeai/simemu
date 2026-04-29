@@ -646,23 +646,30 @@ def _get_device_name(udid: str) -> str:
     raise RuntimeError(f"Simulator {udid} not found in simctl list")
 
 
-def _raise_sim_window(device_name: str) -> None:
+def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     """Activate Simulator and raise the target window for reliable text focus.
 
-    Buttons can often be clicked with the window merely raised, but SwiftUI
-    text fields frequently need Simulator to be the active app to receive first
-    responder status. We still keep the user's cursor hidden/restored around
-    the click itself, but we intentionally activate Simulator here so field
-    focus and paste work consistently.
+    Retries up to max_retries times with increasing delay if AXRaise fails
+    (e.g. window not yet created after boot, Simulator still launching).
     """
     import subprocess as _sp
-    _sp.run(["osascript", "-e", f'''tell application "System Events"
+    escaped = device_name.replace('"', '\\"')
+    for attempt in range(max_retries + 1):
+        result = _sp.run(
+            ["osascript", "-e", f'''tell application "System Events"
     tell application "Simulator" to activate
-    delay 0.1
+    delay {0.15 + attempt * 0.1}
     tell process "Simulator"
-        perform action "AXRaise" of (first window whose name contains "{device_name}")
+        perform action "AXRaise" of (first window whose name contains "{escaped}")
     end tell
-end tell'''], capture_output=True, check=False)
+end tell'''],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return
+        if attempt < max_retries:
+            time.sleep(0.3)
+    # Best-effort — don't raise if focus failed, just log
 
 
 def _frontmost_app_name() -> Optional[str]:
@@ -684,13 +691,18 @@ end tell''',
     return name or None
 
 
-def _activate_app(app_name: str) -> None:
+def _activate_app(app_name: str, retries: int = 2) -> None:
+    """Activate an app by name, retrying if System Events is slow."""
     escaped = app_name.replace('"', '\\"')
-    subprocess.run(
-        ["osascript", "-e", f'tell application "{escaped}" to activate'],
-        capture_output=True,
-        check=False,
-    )
+    for attempt in range(retries + 1):
+        result = subprocess.run(
+            ["osascript", "-e", f'tell application "{escaped}" to activate'],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return
+        if attempt < retries:
+            time.sleep(0.2)
 
 
 def _notify_shared_desktop_wait() -> None:
@@ -851,6 +863,11 @@ def _restore_frontmost_app():
     finally:
         if previous and previous != "Simulator":
             _activate_app(previous)
+            # Verify restoration — retry once if the wrong app ended up frontmost
+            time.sleep(0.15)
+            current = _frontmost_app_name()
+            if current and current != previous:
+                _activate_app(previous)
 
 
 @contextmanager
@@ -859,9 +876,9 @@ def _with_brief_focus(udid: str, action: str = "", session_id: str = ""):
 
     1. Requests a scouty desktop lease (if scouty is available)
     2. Records frontmost app
-    3. Raises simulator window
+    3. Raises simulator window (with retry)
     4. Yields for the interaction
-    5. Restores the previously frontmost app
+    5. Restores the previously frontmost app (with verification)
     6. Releases the desktop lease
     7. Emits structured diagnostics on failure
 
@@ -871,7 +888,6 @@ def _with_brief_focus(udid: str, action: str = "", session_id: str = ""):
 
     previous_app = _frontmost_app_name()
     device_name = _get_device_name(udid)
-    restored = False
 
     with DesktopLease(
         action=action,
@@ -895,21 +911,12 @@ def _with_brief_focus(udid: str, action: str = "", session_id: str = ""):
             raise
         finally:
             if previous_app and previous_app != "Simulator":
-                try:
+                _activate_app(previous_app)
+                # Verify restoration succeeded
+                time.sleep(0.15)
+                current = _frontmost_app_name()
+                if current and current != previous_app:
                     _activate_app(previous_app)
-                    restored = True
-                except Exception:
-                    pass
-                if not restored:
-                    print(
-                        json.dumps({
-                            "diagnostic": "focus_restore_failed",
-                            "previous_app": previous_app,
-                            "device": device_name,
-                        }),
-                        file=sys.stderr,
-                        flush=True,
-                    )
 
 
 def _open_sim_window(udid: str) -> None:
