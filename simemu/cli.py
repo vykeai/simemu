@@ -1349,6 +1349,7 @@ def _maestro_hud(flow_name: str):
 def cmd_maestro(args):
     """Run a Maestro flow against a reserved simulator, with the correct --device flag resolved automatically."""
     import subprocess as _sp
+    maestro_timeout = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "1800"))
     alloc = state.require(args.slug)
     state.touch(args.slug)
 
@@ -1366,7 +1367,11 @@ def cmd_maestro(args):
     cmd = ["maestro", "--device", device_id, "test"] + args.flow + args.extra
     print(f"Running: {' '.join(cmd)}", flush=True)
     with _maestro_hud(flow_display):
-        result = _sp.run(cmd)
+        try:
+            result = _sp.run(cmd, timeout=maestro_timeout)
+        except _sp.TimeoutExpired:
+            print(f"Maestro timed out after {maestro_timeout} seconds and was terminated.", file=sys.stderr)
+            raise SystemExit(124)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
 

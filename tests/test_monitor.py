@@ -97,6 +97,108 @@ class TestMonitor(unittest.TestCase):
         # Should not crash even if adb fails
         monitor.run()
 
+    def test_parse_etime_seconds(self) -> None:
+        self.assertEqual(monitor._parse_etime_seconds("04:05"), 245)
+        self.assertEqual(monitor._parse_etime_seconds("01:02:03"), 3723)
+        self.assertEqual(monitor._parse_etime_seconds("2-01:02:03"), 176523)
+
+    @patch("simemu.monitor.os.kill")
+    @patch("simemu.monitor._iter_process_rows")
+    @patch("simemu.session.get_active_sessions", return_value={})
+    def test_reaps_orphaned_maestro_processes(
+        self,
+        mock_sessions,
+        mock_rows,
+        mock_kill,
+    ) -> None:
+        mock_rows.return_value = [
+            (
+                123,
+                60,
+                "Python -m simemu.cli do s-e21a5b maestro apple/e2e/flow.yaml",
+            ),
+            (
+                124,
+                60,
+                "java maestro.cli.AppKt --device AAA test flow.yaml "
+                "--debug-output /Users/luke/.simemu/maestro-debug/s-e21a5b_20260428",
+            ),
+        ]
+
+        killed = monitor._reap_orphan_ui_processes()
+
+        self.assertEqual(killed, ["123:maestro:s-e21a5b", "124:maestro:s-e21a5b"])
+        mock_kill.assert_any_call(123, signal.SIGTERM)
+        mock_kill.assert_any_call(124, signal.SIGTERM)
+
+    @patch("simemu.monitor.os.kill")
+    @patch("simemu.monitor._iter_process_rows")
+    @patch("simemu.session.get_active_sessions")
+    def test_keeps_maestro_process_for_active_young_session(
+        self,
+        mock_sessions,
+        mock_rows,
+        mock_kill,
+    ) -> None:
+        mock_sessions.return_value = {"s-e21a5b": object()}
+        mock_rows.return_value = [
+            (
+                123,
+                60,
+                "Python -m simemu.cli do s-e21a5b maestro apple/e2e/flow.yaml",
+            )
+        ]
+
+        killed = monitor._reap_orphan_ui_processes(max_age_seconds=1800)
+
+        self.assertEqual(killed, [])
+        mock_kill.assert_not_called()
+
+    @patch("simemu.monitor.os.kill")
+    @patch("simemu.monitor._iter_process_rows")
+    @patch("simemu.session.get_active_sessions", return_value={})
+    def test_reaps_long_lived_screencaptureui(
+        self,
+        mock_sessions,
+        mock_rows,
+        mock_kill,
+    ) -> None:
+        mock_rows.return_value = [
+            (
+                93503,
+                3600,
+                "/System/Library/CoreServices/screencaptureui.app/Contents/MacOS/screencaptureui",
+            )
+        ]
+
+        killed = monitor._reap_orphan_ui_processes()
+
+        self.assertEqual(killed, ["93503:screencaptureui"])
+        mock_kill.assert_called_once_with(93503, signal.SIGTERM)
+
+    @patch("simemu.monitor.os.kill")
+    @patch("simemu.monitor._iter_process_rows")
+    @patch("simemu.session.get_active_sessions", return_value={})
+    def test_reaps_stale_system_events_osascript_loop(
+        self,
+        mock_sessions,
+        mock_rows,
+        mock_kill,
+    ) -> None:
+        mock_rows.return_value = [
+            (
+                78109,
+                120,
+                'zsh -c osascript -e "tell application \\"System Events\\" '
+                'to get name of (process where frontmost is true)"',
+            )
+        ]
+
+        killed = monitor._reap_orphan_ui_processes()
+
+        self.assertEqual(killed, ["78109:osascript-ui"])
+        mock_kill.assert_called_once_with(78109, signal.SIGTERM)
+
 
 if __name__ == "__main__":
     unittest.main()

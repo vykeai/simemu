@@ -32,6 +32,7 @@ from . import window as window_mgr
 IDLE_TIMEOUT = 20 * 60        # active → idle after 20min
 PARK_TIMEOUT = 40 * 60        # idle → parked after 40min more (60min total)
 EXPIRE_TIMEOUT = 2 * 60 * 60  # parked → expired after 2hr total idle
+MAESTRO_TIMEOUT_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "1800"))
 
 # Default memory budget in MB
 DEFAULT_MEMORY_BUDGET_MB = 16 * 1024  # 16GB
@@ -334,7 +335,7 @@ def _retry_android_maestro_bridge(
         flow_files=flow_files,
         extra_args=extra_args,
     )
-    retry_result = _sp.run(cmd, env=env)
+    retry_result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
     return retry_result.returncode == 0, retry_debug_output, _summarize_maestro_failure(
         session_id=session_id,
         platform="android",
@@ -1570,7 +1571,15 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             flow_files=flow_files,
             extra_args=extra_args,
         )
-        result = _sp.run(cmd, env=env)
+        try:
+            result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
+        except _sp.TimeoutExpired:
+            return {
+                "status": "failed",
+                "exit_code": 124,
+                "debug_output": debug_output,
+                "error": f"Maestro timed out after {MAESTRO_TIMEOUT_SECONDS} seconds and was terminated.",
+            }
         if result.returncode != 0:
             error = _summarize_maestro_failure(
                 session_id=session_id,

@@ -478,7 +478,7 @@ class TestDoMaestro(DoCommandBase):
                     device_name="Pixel 7", pinned_serial="emulator-5554")
         attempts = {"count": 0}
 
-        def _fake_run(cmd, env=None):
+        def _fake_run(cmd, env=None, **kwargs):
             debug_output = Path(cmd[cmd.index("--debug-output") + 1])
             debug_output.mkdir(parents=True, exist_ok=True)
             if attempts["count"] == 0:
@@ -503,6 +503,31 @@ class TestDoMaestro(DoCommandBase):
         self.assertEqual(mock_run.call_count, 2)
         mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
+    @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
+    @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_times_out_instead_of_leaking_ui_runner(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_wait,
+    ) -> None:
+        import subprocess
+
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["maestro"], timeout=1800)
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- assertVisible: Vault\n")
+
+        result = do_command("s-test01", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_code"], 124)
+        self.assertIn("timed out", result["error"])
 
 
 # ── url ──────────────────────────────────────────────────────────────────────
