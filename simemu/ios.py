@@ -352,7 +352,7 @@ def _click_open_app_alert_button(udid: str) -> bool:
 
 def _click_alert_button(udid: str, labels: list[str]) -> bool:
     """Best-effort accessibility click for a visible iOS Simulator alert button."""
-    device_name = _get_device_name(udid).replace('"', '\\"')
+    device_name = _escape_applescript(_get_device_name(udid))
     label_literals = ", ".join(f'"{label}"' for label in labels)
     script = f'''
 tell application "Simulator" to activate
@@ -646,6 +646,11 @@ def _get_device_name(udid: str) -> str:
     raise RuntimeError(f"Simulator {udid} not found in simctl list")
 
 
+def _escape_applescript(s: str) -> str:
+    """Escape a string for safe interpolation into AppleScript string literals."""
+    return s.replace('\\', '\\\\').replace('"', '\\"')
+
+
 def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     """Activate Simulator and raise the target window for reliable text focus.
 
@@ -653,7 +658,7 @@ def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     (e.g. window not yet created after boot, Simulator still launching).
     """
     import subprocess as _sp
-    escaped = device_name.replace('"', '\\"')
+    escaped = _escape_applescript(device_name)
     for attempt in range(max_retries + 1):
         result = _sp.run(
             ["osascript", "-e", f'''tell application "System Events"
@@ -693,7 +698,7 @@ end tell''',
 
 def _activate_app(app_name: str, retries: int = 2) -> None:
     """Activate an app by name, retrying if System Events is slow."""
-    escaped = app_name.replace('"', '\\"')
+    escaped = _escape_applescript(app_name)
     for attempt in range(retries + 1):
         result = subprocess.run(
             ["osascript", "-e", f'tell application "{escaped}" to activate'],
