@@ -205,6 +205,29 @@ class TestDoTap(DoCommandBase):
             do_command("s-test01", "tap", ["100"])
 
 
+class TestDoSoftwareKeyboard(DoCommandBase):
+    @patch("simemu.session.ios.software_keyboard")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_software_keyboard_ios_defaults_to_toggle(self, mock_serial, mock_keyboard) -> None:
+        result = do_command("s-test01", "software-keyboard", [])
+        mock_keyboard.assert_called_once_with("AAA-111", "toggle")
+        self.assertEqual(result["status"], "toggled")
+        self.assertEqual(result["target"], "software-keyboard")
+
+    @patch("simemu.session.ios.software_keyboard")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_software_keyboard_ios_passes_action(self, mock_serial, mock_keyboard) -> None:
+        result = do_command("s-test01", "software-keyboard", ["toggle"])
+        mock_keyboard.assert_called_once_with("AAA-111", "toggle")
+        self.assertEqual(result["status"], "toggled")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_software_keyboard_rejects_android(self, mock_serial) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        with self.assertRaisesRegex(RuntimeError, "iOS Simulator only"):
+            do_command("s-droid1", "software-keyboard", [])
+
+
 # ── swipe ────────────────────────────────────────────────────────────────────
 
 

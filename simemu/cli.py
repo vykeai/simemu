@@ -2059,7 +2059,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Command: build, install, launch, tap, swipe, screenshot, maestro, "
                            "url, done, renew, env, terminate, uninstall, input, long-press, "
                            "key, appearance, rotate, location, push, pull, add-media, "
-                           "shake, status-bar")
+                           "shake, status-bar, software-keyboard")
     do_p.add_argument("extra", nargs=argparse.REMAINDER,
                       help="Arguments for the command")
     do_p.set_defaults(func=cmd_do)

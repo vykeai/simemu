@@ -1435,6 +1435,7 @@ def _logical_to_screen(
 
 # macOS virtual key codes used by Simulator.app shortcuts
 _VK_H = 4    # h
+_VK_K = 40   # k
 _VK_L = 37   # l
 _VK_S = 1    # s
 _VK_RETURN = 36
@@ -1822,6 +1823,22 @@ def key(udid: str, key_name: str) -> None:
     vk, modifiers, _ = _IOS_KEYS[k]
     with _with_brief_focus(udid, action="key"):
         _post_key(vk, modifiers)
+
+
+def software_keyboard(udid: str, action: str = "toggle") -> None:
+    """Control the iOS Simulator software keyboard.
+
+    Simulator exposes software-keyboard visibility through its Cmd+K shortcut.
+    Apple does not expose a simctl API for this state, so simemu owns the
+    shortcut behind a named command rather than forcing projects to call
+    osascript or Simulator menu automation directly.
+    """
+    _ensure_booted(udid)
+    normalized = action.lower()
+    if normalized != "toggle":
+        raise RuntimeError("Unsupported software-keyboard action. Supported: toggle")
+    with _with_brief_focus(udid, action="software-keyboard"):
+        _post_key(_VK_K, ("command down",))
 
 
 def status_bar(udid: str, time_str: Optional[str] = None, battery: Optional[int] = None,

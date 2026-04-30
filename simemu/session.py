@@ -1037,6 +1037,7 @@ _COMMAND_HELP: dict[str, str] = {
     "back":             "Go back (edge swipe iOS, back button Android)",
     "home":             "Go to home screen",
     "key":              "Press a hardware key (home, lock, volume, etc.)",
+    "software-keyboard": "Toggle iOS Simulator software keyboard visibility",
     "input":            "Type text into focused field",
     "type-submit":      "Type text and press Enter",
     "shake":            "Shake gesture (opens React Native dev menu)",
@@ -1780,6 +1781,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         else:
             android.key(sim_id, key_name, **android_kwargs)
         return {"status": "key_pressed", "key": key_name}
+
+    elif command == "software-keyboard":
+        action = args[0] if args else "toggle"
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("software-keyboard is iOS Simulator only")
+        ios.software_keyboard(sim_id, action)
+        return {"status": "toggled", "target": "software-keyboard"}
 
     elif command == "focus-move":
         if platform != "tvos":
@@ -2777,7 +2785,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             f"auto-dismiss, wait-for-render, deeplink-proof, reset-app, "
             f"foreground-app, is-running, network, keychain-reset, icloud-sync, "
             f"app-info, a11y-tree, a11y-tap, type-submit, scroll, back, home, "
-            f"notifications-clear, app-container, clone, siri, contacts-import, "
+            f"software-keyboard, notifications-clear, app-container, clone, siri, contacts-import, "
             f"pair, font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
         )
 

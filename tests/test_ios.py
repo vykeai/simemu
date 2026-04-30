@@ -181,6 +181,24 @@ class IOSControlTests(unittest.TestCase):
         result = ios.activate_app("SIM-001", "app.fitkind.dev")
         self.assertFalse(result)
 
+    @patch("simemu.ios._post_key")
+    @patch("simemu.ios._with_brief_focus")
+    @patch("simemu.ios._ensure_booted")
+    def test_software_keyboard_toggle_uses_simulator_shortcut(self, mock_booted, mock_focus, mock_post_key) -> None:
+        mock_focus.return_value.__enter__.return_value = None
+        mock_focus.return_value.__exit__.return_value = None
+
+        ios.software_keyboard("SIM-001", "toggle")
+
+        mock_booted.assert_called_once_with("SIM-001")
+        mock_focus.assert_called_once_with("SIM-001", action="software-keyboard")
+        mock_post_key.assert_called_once_with(40, ("command down",))
+
+    @patch("simemu.ios._ensure_booted")
+    def test_software_keyboard_rejects_unknown_action(self, mock_booted) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Supported: toggle"):
+            ios.software_keyboard("SIM-001", "show")
+
     @patch("simemu.ios.is_app_running", return_value=False)
     @patch("simemu.ios._ensure_booted")
     def test_activate_app_returns_false_when_not_running(self, mock_booted, mock_running) -> None:
