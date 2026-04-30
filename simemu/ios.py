@@ -169,6 +169,26 @@ def launch(udid: str, bundle_id: str, args: list[str] | None = None) -> None:
     _wait_for_app_running(udid, bundle_id)
 
 
+def activate_app(udid: str, bundle_id: str) -> bool:
+    """Bring an already-running app to the foreground without terminating it.
+
+    Uses ``simctl launch`` *without* ``--terminate-running-process`` so iOS
+    re-activates the existing process instead of cold-starting a new one.
+
+    Returns True if the app was running (and was sent an activate signal),
+    False if the app wasn't running at all (caller should use ``launch()``).
+    """
+    _ensure_booted(udid)
+    if not is_app_running(udid, bundle_id):
+        return False
+    result = subprocess.run(
+        ["xcrun", "simctl", "launch", udid, bundle_id],
+        capture_output=True, text=True, check=False,
+    )
+    # simctl launch on an already-running app returns PID in stdout on success
+    return result.returncode == 0
+
+
 def terminate(udid: str, bundle_id: str) -> None:
     _ensure_booted(udid)
     _simctl("terminate", udid, bundle_id, check=False)

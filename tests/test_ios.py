@@ -160,6 +160,33 @@ class IOSControlTests(unittest.TestCase):
         )
         mock_wait.assert_called_once_with("SIM-001", "app.fitkind.dev")
 
+    # T-LU-042: activate_app tests
+    @patch("simemu.ios.subprocess.run")
+    @patch("simemu.ios.is_app_running", return_value=True)
+    @patch("simemu.ios._ensure_booted")
+    def test_activate_app_foregrounds_running_app(self, mock_booted, mock_running, mock_run) -> None:
+        mock_run.return_value = Mock(returncode=0, stdout="app.fitkind.dev: 12345\n")
+        result = ios.activate_app("SIM-001", "app.fitkind.dev")
+        self.assertTrue(result)
+        mock_run.assert_called_once_with(
+            ["xcrun", "simctl", "launch", "SIM-001", "app.fitkind.dev"],
+            capture_output=True, text=True, check=False,
+        )
+
+    @patch("simemu.ios.subprocess.run")
+    @patch("simemu.ios.is_app_running", return_value=True)
+    @patch("simemu.ios._ensure_booted")
+    def test_activate_app_returns_false_on_launch_failure(self, mock_booted, mock_running, mock_run) -> None:
+        mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
+        result = ios.activate_app("SIM-001", "app.fitkind.dev")
+        self.assertFalse(result)
+
+    @patch("simemu.ios.is_app_running", return_value=False)
+    @patch("simemu.ios._ensure_booted")
+    def test_activate_app_returns_false_when_not_running(self, mock_booted, mock_running) -> None:
+        result = ios.activate_app("SIM-001", "app.fitkind.dev")
+        self.assertFalse(result)
+
     @patch("simemu.ios.is_app_running")
     def test_wait_for_app_running_raises_when_bundle_never_appears(self, mock_running) -> None:
         mock_running.return_value = False

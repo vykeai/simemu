@@ -1519,6 +1519,24 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             out_dir.mkdir(parents=True, exist_ok=True)
             output = str(out_dir / f"{session_id}_{ts}.{fmt}")
 
+        # T-LU-042: Activate the session's target app before screenshotting so we
+        # don't capture SpringBoard when the app was backgrounded.
+        _screenshot_target_app = None
+        with _locked_sessions() as (data, _save):
+            _screenshot_target_app = (
+                data["sessions"].get(session_id, {}).get("last_app")
+            )
+
+        if _screenshot_target_app and not is_real:
+            if platform in ("ios", "watchos", "visionos"):
+                ios.activate_app(sim_id, _screenshot_target_app)
+            elif platform == "android":
+                _pkg = _screenshot_target_app.split("/", 1)[0]
+                try:
+                    android.launch(sim_id, _pkg, [], **android_kwargs)
+                except Exception:
+                    pass
+
         if is_real and platform == "ios":
             device.ios_screenshot(sim_id, output, max_size=max_size)
         elif platform == "tvos":
@@ -2885,7 +2903,21 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
         else:
             actual_fg = android.foreground_app(sim_id, **android_kwargs)
         if actual_fg and actual_fg != expected_app:
-            errors.append(f"foreground_mismatch: expected={expected_app} actual={actual_fg}")
+            # T-LU-042: Try to activate the expected app before flagging as error
+            if platform in ("ios", "watchos", "visionos"):
+                if ios.activate_app(sim_id, expected_app):
+                    steps.append(f"reactivated:{expected_app}")
+                    actual_fg = expected_app
+            elif platform == "android":
+                _epkg = expected_app.split("/", 1)[0]
+                try:
+                    android.launch(sim_id, _epkg, [], **android_kwargs)
+                    steps.append(f"reactivated:{_epkg}")
+                    actual_fg = _epkg
+                except Exception:
+                    pass
+            if actual_fg and actual_fg != expected_app:
+                errors.append(f"foreground_mismatch: expected={expected_app} actual={actual_fg}")
 
     # ── Step 8: Fail if critical errors ─────────────────────────────────
     critical = [e for e in errors if "foreground_mismatch" in e or "url_handoff" in e]

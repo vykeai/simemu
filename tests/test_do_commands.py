@@ -275,6 +275,43 @@ class TestDoScreenshot(DoCommandBase):
             pinned_serial="emulator-5554",
         )
 
+    # T-LU-042: screenshot activates last_app before capturing
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.activate_app", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_activates_last_app_ios(self, mock_serial, mock_activate, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-test01", "screenshot", ["-o", "/tmp/test.png"])
+        mock_activate.assert_called_once_with("AAA-111", "app.fitkind.dev")
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_activates_last_app_android(self, mock_serial, mock_launch, mock_ss) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "screenshot", ["-o", "/tmp/test.png"])
+        mock_launch.assert_called_once_with("Pixel_7", "com.fitkind.dev", [])
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.activate_app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_skips_activation_without_last_app(self, mock_serial, mock_activate, mock_ss) -> None:
+        result = do_command("s-test01", "screenshot", ["-o", "/tmp/test.png"])
+        mock_activate.assert_not_called()
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
 
 # ── maestro ──────────────────────────────────────────────────────────────────
 
@@ -1446,11 +1483,12 @@ class TestDoProof(DoCommandBase):
 
     @patch("simemu.session.ios.screenshot")
     @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.activate_app", return_value=False)
     @patch("simemu.session.ios.foreground_app", return_value="com.wrong.app")
     @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_proof_fails_on_foreground_mismatch(self, mock_serial, mock_alert,
-                                                 mock_fg, mock_status, mock_ss) -> None:
+                                                 mock_fg, mock_activate, mock_status, mock_ss) -> None:
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())
         data["sessions"]["s-test01"]["last_app"] = "com.expected.app"
