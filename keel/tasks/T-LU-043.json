@@ -1,42 +1,46 @@
 {
-    "id": "T-LU-043",
-    "title": "Fix iOS deep-link confirmation sheet \u2014 sticky sheet does not dismiss cleanly after acceptance",
-    "description": "",
-    "product": null,
-    "lane": null,
-    "wave": "wave-12",
-    "space": null,
-    "status": "todo",
-    "priority": "high",
-    "platform": "ios",
-    "assignee": null,
-    "dependsOn": [],
-    "spec": null,
-    "parentId": null,
-    "dueDate": null,
-    "context": [],
-    "acceptanceCriteria": [
-        "Deep-link confirmation sheet dismisses within 2 seconds of acceptance",
-        "Does NOT require manual dismissal",
-        "Works for both universal links and URL scheme deep links",
-        "Does NOT break normal app launch (no confirmation sheet)"
-    ],
-    "cloudy_run": null,
-    "statusHistory": [
-        {
-            "status": "todo",
-            "ts": "2026-04-30T08:14:39.213Z"
-        }
-    ],
-    "attachments": [],
-    "stage": null,
-    "runStatus": null,
-    "stageHistory": [],
-    "recurring": null,
-    "createdAt": "2026-04-30T08:14:39.212Z",
-    "updatedAt": "2026-04-30T08:14:39.212Z",
-    "validationOverrides": null,
-    "executionMode": null,
-    "cloudyTaskGraph": null,
-    "cloudy": null
+  "id": "T-LU-043",
+  "title": "Fix iOS deep-link confirmation sheet — sticky sheet does not dismiss cleanly after acceptance",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-12",
+  "space": null,
+  "status": "active",
+  "priority": "high",
+  "platform": "ios",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [
+    "Deep-link confirmation sheet dismisses within 2 seconds of acceptance",
+    "Does NOT require manual dismissal",
+    "Works for both universal links and URL scheme deep links",
+    "Does NOT break normal app launch (no confirmation sheet)"
+  ],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-04-30T08:14:39.213Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-04-30T18:14:27.436Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-04-30T08:14:39.212Z",
+  "updatedAt": "2026-04-30T18:14:27.436Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
 }
