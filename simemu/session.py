@@ -1663,10 +1663,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     # Diagnose: what IS in the foreground?
                     actual_fg = ios.foreground_app(sim_id)
                     app_running = ios.is_app_running(sim_id, expected_bundle)
-                    if app_running and actual_fg != expected_bundle:
-                        # App launched but sheet on top — try one more aggressive dismiss
-                        ios.accept_open_app_alert(sim_id, attempts=6, delay=0.3)
-                        handoff_ok = ios.wait_for_foreground_app(sim_id, expected_bundle, timeout=3.0)
+                    if app_running:
+                        # T-LU-043: Force-activate the app to dismiss sticky sheet
+                        ios.activate_app(sim_id, expected_bundle)
+                        import time as _time
+                        _time.sleep(0.5)
+                        ios.accept_open_app_alert(sim_id, attempts=3, delay=0.3)
+                        handoff_ok = ios.is_app_running(sim_id, expected_bundle)
                     if not handoff_ok:
                         diag = {
                             "expected": expected_bundle,

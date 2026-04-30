@@ -354,7 +354,7 @@ def complete_open_url_handoff(
 ) -> bool:
     """After openurl, clear the confirmation prompt and wait for app foreground."""
     _ensure_booted(udid)
-    for _ in range(attempts):
+    for i in range(attempts):
         # The target app can already be foregrounded while the system handoff
         # confirmation sheet still sits on top. Give iOS a brief chance to
         # surface the destination app, then actively clear the prompt.
@@ -362,12 +362,21 @@ def complete_open_url_handoff(
         accept_open_app_alert(udid, attempts=1, delay=accept_delay)
         if wait_for_foreground_app(udid, bundle_id, timeout=foreground_timeout, delay=0.2):
             return True
-    return foreground_app(udid) == bundle_id
+    # Final fallback: force-activate the app to dismiss any stuck confirmation sheet.
+    # simctl launch on a running app foregrounds it and clears the sheet overlay.
+    if is_app_running(udid, bundle_id):
+        activate_app(udid, bundle_id)
+        time.sleep(0.5)
+    return is_app_running(udid, bundle_id)
 
 
 def _click_open_app_alert_button(udid: str) -> bool:
     """Fallback for sticky iOS deeplink confirmation sheets inside Simulator."""
-    return _click_alert_button(udid, ["Open", "Continue", "Allow", "OK"])
+    if _click_alert_button(udid, ["Open", "Continue", "Allow", "OK"]):
+        return True
+    # iOS 26+ presents the confirmation as a sheet, not a standard alert.
+    # Try clicking via the AX sheet structure (group > button pattern).
+    return _click_sheet_button(udid, ["Open", "Continue", "Allow", "OK"])
 
 
 def _click_alert_button(udid: str, labels: list[str]) -> bool:
@@ -396,6 +405,56 @@ tell application "System Events"
                         if role of e is "AXButton" and name of e is wantedLabel then
                             perform action "AXPress" of e
                             return "clicked"
+                        end if
+                    end try
+                end repeat
+            end try
+        end repeat
+    end tell
+end tell
+return ""
+'''
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "clicked"
+
+
+def _click_sheet_button(udid: str, labels: list[str]) -> bool:
+    """Click a button in an iOS 26+ confirmation sheet (not a standard alert).
+
+    iOS 26 presents URL-confirmation sheets as AXSheet with nested groups.
+    This walks all elements looking for AXButton matching the given labels.
+    """
+    device_name = _escape_applescript(_get_device_name(udid))
+    label_literals = ", ".join(f'"{label}"' for label in labels)
+    script = f'''
+tell application "Simulator" to activate
+tell application "System Events"
+    tell process "Simulator"
+        try
+            set targetWindow to first window whose name contains "{device_name}"
+        on error
+            return ""
+        end try
+        set wantedLabels to {{{label_literals}}}
+        set allElems to entire contents of targetWindow
+        repeat with e in allElems
+            try
+                set subElems to entire contents of e
+                repeat with sub in subElems
+                    try
+                        if role of sub is "AXButton" then
+                            set btnName to name of sub
+                            repeat with wantedLabel in wantedLabels
+                                if btnName is wantedLabel then
+                                    perform action "AXPress" of sub
+                                    return "clicked"
+                                end if
+                            end repeat
                         end if
                     end try
                 end repeat

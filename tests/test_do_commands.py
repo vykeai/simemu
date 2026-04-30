@@ -651,13 +651,14 @@ class TestDoUrl(DoCommandBase):
 
     @patch("simemu.session.ios.open_url")
     @patch("simemu.session.ios.complete_open_url_handoff", return_value=False)
+    @patch("simemu.session.ios.activate_app", return_value=False)
     @patch("simemu.session.ios.foreground_app", return_value=None)
-    @patch("simemu.session.ios.is_app_running", return_value=True)
+    @patch("simemu.session.ios.is_app_running", side_effect=[True, False])
     @patch("simemu.session.ios.accept_open_app_alert", return_value=False)
     @patch("simemu.session.ios.wait_for_foreground_app", return_value=False)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_url_ios_raises_stuck_behind_sheet_diagnostic(
-        self, mock_serial, mock_wait, mock_accept, mock_running, mock_fg, mock_complete, mock_url
+        self, mock_serial, mock_wait, mock_accept, mock_running, mock_fg, mock_activate, mock_complete, mock_url
     ) -> None:
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())

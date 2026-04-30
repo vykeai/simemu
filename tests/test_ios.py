@@ -233,6 +233,31 @@ class IOSControlTests(unittest.TestCase):
         self.assertTrue(completed)
         mock_accept.assert_called_once_with("SIM-001", attempts=1, delay=0.01)
 
+    # T-LU-043: complete_open_url_handoff uses activate_app as final fallback
+    @patch("simemu.ios._ensure_booted")
+    @patch("simemu.ios.is_app_running", return_value=True)
+    @patch("simemu.ios.activate_app", return_value=True)
+    @patch("simemu.ios.accept_open_app_alert", return_value=False)
+    @patch("simemu.ios.wait_for_foreground_app", return_value=False)
+    def test_complete_open_url_handoff_falls_back_to_activate(
+        self, mock_wait, mock_accept, mock_activate, mock_running, mock_booted
+    ) -> None:
+        with patch("simemu.ios.time.sleep"):
+            completed = ios.complete_open_url_handoff(
+                "SIM-001", "app.fitkind.dev", attempts=1,
+                accept_delay=0.01, foreground_timeout=0.01,
+            )
+        self.assertTrue(completed)
+        mock_activate.assert_called_once_with("SIM-001", "app.fitkind.dev")
+
+    # T-LU-043: _click_open_app_alert_button tries sheet fallback
+    @patch("simemu.ios._click_alert_button", return_value=False)
+    @patch("simemu.ios._click_sheet_button", return_value=True)
+    def test_click_open_app_alert_uses_sheet_fallback(self, mock_sheet, mock_alert) -> None:
+        result = ios._click_open_app_alert_button("SIM-001")
+        self.assertTrue(result)
+        mock_sheet.assert_called_once()
+
 
 class BriefFocusTests(unittest.TestCase):
     """Tests for _with_brief_focus — shared-desktop focus acquisition/restoration."""
