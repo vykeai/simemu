@@ -1499,6 +1499,23 @@ class TestDoProof(DoCommandBase):
 
     @patch("simemu.session.ios.screenshot")
     @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.activate_app", return_value=True)
+    @patch("simemu.session.ios.foreground_app", return_value="com.wrong.app")
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_reactivates_and_succeeds_on_mismatch(self, mock_serial, mock_alert,
+                                                         mock_fg, mock_activate, mock_status, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.expected.app"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        self.assertEqual(result["status"], "proved")
+        mock_activate.assert_called_once_with("AAA-111", "com.expected.app")
+        self.assertIn("reactivated:com.expected.app", result["steps"])
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
     @patch("simemu.session.ios.set_appearance")
     @patch("simemu.session.ios.foreground_app", return_value=None)
     @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
