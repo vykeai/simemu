@@ -1,43 +1,47 @@
 {
-    "id": "T-LU-042",
-    "title": "Fix iOS foregrounding \u2014 foreground-app reports wrong bundle ID, screenshots land on SpringBoard instead of target app",
-    "description": "",
-    "product": null,
-    "lane": null,
-    "wave": "wave-12",
-    "space": null,
-    "status": "todo",
-    "priority": "critical",
-    "platform": "ios",
-    "assignee": null,
-    "dependsOn": [],
-    "spec": null,
-    "parentId": null,
-    "dueDate": null,
-    "context": [],
-    "acceptanceCriteria": [
-        "simemu do s-xxx screenshot always captures the target app, not SpringBoard",
-        "foreground-app returns the correct bundle ID for the session app",
-        "Retry logic: if first attempt lands on SpringBoard, retries with explicit app activation",
-        "Tested with at least 3 different iOS apps (FitKind, Sitches, Vivii)",
-        "Does NOT regress boot/booted state detection"
-    ],
-    "cloudy_run": null,
-    "statusHistory": [
-        {
-            "status": "todo",
-            "ts": "2026-04-30T08:14:38.994Z"
-        }
-    ],
-    "attachments": [],
-    "stage": null,
-    "runStatus": null,
-    "stageHistory": [],
-    "recurring": null,
-    "createdAt": "2026-04-30T08:14:38.994Z",
-    "updatedAt": "2026-04-30T08:14:38.994Z",
-    "validationOverrides": null,
-    "executionMode": null,
-    "cloudyTaskGraph": null,
-    "cloudy": null
+  "id": "T-LU-042",
+  "title": "Fix iOS foregrounding — foreground-app reports wrong bundle ID, screenshots land on SpringBoard instead of target app",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-12",
+  "space": null,
+  "status": "active",
+  "priority": "critical",
+  "platform": "ios",
+  "assignee": "claude",
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [
+    "simemu do s-xxx screenshot always captures the target app, not SpringBoard",
+    "foreground-app returns the correct bundle ID for the session app",
+    "Retry logic: if first attempt lands on SpringBoard, retries with explicit app activation",
+    "Tested with at least 3 different iOS apps (FitKind, Sitches, Vivii)",
+    "Does NOT regress boot/booted state detection"
+  ],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-04-30T08:14:38.994Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-04-30T17:45:04.565Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-04-30T08:14:38.994Z",
+  "updatedAt": "2026-04-30T17:45:04.564Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
 }
