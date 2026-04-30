@@ -6,7 +6,7 @@
   "lane": null,
   "wave": "wave-12",
   "space": null,
-  "status": "active",
+  "status": "done",
   "priority": "critical",
   "platform": "android",
   "assignee": null,
@@ -30,6 +30,10 @@
     {
       "status": "active",
       "ts": "2026-04-30T18:25:56.346Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-04-30T18:26:59.417Z"
     }
   ],
   "attachments": [],
@@ -38,7 +42,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-04-30T08:14:39.463Z",
-  "updatedAt": "2026-04-30T18:25:56.346Z",
+  "updatedAt": "2026-04-30T18:26:59.417Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
