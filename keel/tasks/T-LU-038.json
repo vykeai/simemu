@@ -1,37 +1,42 @@
 {
-  "id": "T-LU-038",
-  "title": "Fed version notifications — tools check for updates and emit events",
-  "description": "",
-  "product": null,
-  "lane": "infra",
-  "wave": "wave-22",
-  "space": null,
-  "status": "todo",
-  "priority": "high",
-  "platform": "api",
-  "assignee": null,
-  "dependsOn": [],
-  "spec": null,
-  "parentId": null,
-  "dueDate": null,
-  "context": [],
-  "acceptanceCriteria": [],
-  "cloudy_run": null,
-  "statusHistory": [
-    {
-      "status": "todo",
-      "ts": "2026-04-30T08:13:47.425Z"
-    }
-  ],
-  "attachments": [],
-  "stage": null,
-  "runStatus": null,
-  "stageHistory": [],
-  "recurring": null,
-  "createdAt": "2026-04-30T08:13:47.425Z",
-  "updatedAt": "2026-04-30T08:13:47.425Z",
-  "validationOverrides": null,
-  "executionMode": null,
-  "cloudyTaskGraph": null,
-  "cloudy": null
+    "id": "T-LU-038",
+    "title": "Fed version notifications \u2014 tools check for updates and emit events",
+    "description": "",
+    "product": null,
+    "lane": "infra",
+    "wave": "wave-22",
+    "space": null,
+    "status": "todo",
+    "priority": "high",
+    "platform": "api",
+    "assignee": null,
+    "dependsOn": [],
+    "spec": null,
+    "parentId": null,
+    "dueDate": null,
+    "context": [],
+    "acceptanceCriteria": [
+        "Each tool checks fed for version updates on startup",
+        "Version mismatch emits a notification event to menubar",
+        "CLI keel status shows version freshness for all tools",
+        "Does NOT block tool startup if fed is unreachable"
+    ],
+    "cloudy_run": null,
+    "statusHistory": [
+        {
+            "status": "todo",
+            "ts": "2026-04-30T08:13:47.425Z"
+        }
+    ],
+    "attachments": [],
+    "stage": null,
+    "runStatus": null,
+    "stageHistory": [],
+    "recurring": null,
+    "createdAt": "2026-04-30T08:13:47.425Z",
+    "updatedAt": "2026-04-30T08:13:47.425Z",
+    "validationOverrides": null,
+    "executionMode": null,
+    "cloudyTaskGraph": null,
+    "cloudy": null
 }

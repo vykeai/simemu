@@ -1,37 +1,43 @@
 {
-  "id": "T-LU-041",
-  "title": "Extract shared menubar app framework from embee/sweech/simemu into onlystack starter templates",
-  "description": "",
-  "product": null,
-  "lane": null,
-  "wave": "wave-22",
-  "space": null,
-  "status": "todo",
-  "priority": "high",
-  "platform": "all",
-  "assignee": null,
-  "dependsOn": [],
-  "spec": null,
-  "parentId": null,
-  "dueDate": null,
-  "context": [],
-  "acceptanceCriteria": [],
-  "cloudy_run": null,
-  "statusHistory": [
-    {
-      "status": "todo",
-      "ts": "2026-04-30T08:13:48.041Z"
-    }
-  ],
-  "attachments": [],
-  "stage": null,
-  "runStatus": null,
-  "stageHistory": [],
-  "recurring": null,
-  "createdAt": "2026-04-30T08:13:48.041Z",
-  "updatedAt": "2026-04-30T08:13:48.041Z",
-  "validationOverrides": null,
-  "executionMode": null,
-  "cloudyTaskGraph": null,
-  "cloudy": null
+    "id": "T-LU-041",
+    "title": "Extract shared menubar app framework from embee/sweech/simemu into onlystack starter templates",
+    "description": "",
+    "product": null,
+    "lane": null,
+    "wave": "wave-22",
+    "space": null,
+    "status": "todo",
+    "priority": "high",
+    "platform": "all",
+    "assignee": null,
+    "dependsOn": [],
+    "spec": null,
+    "parentId": null,
+    "dueDate": null,
+    "context": [],
+    "acceptanceCriteria": [
+        "Shared Swift menubar app template in onlystack/",
+        "Template supports: status icon, dropdown menu, daemon process supervision",
+        "simemu, sweech, embee menubar apps refactored to use template",
+        "New tools can scaffold a menubar app with one command",
+        "Does NOT change existing menubar app behavior"
+    ],
+    "cloudy_run": null,
+    "statusHistory": [
+        {
+            "status": "todo",
+            "ts": "2026-04-30T08:13:48.041Z"
+        }
+    ],
+    "attachments": [],
+    "stage": null,
+    "runStatus": null,
+    "stageHistory": [],
+    "recurring": null,
+    "createdAt": "2026-04-30T08:13:48.041Z",
+    "updatedAt": "2026-04-30T08:13:48.041Z",
+    "validationOverrides": null,
+    "executionMode": null,
+    "cloudyTaskGraph": null,
+    "cloudy": null
 }

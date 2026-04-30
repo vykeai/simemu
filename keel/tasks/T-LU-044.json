@@ -1,37 +1,42 @@
 {
-  "id": "T-LU-044",
-  "title": "Fix Android session/app targeting — screenshots capture wrong app (lands on Vivii instead of FitKind)",
-  "description": "",
-  "product": null,
-  "lane": null,
-  "wave": "wave-12",
-  "space": null,
-  "status": "todo",
-  "priority": "critical",
-  "platform": "android",
-  "assignee": null,
-  "dependsOn": [],
-  "spec": null,
-  "parentId": null,
-  "dueDate": null,
-  "context": [],
-  "acceptanceCriteria": [],
-  "cloudy_run": null,
-  "statusHistory": [
-    {
-      "status": "todo",
-      "ts": "2026-04-30T08:14:39.463Z"
-    }
-  ],
-  "attachments": [],
-  "stage": null,
-  "runStatus": null,
-  "stageHistory": [],
-  "recurring": null,
-  "createdAt": "2026-04-30T08:14:39.463Z",
-  "updatedAt": "2026-04-30T08:14:39.463Z",
-  "validationOverrides": null,
-  "executionMode": null,
-  "cloudyTaskGraph": null,
-  "cloudy": null
+    "id": "T-LU-044",
+    "title": "Fix Android session/app targeting \u2014 screenshots capture wrong app (lands on Vivii instead of FitKind)",
+    "description": "",
+    "product": null,
+    "lane": null,
+    "wave": "wave-12",
+    "space": null,
+    "status": "todo",
+    "priority": "critical",
+    "platform": "android",
+    "assignee": null,
+    "dependsOn": [],
+    "spec": null,
+    "parentId": null,
+    "dueDate": null,
+    "context": [],
+    "acceptanceCriteria": [
+        "simemu do s-xxx screenshot captures the correct Android app",
+        "Works reliably across app switches and multi-window scenarios",
+        "adb am start targeting uses correct package from session metadata",
+        "Does NOT regress iOS screenshot behavior"
+    ],
+    "cloudy_run": null,
+    "statusHistory": [
+        {
+            "status": "todo",
+            "ts": "2026-04-30T08:14:39.463Z"
+        }
+    ],
+    "attachments": [],
+    "stage": null,
+    "runStatus": null,
+    "stageHistory": [],
+    "recurring": null,
+    "createdAt": "2026-04-30T08:14:39.463Z",
+    "updatedAt": "2026-04-30T08:14:39.463Z",
+    "validationOverrides": null,
+    "executionMode": null,
+    "cloudyTaskGraph": null,
+    "cloudy": null
 }

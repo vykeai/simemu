@@ -12,10 +12,15 @@
 | ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
 |----|-------|--------|----------|---------|------|----------|------------|
 | T-001 | Build wrapper: simemu do $SESSION build --variant | done | high | — | — | all | — |
-| T-034 | Shared-desktop reliability — brief focus acquisition, user app restoration after interactions | done | high | — | — | all | — |
 | T-035 | Permanent device reservations per product — sitches-ios, fitkind-ios slug-based allocation | done | medium | — | — | all | — |
 | T-036 | Integrate Scouty desktop lease API for multi-tool focus management | done | medium | — | — | all | T-033, T-034 |
 | T-037 | pip publish simemu package and install.sh improvements | done | medium | — | — | all | — |
+
+### Unassigned
+
+| ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
+|----|-------|--------|----------|---------|------|----------|------------|
+| T-034 | Shared-desktop reliability — brief focus acquisition, user app restoration after interactions | done | high | — | — | all | — |
 
 ## Wave 2: Proof Reliability
 
@@ -73,7 +78,7 @@
 
 | ID | Title | Status | Priority | Product | Lane | Platform | Depends On |
 |----|-------|--------|----------|---------|------|----------|------------|
-| T-LU-034 | Real iOS parity — stable identifiers, discovery, and screenshot path | active | high | — | — | all | — |
+| T-LU-034 | Real iOS parity — stable identifiers, discovery, and screenshot path | done | high | — | — | all | — |
 
 ## Wave 5: Zero Tolerance
 
