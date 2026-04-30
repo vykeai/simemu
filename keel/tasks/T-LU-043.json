@@ -6,7 +6,7 @@
   "lane": null,
   "wave": "wave-12",
   "space": null,
-  "status": "active",
+  "status": "done",
   "priority": "high",
   "platform": "ios",
   "assignee": null,
@@ -30,6 +30,10 @@
     {
       "status": "active",
       "ts": "2026-04-30T18:14:27.436Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-04-30T18:25:03.675Z"
     }
   ],
   "attachments": [],
@@ -38,7 +42,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-04-30T08:14:39.212Z",
-  "updatedAt": "2026-04-30T18:14:27.436Z",
+  "updatedAt": "2026-04-30T18:25:03.674Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
