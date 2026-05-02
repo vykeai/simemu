@@ -915,7 +915,7 @@ class TestScreenshotFallbacks(unittest.TestCase):
             tmp = output + ".windowtmp.png"
 
             def _run(cmd, **kwargs):
-                Path(tmp).write_bytes(b"x" * 512)
+                Path(tmp).write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * 512))
                 return MagicMock(returncode=0, stdout="", stderr="")
 
             mock_run.side_effect = _run
@@ -934,7 +934,7 @@ class TestScreenshotFallbacks(unittest.TestCase):
     ) -> None:
         def _run(cmd, **kwargs):
             output_dir = Path(cmd[-1])
-            (output_dir / "Screenshot_123.png").write_bytes(b"x" * 512)
+            (output_dir / "Screenshot_123.png").write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * 512))
             return MagicMock(returncode=0, stdout="OK\n", stderr="")
 
         mock_run.side_effect = _run

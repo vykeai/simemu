@@ -145,6 +145,8 @@ _FLOW_APP_ID_RE = re.compile(r"^\s*appId\s*:\s*['\"]?([^'\"#\s]+)")
 _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE = re.compile(
     r"Not able to reach the gRPC server while processing deviceInfo command"
     r"|Connection refused: localhost/(?:127\.0\.0\.1|\[[0-9a-fA-F:]+\]):7001"
+    r"|Http2Exception: First received frame was not SETTINGS"
+    r"|INTERNAL: http2 exception"
 )
 
 

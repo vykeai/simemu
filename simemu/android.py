@@ -121,6 +121,17 @@ def _finalize_capture(candidate_path: str, output_path: str) -> bool:
         size = candidate.stat().st_size
     except OSError:
         return False
+    png_signature = b"\x89PNG\r\n\x1a\n"
+    try:
+        data = candidate.read_bytes()
+        png_offset = data.find(png_signature)
+        if png_offset > 0:
+            candidate.write_bytes(data[png_offset:])
+            size = candidate.stat().st_size
+        elif png_offset < 0:
+            return False
+    except OSError:
+        return False
     if size <= 100 or _capture_is_black(str(candidate)):
         return False
     candidate.replace(output_path)
