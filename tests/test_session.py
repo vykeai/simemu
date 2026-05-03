@@ -38,6 +38,7 @@ from simemu.session import (
     IDLE_TIMEOUT,
     PARK_TIMEOUT,
     EXPIRE_TIMEOUT,
+    ANDROID_DISCONNECT_GRACE,
     DEFAULT_MEMORY_BUDGET_MB,
     _DEVICE_MEMORY_MB,
 )
@@ -237,7 +238,14 @@ class TestClaim(unittest.TestCase):
         mock_validate,
         mock_get_serial,
     ) -> None:
-        self._seed_session("s-stale", sim_id="Stale_API35", pinned_serial="emulator-5554")
+        stale_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=ANDROID_DISCONNECT_GRACE + 5)).isoformat()
+        self._seed_session(
+            "s-stale",
+            sim_id="Stale_API35",
+            pinned_serial="emulator-5554",
+            heartbeat_at=stale_heartbeat,
+            expires_at=_compute_expires_at("active", stale_heartbeat),
+        )
 
         active = get_active_sessions()
 
@@ -246,6 +254,23 @@ class TestClaim(unittest.TestCase):
         self.assertIsNotNone(persisted)
         self.assertEqual(persisted.status, "expired")
         self.assertIsNone(persisted.pinned_serial)
+
+    @patch("simemu.session.android.get_android_serial", return_value=None)
+    @patch("simemu.session.android.validate_serial", return_value=False)
+    def test_get_active_sessions_keeps_fresh_android_session_during_adb_gap(
+        self,
+        mock_validate,
+        mock_get_serial,
+    ) -> None:
+        self._seed_session("s-fresh", sim_id="Fresh_API35", pinned_serial="emulator-5554")
+
+        active = get_active_sessions()
+
+        self.assertIn("s-fresh", active)
+        persisted = get_session("s-fresh")
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.status, "active")
+        self.assertEqual(persisted.pinned_serial, "emulator-5554")
 
     @patch("simemu.session.android.shutdown")
     def test_park_session_logs_to_stderr(self, mock_shutdown) -> None:
@@ -472,7 +497,14 @@ class TestClaim(unittest.TestCase):
         mock_ready,
         mock_win,
     ) -> None:
-        self._seed_session("s-old", sim_id="MedPhone_API34", pinned_serial="emulator-5554")
+        stale_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=ANDROID_DISCONNECT_GRACE + 5)).isoformat()
+        self._seed_session(
+            "s-old",
+            sim_id="MedPhone_API34",
+            pinned_serial="emulator-5554",
+            heartbeat_at=stale_heartbeat,
+            expires_at=_compute_expires_at("active", stale_heartbeat),
+        )
         mock_find.return_value = _make_sim(
             sim_id="Okra_API35",
             platform="android",
@@ -1073,7 +1105,7 @@ class TestLifecycleTick(unittest.TestCase):
         mock_validate,
         mock_get_serial,
     ) -> None:
-        self._seed("s-android", "active", 60)
+        self._seed("s-android", "active", ANDROID_DISCONNECT_GRACE + 5)
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())
         data["sessions"]["s-android"].update({
@@ -1092,6 +1124,33 @@ class TestLifecycleTick(unittest.TestCase):
         session = get_session("s-android")
         self.assertEqual(session.status, "expired")
         self.assertIsNone(session.pinned_serial)
+
+    @patch("simemu.session.android.get_android_serial", return_value=None)
+    @patch("simemu.session.android.validate_serial", return_value=False)
+    def test_keeps_recent_active_android_session_when_adb_temporarily_missing(
+        self,
+        mock_validate,
+        mock_get_serial,
+    ) -> None:
+        self._seed("s-android", "active", 10)
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-android"].update({
+            "platform": "android",
+            "sim_id": "MedPhone_API34",
+            "device_name": "MedPhone API34",
+            "resolved_os_version": "API 34",
+            "claim_platform": "android",
+            "pinned_serial": "emulator-5554",
+        })
+        sf.write_text(json.dumps(data))
+
+        changed = lifecycle_tick()
+
+        self.assertNotIn("s-android", changed)
+        session = get_session("s-android")
+        self.assertEqual(session.status, "active")
+        self.assertEqual(session.pinned_serial, "emulator-5554")
 
     def test_expires_old_sessions(self) -> None:
         self._seed("s-test", "active", EXPIRE_TIMEOUT + 60)

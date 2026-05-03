@@ -32,6 +32,7 @@ from . import window as window_mgr
 IDLE_TIMEOUT = 20 * 60        # active → idle after 20min
 PARK_TIMEOUT = 40 * 60        # idle → parked after 40min more (60min total)
 EXPIRE_TIMEOUT = 2 * 60 * 60  # parked → expired after 2hr total idle
+ANDROID_DISCONNECT_GRACE = 2 * 60  # tolerate transient adb loss before expiring
 MAESTRO_TIMEOUT_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "1800"))
 
 # Default memory budget in MB
@@ -736,6 +737,20 @@ def _mark_expired(session_id: str) -> None:
             save(data)
 
 
+def _android_disconnect_grace_elapsed(raw: dict) -> bool:
+    """Return True once an Android session has been unreachable long enough to expire."""
+    stamp = raw.get("heartbeat_at") or raw.get("created_at")
+    if not stamp:
+        return True
+    try:
+        last_seen = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last_seen).total_seconds() >= ANDROID_DISCONNECT_GRACE
+
+
 def _reconcile_android_sessions() -> list[str]:
     """Persist Android session cleanup outside the daemon path."""
     with _locked_sessions() as (data, save):
@@ -785,6 +800,9 @@ def _reconcile_android_sessions_locked(data: dict) -> list[str]:
             if serial != pinned:
                 data["sessions"][sid]["pinned_serial"] = serial
                 changed.append(sid)
+            continue
+
+        if not _android_disconnect_grace_elapsed(raw):
             continue
 
         old_status = raw.get("status")
