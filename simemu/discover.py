@@ -296,6 +296,19 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
     # Score candidates
     def _score(sim: SimulatorInfo) -> tuple:
         """Lower score = better match. Returns tuple for sorting."""
+        # Prefer a device whose slug/name matches the human label. This lets
+        # project-specific claims such as "fitkind-..." avoid unrelated AVDs
+        # that happen to sort earlier alphabetically.
+        label_score = 0
+        if spec.label:
+            name_lower = sim.device_name.lower()
+            label_tokens = [
+                token
+                for token in spec.label.lower().replace("_", "-").split("-")
+                if len(token) >= 4
+            ]
+            label_score = -sum(1 for token in label_tokens if token in name_lower)
+
         # Prefer booted devices (saves boot time)
         booted_score = 0 if sim.booted else 1
 
@@ -318,7 +331,7 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
         # Prefer non-Genymotion (lighter on Apple Silicon)
         geny_score = 1 if sim.genymotion else 0
 
-        return (form_score, version_score, booted_score, geny_score, sim.device_name)
+        return (label_score, form_score, version_score, booted_score, geny_score, sim.device_name)
 
     candidates.sort(key=_score)
     return candidates[0]
