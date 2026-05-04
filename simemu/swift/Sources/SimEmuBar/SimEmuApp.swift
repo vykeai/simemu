@@ -390,15 +390,12 @@ final class SimEmuBarController: OnlyBarController {
     }
 
     override func renderIcon() -> NSImage? {
-        iconName = service.menuBarIcon
-        badgeCount = service.booted
         return super.renderIcon()
     }
 
     private func syncIcon() {
         iconName = service.menuBarIcon
         badgeCount = service.booted
-        updateIcon()
     }
 }
 // ============================================================================
