@@ -128,20 +128,58 @@ def _locked_state():
 
 
 def _read_raw() -> dict:
-    current_state_file = state_file()
-    if current_state_file.exists():
+    sf = state_file()
+    bak = sf.with_suffix(".bak")
+
+    if sf.exists():
         try:
-            return json.loads(current_state_file.read_text())
+            data = json.loads(sf.read_text())
+            if isinstance(data, dict) and "allocations" in data:
+                return data
         except (json.JSONDecodeError, OSError):
             pass
+
+    # Fallback to backup
+    if bak.exists():
+        try:
+            data = json.loads(bak.read_text())
+            if isinstance(data, dict) and "allocations" in data:
+                try:
+                    sf.write_text(json.dumps(data, indent=2))
+                except OSError:
+                    pass
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Clean stale tmp
+    tmp = sf.with_suffix(".tmp")
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
     return {"allocations": {}}
 
 
 def _write_raw(state: dict):
-    current_state_file = state_file()
-    tmp = current_state_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(current_state_file)
+    sf = state_file()
+    bak = sf.with_suffix(".bak")
+    tmp = sf.with_suffix(".tmp")
+
+    content = json.dumps(state, indent=2)
+
+    # Backup before overwrite
+    if sf.exists():
+        try:
+            import shutil
+            shutil.copy2(sf, bak)
+        except OSError:
+            pass
+
+    tmp.write_text(content)
+    tmp.replace(sf)
 
 
 @contextmanager

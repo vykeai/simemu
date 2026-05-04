@@ -11,7 +11,11 @@ import fcntl
 import json
 import os
 import platform as _platform_mod
+import re
 import secrets
+import sys
+import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -19,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import state, ios, android, device
-from .discover import find_best_device
+from .discover import find_best_device, find_matching_devices
 from . import window as window_mgr
 
 
@@ -28,6 +32,8 @@ from . import window as window_mgr
 IDLE_TIMEOUT = 20 * 60        # active → idle after 20min
 PARK_TIMEOUT = 40 * 60        # idle → parked after 40min more (60min total)
 EXPIRE_TIMEOUT = 2 * 60 * 60  # parked → expired after 2hr total idle
+ANDROID_DISCONNECT_GRACE = 2 * 60  # tolerate transient adb loss before expiring
+MAESTRO_TIMEOUT_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "1800"))
 
 # Default memory budget in MB
 DEFAULT_MEMORY_BUDGET_MB = 16 * 1024  # 16GB
@@ -48,6 +54,7 @@ class ClaimSpec:
     form_factor: str = "phone"           # "phone" | "tablet" | "watch" | "tv" | "vision"
     os_version: str | None = None        # requested version or None (any)
     real_device: bool = False
+    device_selector: str | None = None   # specific device id/name/alias to target
     label: str = ""
     visible: bool = False                # if True, keep window visible (default: headless)
 
@@ -60,8 +67,10 @@ class ClaimSpec:
             parts += ["--form-factor", self.form_factor]
         if self.real_device:
             parts.append("--real")
+        if self.device_selector:
+            parts += ["--device", self.device_selector]
         if self.visible:
-            parts.append("--visible")
+            parts.append("--show")
         if self.label:
             parts += ["--label", f"'{self.label}'"]
         return " ".join(parts)
@@ -84,11 +93,16 @@ class Session:
     expires_at: str | None = None        # ISO timestamp (computed)
     resolved_os_version: str | None = None  # actual OS version of assigned device
 
+    # Pinned adb serial for Android session isolation — set at claim time,
+    # validated before every command to prevent cross-session contamination
+    pinned_serial: str | None = None
+
     # Stored claim spec for error recovery messages
     claim_platform: str = ""
     claim_form_factor: str = "phone"
     claim_os_version: str | None = None
     claim_real_device: bool = False
+    claim_device_selector: str | None = None
     claim_label: str = ""
 
     def to_agent_json(self) -> dict:
@@ -111,6 +125,7 @@ class Session:
             form_factor=self.claim_form_factor or self.form_factor,
             os_version=self.claim_os_version or self.os_version,
             real_device=self.claim_real_device or self.real_device,
+            device_selector=self.claim_device_selector,
             label=self.claim_label or self.label,
         )
 
@@ -125,6 +140,210 @@ def _gen_session_id() -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_FLOW_APP_ID_RE = re.compile(r"^\s*appId\s*:\s*['\"]?([^'\"#\s]+)")
+_MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE = re.compile(
+    r"Not able to reach the gRPC server while processing deviceInfo command"
+    r"|Connection refused: localhost/(?:127\.0\.0\.1|\[[0-9a-fA-F:]+\]):7001"
+    r"|Http2Exception: First received frame was not SETTINGS"
+    r"|INTERNAL: http2 exception"
+)
+
+
+def _extract_maestro_app_id(flow_path: str) -> str | None:
+    path = Path(flow_path)
+    if not path.exists() or path.suffix not in {".yaml", ".yml"}:
+        return None
+    try:
+        for line in path.read_text(errors="ignore").splitlines()[:40]:
+            match = _FLOW_APP_ID_RE.match(line)
+            if match:
+                return match.group(1).strip()
+    except OSError:
+        return None
+    return None
+
+
+def _resolve_maestro_target_app(session_id: str, flow_files: list[str]) -> str | None:
+    for flow_path in flow_files:
+        app_id = _extract_maestro_app_id(flow_path)
+        if app_id:
+            return app_id
+
+    data = _read_sessions_raw()
+    return data["sessions"].get(session_id, {}).get("last_app")
+
+
+def _ensure_maestro_target_foreground(
+    session_id: str,
+    platform: str,
+    sim_id: str,
+    expected_app: str | None,
+    android_kwargs: dict,
+) -> None:
+    if not expected_app or expected_app == "com.apple.springboard":
+        return
+
+    provenance = get_provenance(session_id)
+    launch_args = provenance.get("last_launch_args") or []
+    if not isinstance(launch_args, list):
+        launch_args = []
+
+    if platform in ("ios", "watchos", "tvos", "visionos"):
+        current = ios.foreground_app(sim_id)
+        if current != expected_app:
+            ios.launch(sim_id, expected_app, launch_args)
+        if not ios.wait_for_foreground_app(sim_id, expected_app, timeout=4.0, delay=0.2):
+            ios.accept_open_app_alert(sim_id, attempts=3, delay=0.25)
+            if not ios.wait_for_foreground_app(sim_id, expected_app, timeout=2.0, delay=0.2):
+                actual = ios.foreground_app(sim_id)
+                raise RuntimeError(
+                    f"Maestro handoff failed: expected '{expected_app}' foreground on iOS, got '{actual}'."
+                )
+        return
+
+    expected_package = expected_app.split("/", 1)[0]
+    current = android.foreground_app(sim_id, retries=2, delay=0.5, **android_kwargs)
+    if current != expected_package:
+        android.launch(sim_id, expected_package, launch_args, **android_kwargs)
+    actual = android.foreground_app(sim_id, retries=3, delay=0.75, **android_kwargs)
+    if actual != expected_package:
+        raise RuntimeError(
+            f"Maestro handoff failed: expected '{expected_package}' foreground on Android, got '{actual}'."
+        )
+
+
+def _maestro_has_flag(args: list[str], flag: str) -> bool:
+    return any(arg == flag or arg.startswith(f"{flag}=") for arg in args)
+
+
+def _extract_maestro_option(args: list[str], flag: str) -> str | None:
+    for idx, arg in enumerate(args):
+        if arg == flag and idx + 1 < len(args):
+            return args[idx + 1]
+        if arg.startswith(f"{flag}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _maestro_debug_output_dir(session_id: str) -> str:
+    root = Path(os.environ.get("SIMEMU_OUTPUT_DIR", Path.home() / ".simemu"))
+    root.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = root / "maestro-debug" / f"{session_id}_{ts}"
+    target.mkdir(parents=True, exist_ok=True)
+    return str(target)
+
+
+def _maestro_env(platform: str) -> dict[str, str]:
+    env = dict(os.environ)
+    if platform != "android":
+        return env
+
+    prefer_ipv4 = "-Djava.net.preferIPv4Stack=true"
+    current = env.get("JAVA_TOOL_OPTIONS", "").strip()
+    if prefer_ipv4 not in current.split():
+        env["JAVA_TOOL_OPTIONS"] = f"{current} {prefer_ipv4}".strip()
+    return env
+
+
+def _prepare_maestro_invocation(
+    *,
+    session_id: str,
+    platform: str,
+    device_id: str,
+    flow_files: list[str],
+    extra_args: list[str],
+) -> tuple[list[str], dict[str, str], str]:
+    final_args = list(extra_args)
+
+    debug_output = _extract_maestro_option(final_args, "--debug-output")
+    if not debug_output:
+        debug_output = _maestro_debug_output_dir(session_id)
+        final_args.extend(["--debug-output", debug_output])
+
+    if platform == "android":
+        if not (
+            _maestro_has_flag(final_args, "--reinstall-driver")
+            or _maestro_has_flag(final_args, "--no-reinstall-driver")
+        ):
+            final_args.append("--reinstall-driver")
+
+    cmd = ["maestro", "--device", device_id, "test"] + flow_files + final_args
+    return cmd, _maestro_env(platform), debug_output
+
+
+def _summarize_maestro_failure(
+    *,
+    session_id: str,
+    platform: str,
+    debug_output: str,
+) -> str | None:
+    debug_root = Path(debug_output)
+    log_candidates: list[Path] = []
+    direct_log = debug_root / "maestro.log"
+    if direct_log.exists():
+        log_candidates.append(direct_log)
+    log_candidates.extend(debug_root.rglob("maestro.log"))
+    if not log_candidates:
+        return None
+    log_path = max(log_candidates, key=lambda path: path.stat().st_mtime)
+
+    try:
+        log_text = log_path.read_text(errors="ignore")
+    except OSError:
+        return None
+
+    if platform == "android" and _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE.search(log_text):
+        reclaim = require_session(session_id).reclaim_command()
+        return (
+            "Android Maestro driver failed before the flow started. "
+            "The Maestro helper apps or instrumentation runner never brought up the local "
+            "gRPC bridge on port 7001. simemu already forced driver reinstall and IPv4 loopback; "
+            "if this still happens, treat it as a Maestro/emulator startup issue rather than an app "
+            f"selector bug. Debug output: {debug_output}. Re-claim to retry: {reclaim}"
+        )
+
+    return None
+
+
+def _retry_android_maestro_bridge(
+    *,
+    session_id: str,
+    sim_id: str,
+    expected_app: str | None,
+    android_kwargs: dict,
+    flow_files: list[str],
+    extra_args: list[str],
+) -> tuple[bool, str, str | None]:
+    import subprocess as _sp
+
+    android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+    android.dismiss_system_dialogs(sim_id, **android_kwargs)
+    _ensure_maestro_target_foreground(
+        session_id=session_id,
+        platform="android",
+        sim_id=sim_id,
+        expected_app=expected_app,
+        android_kwargs=android_kwargs,
+    )
+    time.sleep(2.0)
+
+    device_id = android._serial(sim_id, pinned=android_kwargs.get("pinned_serial"))
+    cmd, env, retry_debug_output = _prepare_maestro_invocation(
+        session_id=session_id,
+        platform="android",
+        device_id=device_id,
+        flow_files=flow_files,
+        extra_args=extra_args,
+    )
+    retry_result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
+    return retry_result.returncode == 0, retry_debug_output, _summarize_maestro_failure(
+        session_id=session_id,
+        platform="android",
+        debug_output=retry_debug_output,
+    )
 
 
 def _compute_expires_at(status: str, heartbeat_at: str) -> str:
@@ -142,12 +361,44 @@ def _compute_expires_at(status: str, heartbeat_at: str) -> str:
 
 # ── state persistence ────────────────────────────────────────────────────────
 
+SCHEMA_VERSION = 3  # Current schema version
+
+
 def _sessions_file() -> Path:
     return state.state_dir() / "sessions.json"
 
 
 def _sessions_lock_file() -> Path:
     return state.state_dir() / "sessions.lock"
+
+
+def _migrate_schema(data: dict) -> dict:
+    """Migrate sessions.json to the current schema version.
+
+    Migrations are additive — they add fields with defaults, never remove.
+    """
+    version = data.get("schema_version", 1)
+
+    if version < 2:
+        # v1 → v2: Add provenance dict and claim spec fields to each session
+        for sid, session in data.get("sessions", {}).items():
+            session.setdefault("provenance", {})
+            session.setdefault("claim_platform", session.get("platform", ""))
+            session.setdefault("claim_form_factor", session.get("form_factor", "phone"))
+            session.setdefault("claim_os_version", session.get("os_version"))
+            session.setdefault("claim_real_device", session.get("real_device", False))
+            session.setdefault("claim_label", session.get("label", ""))
+            session.setdefault("resolved_os_version", None)
+            session.setdefault("last_build_artifact", None)
+        data["schema_version"] = 2
+
+    if version < 3:
+        # v2 → v3: Add pinned_serial for Android session isolation
+        for sid, session in data.get("sessions", {}).items():
+            session.setdefault("pinned_serial", None)
+        data["schema_version"] = 3
+
+    return data
 
 
 @contextmanager
@@ -174,18 +425,81 @@ def _locked_sessions():
 
 def _read_sessions_raw() -> dict:
     sf = _sessions_file()
+    bak = sf.with_suffix(".bak")
+
+    # Try primary file
     if sf.exists():
         try:
-            return json.loads(sf.read_text())
+            data = json.loads(sf.read_text())
+            if isinstance(data, dict) and "sessions" in data:
+                if data.get("schema_version", 1) < SCHEMA_VERSION:
+                    data = _migrate_schema(data)
+                    try:
+                        _write_sessions_raw(data)
+                    except OSError:
+                        pass
+                return data
         except (json.JSONDecodeError, OSError):
             pass
+
+    # Primary corrupted or missing — try backup
+    if bak.exists():
+        try:
+            data = json.loads(bak.read_text())
+            if isinstance(data, dict) and "sessions" in data:
+                # Restore from backup
+                import sys as _sys
+                print(json.dumps({
+                    "diagnostic": "sessions_recovered_from_backup",
+                    "primary": str(sf),
+                    "backup": str(bak),
+                }), file=_sys.stderr, flush=True)
+                # Write it back as primary
+                try:
+                    sf.write_text(json.dumps(data, indent=2))
+                except OSError:
+                    pass
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Clean stale .tmp files that might exist from a crashed write
+    tmp = sf.with_suffix(".tmp")
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
     return {"sessions": {}}
 
 
 def _write_sessions_raw(data: dict):
     sf = _sessions_file()
+    bak = sf.with_suffix(".bak")
     tmp = sf.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
+
+    # Stamp schema version
+    data["schema_version"] = SCHEMA_VERSION
+
+    content = json.dumps(data, indent=2)
+
+    # Validate JSON roundtrips before writing
+    try:
+        json.loads(content)
+    except json.JSONDecodeError:
+        raise RuntimeError("BUG: attempted to write invalid JSON to sessions.json")
+
+    # Create backup of current file before overwriting
+    if sf.exists():
+        try:
+            import shutil
+            shutil.copy2(sf, bak)
+        except OSError:
+            pass
+
+    # Atomic write: tmp → rename
+    tmp.write_text(content)
     tmp.replace(sf)
 
 
@@ -194,6 +508,11 @@ def _session_from_dict(d: dict) -> Session:
     known_fields = {f.name for f in Session.__dataclass_fields__.values()}
     filtered = {k: v for k, v in d.items() if k in known_fields}
     return Session(**filtered)
+
+
+def _session_log(message: str) -> None:
+    """Emit session diagnostics to stderr so JSON stdout stays machine-readable."""
+    print(message, file=sys.stderr, flush=True)
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -236,6 +555,7 @@ def claim(spec: ClaimSpec) -> Session:
             claim_form_factor="desktop",
             claim_os_version=spec.os_version,
             claim_real_device=True,
+            claim_device_selector=spec.device_selector,
             claim_label=spec.label,
         )
         session.expires_at = _compute_expires_at("active", now)
@@ -250,16 +570,72 @@ def claim(spec: ClaimSpec) -> Session:
     # Check memory budget before claiming
     _enforce_memory_budget_if_needed(spec.platform)
 
+    # Reconcile stale Android session pins before selecting a new device.
+    # This prevents fresh claims from reusing emulator ports still "owned" by
+    # dead or parked sessions in the session store.
+    _reconcile_android_sessions()
+
     # Find best matching device
     sim = find_best_device(spec)
+    pinned_serial: str | None = None
 
-    # Boot the device if not already booted and not a real device
-    if not sim.real_device and not sim.booted:
+    def _prepare_android_candidate(candidate):
+        """Return a usable adb serial for a candidate, recovering broken booted AVDs."""
+        if candidate.real_device:
+            return None
+
+        attempted_recovery = False
+        while True:
+            if not candidate.booted or attempted_recovery:
+                print(f"Booting {candidate.device_name}...", file=_sys.stderr, flush=True)
+                android.boot(candidate.sim_id, headless=not spec.visible)
+
+            try:
+                serial = android.wait_until_ready(candidate.sim_id, timeout=45)
+                print("Ready.", file=_sys.stderr, flush=True)
+                return serial
+            except RuntimeError as exc:
+                if attempted_recovery:
+                    raise RuntimeError(str(exc))
+                attempted_recovery = True
+                print(
+                    f"Recovering {candidate.device_name} after adb-ready failure...",
+                    file=_sys.stderr,
+                    flush=True,
+                )
+                try:
+                    android.shutdown(candidate.sim_id)
+                except RuntimeError:
+                    pass
+
+    # Boot the device if not already booted and not a real device.
+    # Android gets extra resilience: validate adb readiness even for already-
+    # booted emulators, recover once, then fall back to the next candidate.
+    if sim.platform == "android" and not sim.real_device:
+        prep_errors = []
+        candidates = [sim] + [
+            candidate for candidate in find_matching_devices(spec)
+            if candidate.sim_id != sim.sim_id
+        ]
+        for candidate in candidates:
+            try:
+                pinned_serial = _prepare_android_candidate(candidate)
+                sim = candidate
+                break
+            except RuntimeError as exc:
+                prep_errors.append(f"{candidate.sim_id}: {exc}")
+                continue
+        else:
+            raise RuntimeError(
+                "No Android emulator could be prepared for this claim.\n" +
+                "\n".join(prep_errors)
+            )
+    elif not sim.real_device and not sim.booted:
         print(f"Booting {sim.device_name}...", file=_sys.stderr, flush=True)
         if sim.platform in ("ios", "watchos", "tvos", "visionos"):
             ios.boot(sim.sim_id)
         else:
-            android.boot(sim.sim_id, headless=True)
+            android.boot(sim.sim_id, headless=not spec.visible)
         print(f"Ready.", file=_sys.stderr, flush=True)
 
     # Apply window management — headless by default unless --visible
@@ -268,6 +644,10 @@ def claim(spec: ClaimSpec) -> Session:
             window_mgr.apply_window_mode(sim.sim_id, sim.platform, sim.device_name)
         except Exception:
             pass  # window management is best-effort
+
+    # Pin the adb serial at claim time for Android session isolation
+    if spec.platform == "android" and not sim.real_device:
+        pinned_serial = pinned_serial or android.get_android_serial(sim.sim_id, retries=4, delay=1.0)
 
     # Create the session
     session = Session(
@@ -284,20 +664,34 @@ def claim(spec: ClaimSpec) -> Session:
         created_at=now,
         heartbeat_at=now,
         resolved_os_version=sim.runtime,
+        pinned_serial=pinned_serial,
         claim_platform=spec.platform,
         claim_form_factor=spec.form_factor,
         claim_os_version=spec.os_version,
         claim_real_device=spec.real_device,
+        claim_device_selector=spec.device_selector,
         claim_label=spec.label,
     )
     session.expires_at = _compute_expires_at("active", now)
 
     # Persist session — check for duplicate sim_id under lock
     with _locked_sessions() as (data, save):
-        # Reject if another active session already has this device
-        for existing_id, existing in data["sessions"].items():
+        # Check if another active session already has this device
+        for existing_id, existing in list(data["sessions"].items()):
             if (existing.get("sim_id") == sim.sim_id
                     and existing.get("status") in ("active", "idle", "parked")):
+                # Is the existing session's emulator actually running?
+                if existing.get("platform") == "android" and not existing.get("real_device"):
+                    existing_serial = android.get_android_serial(sim.sim_id, retries=1, delay=0.3)
+                    if existing_serial is None:
+                        # Emulator is dead — expire the zombie session
+                        data["sessions"][existing_id]["status"] = "expired"
+                        data["sessions"][existing_id]["expires_at"] = _now_iso()
+                        _session_log(
+                            f"[simemu-session] Expired zombie session '{existing_id}' "
+                            f"(emulator '{sim.sim_id}' not running) to allow new claim"
+                        )
+                        continue
                 raise SessionError(
                     error="device_already_claimed",
                     session=existing_id,
@@ -319,6 +713,111 @@ def get_session(session_id: str) -> Session | None:
     return _session_from_dict(raw)
 
 
+def _is_effectively_expired(session: Session) -> bool:
+    """Return True when a session's expiry deadline has already passed.
+
+    We still run a lifecycle monitor, but session reads must be defensive in
+    case the monitor/daemon is delayed or started with a bad environment.
+    """
+    if session.status in ("expired", "released"):
+        return session.status == "expired"
+    if not session.expires_at:
+        return False
+    try:
+        expires = datetime.fromisoformat(session.expires_at)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) >= expires
+
+
+def _mark_expired(session_id: str) -> None:
+    with _locked_sessions() as (data, save):
+        if session_id in data["sessions"] and data["sessions"][session_id].get("status") not in ("expired", "released"):
+            data["sessions"][session_id]["status"] = "expired"
+            save(data)
+
+
+def _android_disconnect_grace_elapsed(raw: dict) -> bool:
+    """Return True once an Android session has been unreachable long enough to expire."""
+    stamp = raw.get("heartbeat_at") or raw.get("created_at")
+    if not stamp:
+        return True
+    try:
+        last_seen = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last_seen).total_seconds() >= ANDROID_DISCONNECT_GRACE
+
+
+def _reconcile_android_sessions() -> list[str]:
+    """Persist Android session cleanup outside the daemon path."""
+    with _locked_sessions() as (data, save):
+        changed = _reconcile_android_sessions_locked(data)
+        if changed:
+            save(data)
+        return changed
+
+
+def _reconcile_android_sessions_locked(data: dict) -> list[str]:
+    """Normalize Android session pins while holding the session lock.
+
+    Rules:
+    - parked Android emulator sessions intentionally have no running device,
+      so their pinned adb serial must be cleared
+    - active/idle Android emulator sessions must either:
+      - keep a pin that still validates for their AVD, or
+      - re-pin to the current serial for that AVD, or
+      - expire if no emulator for that AVD is actually running
+    """
+    changed: list[str] = []
+
+    for sid, raw in list(data["sessions"].items()):
+        if raw.get("status") in ("expired", "released"):
+            continue
+        if raw.get("platform") != "android" or raw.get("real_device"):
+            continue
+
+        status = raw.get("status")
+        sim_id = raw.get("sim_id", "")
+        pinned = raw.get("pinned_serial")
+
+        if status == "parked":
+            if pinned is not None:
+                data["sessions"][sid]["pinned_serial"] = None
+                changed.append(sid)
+            continue
+
+        if status not in ("active", "idle"):
+            continue
+
+        if pinned and android.validate_serial(pinned, sim_id):
+            continue
+
+        serial = android.get_android_serial(sim_id, retries=1, delay=0.3)
+        if serial is not None:
+            if serial != pinned:
+                data["sessions"][sid]["pinned_serial"] = serial
+                changed.append(sid)
+            continue
+
+        if not _android_disconnect_grace_elapsed(raw):
+            continue
+
+        old_status = raw.get("status")
+        data["sessions"][sid]["status"] = "expired"
+        data["sessions"][sid]["expires_at"] = _now_iso()
+        data["sessions"][sid]["pinned_serial"] = None
+        changed.append(sid)
+        _session_log(
+            f"[simemu-session] '{sid}' {old_status} → expired "
+            f"(stale Android session: emulator '{sim_id}' not running)"
+        )
+
+    return changed
+
+
 def require_session(session_id: str) -> Session:
     """Return a session by ID, or raise with actionable error."""
     session = get_session(session_id)
@@ -327,6 +826,14 @@ def require_session(session_id: str) -> Session:
             error="session_not_found",
             session=session_id,
             hint=f"Session '{session_id}' does not exist. Claim a new device with: simemu claim <platform>",
+        )
+    if _is_effectively_expired(session):
+        _mark_expired(session_id)
+        raise SessionError(
+            error="session_expired",
+            session=session_id,
+            hint=f"Session expired after inactivity. Re-claim with: {session.reclaim_command()}",
+            expired_at=session.expires_at,
         )
     if session.status == "expired":
         raise SessionError(
@@ -356,23 +863,75 @@ def touch(session_id: str) -> Session:
         reboot_needed = False
 
     # Android session claims can occasionally outlive the underlying emulator
-    # process. If the session is still marked active/idle but the VM is gone,
-    # heal by booting it again before dispatching the next command.
+    # process, or the adb connection can go temporarily offline after an
+    # activity-alias switch (app restart). Try to recover before giving up.
     if (
         not reboot_needed
         and not session.real_device
         and session.platform == "android"
-        and android.get_android_serial(session.sim_id, retries=2, delay=0.5) is None
     ):
-        reboot_needed = True
+        serial = android.get_android_serial(session.sim_id, retries=2, delay=0.5)
+        if serial is None:
+            # adb offline — try reconnecting THIS device's serial only
+            # (not `adb reconnect offline` which reconnects ALL devices and causes
+            # cross-session contamination when multiple emulators are running)
+            try:
+                import subprocess as _sp
+                if session.pinned_serial:
+                    # Reconnect only the pinned serial
+                    _sp.run(["adb", "-s", session.pinned_serial, "reconnect"],
+                            capture_output=True, timeout=10, check=False)
+                import time as _time
+                _time.sleep(2)
+                serial = android.get_android_serial(session.sim_id, retries=4, delay=1.0)
+            except Exception:
+                serial = None
+            if serial is not None and session.pinned_serial and serial != session.pinned_serial:
+                # Serial changed after reconnect — update pinned serial
+                with _locked_sessions() as (data, save):
+                    if session_id in data["sessions"]:
+                        data["sessions"][session_id]["pinned_serial"] = serial
+                        save(data)
+                session.pinned_serial = serial
+            if serial is None:
+                reboot_needed = True
 
-    # Re-boot if parked
+    # Real device connectivity check — verify the device is still connected
+    if session.real_device:
+        if session.platform in ("ios", "watchos", "tvos", "visionos"):
+            # iOS real device — check via devicectl
+            try:
+                from .discover import list_real_ios
+                connected = any(d.sim_id == session.sim_id for d in list_real_ios(set()))
+                if not connected:
+                    raise RuntimeError(
+                        f"Real iOS device '{session.device_name}' is no longer connected.\n"
+                        f"Reconnect the device and retry, or re-claim: {session.reclaim_command()}"
+                    )
+            except ImportError:
+                pass
+        elif session.platform == "android":
+            # Android real device — check adb
+            from . import device as real_device
+            connected = any(d.device_id == session.sim_id for d in real_device.list_android_devices())
+            if not connected:
+                raise RuntimeError(
+                    f"Real Android device '{session.device_name}' is no longer connected via adb.\n"
+                    f"Reconnect and retry, or re-claim: {session.reclaim_command()}"
+                )
+
+    # Re-boot if parked (simulators only — real devices don't boot)
     if reboot_needed:
         if not session.real_device:
             if session.platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.boot(session.sim_id)
             else:
+                session.pinned_serial = None
                 android.boot(session.sim_id, headless=True)
+                # Re-pin serial after boot — emulator gets a new port
+                new_serial = android.get_android_serial(session.sim_id, retries=6, delay=1.0)
+                if new_serial and new_serial != session.pinned_serial:
+                    session.pinned_serial = new_serial
 
     # Update state
     with _locked_sessions() as (data, save):
@@ -380,6 +939,9 @@ def touch(session_id: str) -> Session:
             data["sessions"][session_id]["heartbeat_at"] = now
             data["sessions"][session_id]["status"] = "active"
             data["sessions"][session_id]["expires_at"] = _compute_expires_at("active", now)
+            # Persist updated pinned serial
+            if session.pinned_serial:
+                data["sessions"][session_id]["pinned_serial"] = session.pinned_serial
             save(data)
 
     session.heartbeat_at = now
@@ -452,9 +1014,10 @@ def get_all_sessions() -> dict[str, Session]:
 
 def get_active_sessions() -> dict[str, Session]:
     """Return only active/idle/parked sessions."""
+    _reconcile_android_sessions()
     return {
         sid: s for sid, s in get_all_sessions().items()
-        if s.status in ("active", "idle", "parked")
+        if s.status in ("active", "idle", "parked") and not _is_effectively_expired(s)
     }
 
 
@@ -468,6 +1031,8 @@ _COMMAND_HELP: dict[str, str] = {
     "renew":            "Extend session before it expires",
     "done":             "Release the session and free the device",
     "reboot":           "Restart the simulator",
+    "present":          "Present the iOS simulator window in a canonical position",
+    "stabilize":        "Stabilize the iOS simulator window for reliable interaction",
     # App management
     "install":          "Install .app/.ipa (iOS) or .apk (Android)",
     "launch":           "Launch app by bundle ID or package name",
@@ -492,12 +1057,14 @@ _COMMAND_HELP: dict[str, str] = {
     "back":             "Go back (edge swipe iOS, back button Android)",
     "home":             "Go to home screen",
     "key":              "Press a hardware key (home, lock, volume, etc.)",
+    "software-keyboard": "Toggle iOS Simulator software keyboard visibility",
     "input":            "Type text into focused field",
     "type-submit":      "Type text and press Enter",
     "shake":            "Shake gesture (opens React Native dev menu)",
     # Capture & proof
     "screenshot":       "Take a screenshot (-o path, --max-size px)",
     "deeplink-proof":   "Open URL + wait 3s + screenshot in one command",
+    "proof":            "Normalize device state + capture verified screenshot with metadata",
     "wait-for-render":  "Wait N seconds then screenshot",
     "video-start":      "Start screen recording (-o path)",
     "video-stop":       "Stop screen recording (pass pid from video-start)",
@@ -529,12 +1096,18 @@ _COMMAND_HELP: dict[str, str] = {
     "keychain-reset":   "Clear iOS keychain",
     "icloud-sync":      "Trigger iCloud sync (iOS only)",
     "clone":            "Clone an iOS simulator",
+    "pair":             "Pair a watchOS and iOS simulator session/device and activate the pair",
     "font-size":        "Set accessibility font size (Android)",
     "reduce-motion":    "Toggle reduce motion / animations (Android)",
     "notifications-clear": "Clear notification center (Android)",
     "a11y-tree":        "Dump accessibility hierarchy (Android)",
+    # tvOS Siri Remote
+    "focus-move":       "Move focus: up, down, left, right (tvOS only)",
+    "focus-select":     "Press select / click trackpad (tvOS only)",
+    "remote":           "Press Siri Remote button: up/down/left/right/select/menu/play-pause/home (tvOS only)",
     # Info
     "env":              "Show device info (UDID, serial, OS version)",
+    "trace":            "Export debug trace bundle (session + health + history)",
     "help":             "Show this help",
 }
 
@@ -551,7 +1124,7 @@ def _do_macos_command(session: Session, command: str, args: list[str]) -> dict:
         app_path = args[0]
         # Copy .app bundle to staging area, or open it directly
         if app_path.endswith(".app"):
-            staging = Path("/tmp/simemu-apps")
+            staging = Path(tempfile.gettempdir()) / f"simemu-apps-{os.getuid()}"
             staging.mkdir(parents=True, exist_ok=True)
             _sp.run(["cp", "-R", app_path, str(staging)], check=True)
             return {"status": "installed", "app": app_path, "location": str(staging / Path(app_path).name)}
@@ -604,10 +1177,14 @@ def _do_macos_command(session: Session, command: str, args: list[str]) -> dict:
         if not args:
             raise RuntimeError("Usage: simemu do <session> terminate <bundle-id>")
         bundle_id = args[0]
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9._-]+$', bundle_id):
+            raise RuntimeError(f"Invalid bundle identifier: {bundle_id}")
         # Graceful quit via osascript, fall back to pkill
+        safe_bid = bundle_id.replace("\\", "\\\\").replace('"', '\\"')
         result = _sp.run([
             "osascript", "-e",
-            f'tell application id "{bundle_id}" to quit',
+            f'tell application id "{safe_bid}" to quit',
         ], capture_output=True, text=True, check=False)
         if result.returncode != 0:
             _sp.run(["pkill", "-f", bundle_id], capture_output=True, check=False)
@@ -672,21 +1249,22 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
     # T-12: Help command
     if command == "help":
         categories = {
-            "Session": ["boot", "show", "hide", "renew", "done", "reboot"],
+            "Session": ["boot", "show", "hide", "renew", "done", "reboot", "present", "stabilize"],
             "App": ["install", "launch", "terminate", "uninstall", "reset-app", "clear-data", "clean-retry",
                      "grant-all", "app-info", "verify-install", "repair-install", "app-container",
                      "is-running", "foreground-app"],
             "UI": ["a11y-tap", "tap", "swipe", "long-press", "scroll", "back", "home",
                    "key", "input", "type-submit", "shake"],
-            "Capture": ["screenshot", "deeplink-proof", "wait-for-render", "video-start",
+            "Capture": ["screenshot", "proof", "deeplink-proof", "wait-for-render", "video-start",
                         "video-stop", "log-crash"],
             "Navigate": ["url", "maestro"],
             "Alerts": ["dismiss-alert", "accept-alert", "deny-alert", "auto-dismiss"],
             "Device": ["appearance", "rotate", "location", "status-bar", "biometrics",
                        "network", "clipboard-set", "clipboard-get"],
             "Files": ["push", "pull", "add-media", "contacts-import"],
-            "System": ["keychain-reset", "icloud-sync", "clone", "font-size",
+            "System": ["keychain-reset", "icloud-sync", "clone", "pair", "font-size",
                        "reduce-motion", "notifications-clear", "a11y-tree", "env"],
+            "tvOS Remote": ["focus-move", "focus-select", "remote"],
         }
         result: dict = {"commands": {}}
         for cat, cmds in categories.items():
@@ -702,6 +1280,31 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         # but agents expect an explicit boot command
         session = touch(session_id)
         return session.to_agent_json()
+
+    if command == "present":
+        session = touch(session_id)
+        if session.real_device or session.platform not in ("ios", "watchos", "tvos", "visionos"):
+            return {
+                "status": "unsupported",
+                "platform": session.platform,
+                "hint": "present is currently available for iOS-family simulators only.",
+            }
+        result = ios.present(session.sim_id)
+        with _locked_sessions() as (data, save):
+            if session_id in data["sessions"]:
+                data["sessions"][session_id]["visible"] = True
+                save(data)
+        return result
+
+    if command == "stabilize":
+        session = touch(session_id)
+        if session.real_device or session.platform not in ("ios", "watchos", "tvos", "visionos"):
+            return {
+                "status": "unsupported",
+                "platform": session.platform,
+                "hint": "stabilize is currently available for iOS-family simulators only.",
+            }
+        return ios.stabilize(session.sim_id)
 
     if command in ("visible", "show"):
         session = touch(session_id)
@@ -720,10 +1323,19 @@ tell application "System Events"
     end tell
 end tell'''
             ], capture_output=True, check=False)
+        elif not session.real_device and session.platform == "android":
+            if android.current_window_frame(session.sim_id) is None:
+                android.shutdown(session.sim_id)
+                android.boot(session.sim_id, headless=False)
+            current_serial = android.get_android_serial(session.sim_id, retries=8, delay=1.0)
+            if current_serial:
+                session.pinned_serial = current_serial
         # Persist visibility state
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["visible"] = True
+                if session.pinned_serial:
+                    data["sessions"][session_id]["pinned_serial"] = session.pinned_serial
                 save(data)
         return {"session": session_id, "status": "visible", "device": session.device_name}
 
@@ -751,6 +1363,42 @@ end tell'''
     sim_id = session.sim_id
     platform = session.platform
     is_real = session.real_device
+
+    # Android session isolation: validate the pinned serial still resolves to this AVD.
+    # This prevents cross-session contamination when multiple emulators are running.
+    _pinned = session.pinned_serial if (platform == "android" and not is_real) else None
+    if _pinned:
+        current_serial = android.get_android_serial(sim_id, retries=2, delay=0.5)
+        if current_serial and current_serial != _pinned:
+            # Serial changed — the emulator restarted on a new port. Update pin.
+            _pinned = current_serial
+            with _locked_sessions() as (data, save):
+                if session_id in data["sessions"]:
+                    data["sessions"][session_id]["pinned_serial"] = current_serial
+                    save(data)
+            session.pinned_serial = current_serial
+
+    # Pass pinned serial as a thread-safe parameter instead of monkey-patching.
+    # The monkey-patch approach was not thread-safe: concurrent do_command calls
+    # from the HTTP server could overwrite each other's serial binding.
+    return _do_command_dispatch(session_id, session, sim_id, platform, is_real, command, args, _pinned)
+
+
+def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
+                         is_real: bool, command: str, args: list[str],
+                         pinned_serial: str | None = None):
+    """Inner dispatch for do_command. pinned_serial is thread-safe — no monkey-patching."""
+
+    android_kwargs = (
+        {"pinned_serial": pinned_serial}
+        if platform == "android" and not is_real and pinned_serial
+        else {}
+    )
+
+    def _android_serial_for_session() -> str:
+        if is_real:
+            return sim_id
+        return android._serial(sim_id, pinned=pinned_serial)
 
     # Update HUD — only for visible sessions (hidden = no overlay needed)
     _is_visible = False
@@ -791,7 +1439,7 @@ end tell'''
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.install(sim_id, app_path)
         else:
-            android.install(sim_id, app_path)
+            android.install(sim_id, app_path, **android_kwargs)
         return {"status": "installed", "app": app_path}
 
     elif command == "launch":
@@ -804,21 +1452,49 @@ end tell'''
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.launch(sim_id, bundle, extra)
         else:
-            android.launch(sim_id, bundle, extra)
+            expected_pkg = bundle.split("/", 1)[0]
+            # Isolate: force-stop other third-party apps before launch
+            stopped = android.stop_other_apps(sim_id, keep=expected_pkg, **android_kwargs)
+            if stopped:
+                import sys as _sys
+                print(json.dumps({
+                    "diagnostic": "android_isolation",
+                    "stopped_count": len(stopped),
+                    "stopped": stopped[:10],
+                }), file=_sys.stderr, flush=True)
+            android.launch(sim_id, bundle, extra, **android_kwargs)
+            # Verify the right package is foregrounded
+            actual_fg = android.foreground_app(sim_id, **android_kwargs)
+            if actual_fg and actual_fg != expected_pkg:
+                import sys as _sys
+                print(json.dumps({
+                    "diagnostic": "android_launch_foreground_mismatch",
+                    "expected": expected_pkg,
+                    "actual": actual_fg,
+                }), file=_sys.stderr, flush=True)
+        launched_pkg = bundle.split("/", 1)[0]
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
-                data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
+                data["sessions"][session_id]["last_app"] = launched_pkg
                 save(data)
+        update_provenance(session_id, last_app=launched_pkg, last_launch_args=extra[:3])
         return {"status": "launched", "app": bundle}
 
     elif command == "tap":
+        if platform == "tvos":
+            raise RuntimeError(
+                "tvOS does not support tap — use focus navigation instead:\n"
+                "  simemu do <session> focus-move up/down/left/right\n"
+                "  simemu do <session> focus-select\n"
+                "  simemu do <session> remote <button>"
+            )
         if len(args) < 2:
             raise RuntimeError("Usage: simemu do <session> tap <x> <y>")
         x, y = float(args[0]), float(args[1])
-        if platform in ("ios", "watchos", "tvos", "visionos"):
+        if platform in ("ios", "watchos", "visionos"):
             ios.tap(sim_id, x, y)
         else:
-            android.tap(sim_id, x, y)
+            android.tap(sim_id, x, y, **android_kwargs)
         return {"status": "tapped", "x": x, "y": y}
 
     elif command == "swipe":
@@ -833,7 +1509,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.swipe(sim_id, x1, y1, x2, y2, duration=duration / 1000.0)
         else:
-            android.swipe(sim_id, x1, y1, x2, y2, duration=duration)
+            android.swipe(sim_id, x1, y1, x2, y2, duration=duration, **android_kwargs)
         return {"status": "swiped", "from": [x1, y1], "to": [x2, y2]}
 
     elif command == "screenshot":
@@ -864,12 +1540,33 @@ end tell'''
             out_dir.mkdir(parents=True, exist_ok=True)
             output = str(out_dir / f"{session_id}_{ts}.{fmt}")
 
+        # T-LU-042: Activate the session's target app before screenshotting so we
+        # don't capture SpringBoard when the app was backgrounded.
+        _screenshot_target_app = None
+        with _locked_sessions() as (data, _save):
+            _screenshot_target_app = (
+                data["sessions"].get(session_id, {}).get("last_app")
+            )
+
+        if _screenshot_target_app and not is_real:
+            if platform in ("ios", "watchos", "visionos"):
+                ios.activate_app(sim_id, _screenshot_target_app)
+            elif platform == "android":
+                _pkg = _screenshot_target_app.split("/", 1)[0]
+                try:
+                    android.launch(sim_id, _pkg, [], **android_kwargs)
+                except Exception:
+                    pass
+
         if is_real and platform == "ios":
             device.ios_screenshot(sim_id, output, max_size=max_size)
-        elif platform in ("ios", "watchos", "tvos", "visionos"):
+        elif platform == "tvos":
+            ios.tvos_screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
+        elif platform in ("ios", "watchos", "visionos"):
             ios.screenshot(sim_id, output, fmt=fmt if fmt != "png" else None, max_size=max_size)
         else:
-            android.screenshot(sim_id, output)
+            android.screenshot(sim_id, output, max_size=max_size, **android_kwargs)
+        update_provenance(session_id, last_screenshot=output)
         return {"status": "captured", "path": output}
 
     elif command == "maestro":
@@ -879,9 +1576,9 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             device_id = sim_id
         else:
-            from .discover import get_android_serial
-            device_id = get_android_serial(sim_id)
-            if not device_id:
+            try:
+                device_id = _android_serial_for_session()
+            except RuntimeError:
                 raise RuntimeError(
                     f"Android emulator is not running. "
                     f"Re-claim with: {session.reclaim_command()}"
@@ -897,23 +1594,157 @@ end tell'''
             flow_files = [args[0]]
             extra_args = args[1:]
 
-        cmd = ["maestro", "--device", device_id, "test"] + flow_files + extra_args
-        result = _sp.run(cmd)
+        expected_app = _resolve_maestro_target_app(session_id, flow_files)
+        _ensure_maestro_target_foreground(
+            session_id=session_id,
+            platform=platform,
+            sim_id=sim_id,
+            expected_app=expected_app,
+            android_kwargs=android_kwargs,
+        )
+
+        cmd, env, debug_output = _prepare_maestro_invocation(
+            session_id=session_id,
+            platform=platform,
+            device_id=device_id,
+            flow_files=flow_files,
+            extra_args=extra_args,
+        )
+        try:
+            result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
+        except _sp.TimeoutExpired:
+            return {
+                "status": "failed",
+                "exit_code": 124,
+                "debug_output": debug_output,
+                "error": f"Maestro timed out after {MAESTRO_TIMEOUT_SECONDS} seconds and was terminated.",
+            }
         if result.returncode != 0:
-            return {"status": "failed", "exit_code": result.returncode}
+            error = _summarize_maestro_failure(
+                session_id=session_id,
+                platform=platform,
+                debug_output=debug_output,
+            )
+            if platform == "android" and error:
+                import sys as _sys
+
+                print(json.dumps({
+                    "diagnostic": "android_maestro_bridge_retry",
+                    "session": session_id,
+                    "sim_id": sim_id,
+                }), file=_sys.stderr, flush=True)
+                try:
+                    recovered, retry_debug_output, retry_error = _retry_android_maestro_bridge(
+                        session_id=session_id,
+                        sim_id=sim_id,
+                        expected_app=expected_app,
+                        android_kwargs=android_kwargs,
+                        flow_files=flow_files,
+                        extra_args=extra_args,
+                    )
+                except RuntimeError as exc:
+                    recovered = False
+                    retry_debug_output = debug_output
+                    retry_error = f"{error} Auto-retry could not stabilize the emulator: {exc}"
+                if recovered:
+                    return {"status": "passed", "recovered": "android_maestro_bridge_retry"}
+                debug_output = retry_debug_output
+                error = retry_error or error
+
+            payload = {
+                "status": "failed",
+                "exit_code": result.returncode,
+                "debug_output": debug_output,
+            }
+            if error:
+                payload["error"] = error
+            return payload
         return {"status": "passed"}
 
     elif command == "url":
         if not args:
-            raise RuntimeError("Usage: simemu do <session> url <url>")
+            raise RuntimeError("Usage: simemu do <session> url <url> [--expect-package <pkg>]")
         url = args[0]
+        # Parse --expect-package override
+        explicit_expect = None
+        if "--expect-package" in args:
+            idx = args.index("--expect-package")
+            if idx + 1 < len(args):
+                explicit_expect = args[idx + 1]
+
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
+            expected_bundle = explicit_expect
+            if not expected_bundle:
+                with _locked_sessions() as (data, save):
+                    expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+            if expected_bundle:
+                handoff_ok = ios.complete_open_url_handoff(sim_id, expected_bundle)
+                if not handoff_ok:
+                    # Diagnose: what IS in the foreground?
+                    actual_fg = ios.foreground_app(sim_id)
+                    app_running = ios.is_app_running(sim_id, expected_bundle)
+                    if app_running:
+                        # T-LU-043: Force-activate the app to dismiss sticky sheet
+                        ios.activate_app(sim_id, expected_bundle)
+                        import time as _time
+                        _time.sleep(0.5)
+                        ios.accept_open_app_alert(sim_id, attempts=3, delay=0.3)
+                        handoff_ok = ios.is_app_running(sim_id, expected_bundle)
+                    if not handoff_ok:
+                        diag = {
+                            "expected": expected_bundle,
+                            "actual_foreground": actual_fg,
+                            "app_running": app_running,
+                            "url": url,
+                        }
+                        hint = (
+                            f"App '{expected_bundle}' is running but stuck behind a confirmation sheet"
+                            if app_running
+                            else f"App '{expected_bundle}' never launched — still on SpringBoard or system UI"
+                        )
+                        raise RuntimeError(
+                            f"URL handoff failed: {hint}.\n"
+                            f"Diagnostics: {json.dumps(diag)}"
+                        )
         else:
-            expected_package = None
-            with _locked_sessions() as (data, save):
-                expected_package = data["sessions"].get(session_id, {}).get("last_app")
-            android.open_url(sim_id, url, expected_package=expected_package)
+            expected_package = explicit_expect
+            if not expected_package:
+                with _locked_sessions() as (data, save):
+                    expected_package = data["sessions"].get(session_id, {}).get("last_app")
+            android.open_url(sim_id, url, expected_package=expected_package, **android_kwargs)
+            # Post-URL settle — deep link handlers (dialogs, sheets) need time to render
+            import time as _time
+            _time.sleep(1.0)
+            # Verify foreground after URL open — retry to handle dialog transitions
+            if expected_package:
+                actual_fg = android.foreground_app(sim_id, retries=3, delay=1.0, **android_kwargs)
+                if actual_fg is None:
+                    # null foreground after URL open — app may have a sheet/dialog
+                    # that doesn't register as a resumed activity. Don't error — the
+                    # URL may have succeeded, just can't confirm foreground.
+                    pass
+                elif actual_fg != expected_package:
+                    lower = actual_fg.lower()
+                    if "launcher" in lower or "home" in lower:
+                        # Launcher — app probably crashed on the deep link
+                        raise RuntimeError(
+                            f"URL opened but app crashed — launcher is foreground instead of '{expected_package}'.\n"
+                            f"URL: {url}\n"
+                            f"The app may not handle this deep link route."
+                        )
+                    else:
+                        diag = {
+                            "expected": expected_package,
+                            "actual_foreground": actual_fg,
+                            "url": url,
+                        }
+                        raise RuntimeError(
+                            f"URL opened but '{expected_package}' is not foreground on Android. "
+                            f"Foreground: '{actual_fg}'. Another app may have intercepted the URL.\n"
+                            f"Diagnostics: {json.dumps(diag)}"
+                        )
+        update_provenance(session_id, last_url=url, last_deep_link=url)
         return {"status": "opened", "url": url}
 
     elif command == "terminate":
@@ -923,7 +1754,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.terminate(sim_id, bundle)
         else:
-            android.terminate(sim_id, bundle)
+            android.terminate(sim_id, bundle, **android_kwargs)
         return {"status": "terminated", "app": bundle}
 
     elif command == "uninstall":
@@ -933,7 +1764,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.uninstall(sim_id, bundle)
         else:
-            android.uninstall(sim_id, bundle)
+            android.uninstall(sim_id, bundle, **android_kwargs)
         return {"status": "uninstalled", "app": bundle}
 
     elif command == "input":
@@ -943,7 +1774,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.input_text(sim_id, text)
         else:
-            android.input_text(sim_id, text)
+            android.input_text(sim_id, text, **android_kwargs)
         return {"status": "input", "text": text}
 
     elif command == "long-press":
@@ -958,7 +1789,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.long_press(sim_id, x, y, duration=duration / 1000.0)
         else:
-            android.long_press(sim_id, x, y, duration=duration)
+            android.long_press(sim_id, x, y, duration=duration, **android_kwargs)
         return {"status": "long-pressed", "x": x, "y": y}
 
     elif command == "key":
@@ -968,8 +1799,40 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.key(sim_id, key_name)
         else:
-            android.key(sim_id, key_name)
+            android.key(sim_id, key_name, **android_kwargs)
         return {"status": "key_pressed", "key": key_name}
+
+    elif command == "software-keyboard":
+        action = args[0] if args else "toggle"
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("software-keyboard is iOS Simulator only")
+        ios.software_keyboard(sim_id, action)
+        return {"status": "toggled", "target": "software-keyboard"}
+
+    elif command == "focus-move":
+        if platform != "tvos":
+            raise RuntimeError("focus-move is tvOS only. Use tap/swipe for other platforms.")
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> focus-move <up|down|left|right>")
+        ios.focus_move(sim_id, args[0])
+        return {"status": "moved", "direction": args[0]}
+
+    elif command == "focus-select":
+        if platform != "tvos":
+            raise RuntimeError("focus-select is tvOS only. Use tap for other platforms.")
+        ios.focus_select(sim_id)
+        return {"status": "selected"}
+
+    elif command == "remote":
+        if platform != "tvos":
+            raise RuntimeError("remote is tvOS only.")
+        if not args:
+            raise RuntimeError(
+                "Usage: simemu do <session> remote <button>\n"
+                "Buttons: up, down, left, right, select, menu, play-pause, home"
+            )
+        ios.remote_button(sim_id, args[0])
+        return {"status": "pressed", "button": args[0]}
 
     elif command == "appearance":
         if not args:
@@ -978,7 +1841,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.set_appearance(sim_id, mode)
         else:
-            android.set_appearance(sim_id, mode)
+            android.set_appearance(sim_id, mode, **android_kwargs)
         return {"status": "set", "appearance": mode}
 
     elif command == "rotate":
@@ -988,7 +1851,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.rotate(sim_id, orientation)
         else:
-            android.rotate(sim_id, orientation)
+            android.rotate(sim_id, orientation, **android_kwargs)
         return {"status": "rotated", "orientation": orientation}
 
     elif command == "location":
@@ -998,7 +1861,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.location(sim_id, lat, lng)
         else:
-            android.location(sim_id, lat, lng)
+            android.location(sim_id, lat, lng, **android_kwargs)
         return {"status": "set", "lat": lat, "lng": lng}
 
     elif command == "push":
@@ -1006,7 +1869,7 @@ end tell'''
             raise RuntimeError("Usage: simemu do <session> push <local> <remote>")
         if platform != "android":
             raise RuntimeError("push is Android only")
-        android.push(sim_id, args[0], args[1])
+        android.push(sim_id, args[0], args[1], **android_kwargs)
         return {"status": "pushed", "remote": args[1]}
 
     elif command == "pull":
@@ -1014,7 +1877,7 @@ end tell'''
             raise RuntimeError("Usage: simemu do <session> pull <remote> <local>")
         if platform != "android":
             raise RuntimeError("pull is Android only")
-        android.pull(sim_id, args[0], args[1])
+        android.pull(sim_id, args[0], args[1], **android_kwargs)
         return {"status": "pulled", "local": args[1]}
 
     elif command == "add-media":
@@ -1023,14 +1886,14 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.add_media(sim_id, args[0])
         else:
-            android.add_media(sim_id, args[0])
+            android.add_media(sim_id, args[0], **android_kwargs)
         return {"status": "added", "file": args[0]}
 
     elif command == "shake":
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.shake(sim_id)
         else:
-            android.shake(sim_id)
+            android.shake(sim_id, **android_kwargs)
         return {"status": "shaken"}
 
     elif command == "status-bar":
@@ -1063,14 +1926,14 @@ end tell'''
             if platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.status_bar_clear(sim_id)
             else:
-                android.status_bar_clear(sim_id)
+                android.status_bar_clear(sim_id, **android_kwargs)
             return {"status": "cleared"}
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.status_bar(sim_id, time_str=time_str, battery=battery,
                            wifi=wifi, network=network)
         else:
             android.status_bar(sim_id, time_str=time_str, battery=battery,
-                               wifi=wifi, network=network)
+                               wifi=wifi, network=network, **android_kwargs)
         return {"status": "set"}
 
     elif command == "dismiss-alert":
@@ -1079,9 +1942,10 @@ end tell'''
             # Try simctl ui alert dismiss, fall back to Maestro
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
                      capture_output=True, check=False)
+            ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow"])
         else:
             # Android: press Enter key to dismiss
-            _sp.run(["adb", "-s", android.get_serial(sim_id),
+            _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
         return {"status": "dismissed"}
@@ -1089,10 +1953,14 @@ end tell'''
     elif command == "accept-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
-                     capture_output=True, check=False)
+            ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35)
+            expected_bundle = None
+            with _locked_sessions() as (data, save):
+                expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+            if expected_bundle:
+                ios.complete_open_url_handoff(sim_id, expected_bundle, attempts=3, foreground_timeout=1.0)
         else:
-            _sp.run(["adb", "-s", android.get_serial(sim_id),
+            _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
         return {"status": "accepted"}
@@ -1102,8 +1970,9 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "deny"],
                      capture_output=True, check=False)
+            ios.click_system_alert_button(sim_id, ["Don’t Allow", "Cancel", "Not Now", "Close"])
         else:
-            _sp.run(["adb", "-s", android.get_serial(sim_id),
+            _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_BACK"],
                      capture_output=True, check=False)
         return {"status": "denied"}
@@ -1119,7 +1988,7 @@ end tell'''
                 _sp.run(["xcrun", "simctl", "privacy", sim_id, "grant", svc, bundle],
                          capture_output=True, check=False)
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             permissions = [
                 "android.permission.CAMERA",
                 "android.permission.RECORD_AUDIO",
@@ -1148,7 +2017,7 @@ end tell'''
             # Can't easily clear data on iOS sim without uninstall
             return {"status": "terminated", "hint": "iOS: uninstall and reinstall to clear data"}
         else:
-            android.clear_data(sim_id, bundle)
+            android.clear_data(sim_id, bundle, **android_kwargs)
         return {"status": "cleared", "app": bundle}
 
     elif command == "clean-retry":
@@ -1160,8 +2029,8 @@ end tell'''
                 "'clean-retry' is Android only. On iOS use "
                 "`simemu do <session> reset-app <bundle> <app-path>`."
             )
-        android.clear_data(sim_id, bundle)
-        android.launch(sim_id, bundle, [])
+        android.clear_data(sim_id, bundle, **android_kwargs)
+        android.launch(sim_id, bundle, [], **android_kwargs)
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
@@ -1181,7 +2050,7 @@ end tell'''
             _sp.run(["xcrun", "simctl", "pbcopy", sim_id],
                      input=text.encode(), capture_output=True, check=False)
         else:
-            android.input_text(sim_id, text)
+            android.input_text(sim_id, text, **android_kwargs)
         return {"status": "set", "text": text}
 
     elif command == "clipboard-get":
@@ -1201,11 +2070,23 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             result["udid"] = sim_id
         else:
-            serial = android.get_serial(sim_id) if not is_real else sim_id
+            serial = _android_serial_for_session()
             result["serial"] = serial
         result["device_name"] = session.device_name
         result["os_version"] = session.resolved_os_version or session.os_version
         return result
+
+    elif command == "trace":
+        from .trace import export_trace, export_trace_to_file
+        output = None
+        if "-o" in args:
+            idx = args.index("-o")
+            if idx + 1 < len(args):
+                output = args[idx + 1]
+        if output:
+            path = export_trace_to_file(session_id, output)
+            return {"status": "exported", "path": path}
+        return export_trace(session_id)
 
     # ── high-impact commands ─────────────────────────────────────────────────
 
@@ -1221,7 +2102,7 @@ end tell'''
             return {"status": "dismissed", "platform": "ios",
                     "hint": "Accepted pending alert and reset privacy warnings"}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             # Disable window animation scale
             _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
                       "window_animation_scale", "0"],
@@ -1267,27 +2148,59 @@ end tell'''
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.screenshot(sim_id, output)
         else:
-            android.screenshot(sim_id, output)
+            android.screenshot(sim_id, output, **android_kwargs)
         return {"status": "captured", "waited": seconds, "path": output}
 
     elif command == "deeplink-proof":
         import time as _time
         if not args:
-            raise RuntimeError("Usage: simemu do <session> deeplink-proof <url> [-o output]")
+            raise RuntimeError("Usage: simemu do <session> deeplink-proof <url> [-o output] [--wait seconds] [--expect-package package]")
         url = args[0]
         output = None
-        if "-o" in args:
-            idx = args.index("-o")
-            if idx + 1 < len(args):
-                output = args[idx + 1]
+        explicit_expect = None
+        wait_seconds = 3.0
+        if platform == "android":
+            # Android deep links often dispatch before Compose has applied route state.
+            wait_seconds = 5.0
+        i = 1
+        while i < len(args):
+            arg = args[i]
+            if arg in ("-o", "--output") and i + 1 < len(args):
+                output = args[i + 1]
+                i += 2
+                continue
+            if arg in ("--wait", "-w") and i + 1 < len(args):
+                try:
+                    wait_seconds = float(args[i + 1])
+                except ValueError:
+                    raise RuntimeError(f"Invalid deeplink-proof wait value: {args[i + 1]}")
+                i += 2
+                continue
+            if arg == "--expect-package" and i + 1 < len(args):
+                explicit_expect = args[i + 1]
+                i += 2
+                continue
+            i += 1
         # Open the URL
         if platform in ("ios", "watchos", "tvos", "visionos"):
             ios.open_url(sim_id, url)
-            ios.accept_open_app_alert(sim_id)
+            expected_bundle = explicit_expect
+            with _locked_sessions() as (data, save):
+                expected_bundle = expected_bundle or data["sessions"].get(session_id, {}).get("last_app")
+            if expected_bundle and not ios.complete_open_url_handoff(sim_id, expected_bundle):
+                raise RuntimeError(
+                    f"Opened deep link but '{expected_bundle}' never became foreground on iOS."
+                )
+            if not expected_bundle:
+                ios.accept_open_app_alert(sim_id)
         else:
-            android.open_url(sim_id, url)
+            expected_package = explicit_expect
+            with _locked_sessions() as (data, save):
+                expected_package = expected_package or data["sessions"].get(session_id, {}).get("last_app")
+            android.open_url(sim_id, url, expected_package=expected_package, **android_kwargs)
         # Wait for render
-        _time.sleep(3)
+        if wait_seconds > 0:
+            _time.sleep(wait_seconds)
         # Screenshot
         if not output:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1299,8 +2212,12 @@ end tell'''
         elif platform in ("ios", "watchos", "tvos", "visionos"):
             ios.screenshot(sim_id, output)
         else:
-            android.screenshot(sim_id, output)
-        return {"status": "captured", "url": url, "path": output}
+            android.screenshot(sim_id, output, **android_kwargs)
+        update_provenance(session_id, last_url=url, last_deep_link=url, last_screenshot=output)
+        return {"status": "captured", "url": url, "waited": wait_seconds, "path": output}
+
+    elif command == "proof":
+        return _do_proof(session, sim_id, platform, is_real, session_id, args)
 
     elif command == "reset-app":
         if len(args) < 2:
@@ -1313,10 +2230,10 @@ end tell'''
             ios.install(sim_id, app_path)
             ios.launch(sim_id, bundle, [])
         else:
-            android.terminate(sim_id, bundle)
-            android.uninstall(sim_id, bundle)
-            android.install(sim_id, app_path)
-            android.launch(sim_id, bundle, [])
+            android.terminate(sim_id, bundle, **android_kwargs)
+            android.uninstall(sim_id, bundle, **android_kwargs)
+            android.install(sim_id, app_path, **android_kwargs)
+            android.launch(sim_id, bundle, [], **android_kwargs)
         with _locked_sessions() as (data, save):
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["last_app"] = bundle.split("/", 1)[0]
@@ -1327,7 +2244,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             return {"status": "ok", "foreground_app": ios.foreground_app(sim_id)}
         else:
-            return {"status": "ok", "foreground_app": android.foreground_app(sim_id)}
+            return {"status": "ok", "foreground_app": android.foreground_app(sim_id, **android_kwargs)}
 
     elif command == "is-running":
         if not args:
@@ -1342,7 +2259,7 @@ end tell'''
             running = bundle in result.stdout
             return {"status": "ok", "app": bundle, "running": running}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             result = _sp.run(
                 ["adb", "-s", serial, "shell", "pidof", bundle],
                 capture_output=True, text=True, check=False,
@@ -1364,7 +2281,7 @@ end tell'''
                             "Use Network Link Conditioner in System Preferences or "
                             "Apple Configurator profiles."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             if mode == "offline":
                 _sp.run(["adb", "-s", serial, "shell", "svc", "wifi", "disable"],
                          capture_output=True, check=False)
@@ -1422,10 +2339,17 @@ end tell'''
             return {"status": "ok", "app": bundle, "info": result.stdout.strip()}
         else:
             try:
-                probe = android.verify_install(sim_id, bundle, timeout=15)
+                probe = android.verify_install(sim_id, bundle, timeout=15, **android_kwargs)
             except RuntimeError:
-                serial = android.wait_until_ready(sim_id)
-                probe = android._probe_package_state(serial, bundle)
+                try:
+                    serial = _android_serial_for_session()
+                    probe = android._probe_package_state(serial, bundle)
+                except RuntimeError:
+                    return {
+                        "status": "degraded",
+                        "app": bundle,
+                        "info": "Device temporarily unreachable after activity restart. Retry in a few seconds.",
+                    }
             return {"status": "ok", "app": bundle, "info": probe.format_report()}
 
     elif command == "verify-install":
@@ -1434,7 +2358,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             raise RuntimeError("'verify-install' is Android only.")
         bundle = args[0]
-        probe = android.verify_install(sim_id, bundle)
+        probe = android.verify_install(sim_id, bundle, **android_kwargs)
         return {"status": "verified", "app": bundle, "info": probe.format_report()}
 
     elif command == "repair-install":
@@ -1444,7 +2368,7 @@ end tell'''
             raise RuntimeError("'repair-install' is Android only.")
         bundle = args[0]
         app_path = args[1]
-        probe = android.repair_install(sim_id, bundle, app_path)
+        probe = android.repair_install(sim_id, bundle, app_path, **android_kwargs)
         return {"status": "repaired", "app": bundle, "reinstalled_from": app_path, "info": probe.format_report()}
 
     elif command == "a11y-tree":
@@ -1454,12 +2378,24 @@ end tell'''
                     "hint": "iOS accessibility hierarchy is not available via simctl. "
                             "Use XCUITest or Maestro for accessibility inspection."}
         else:
-            serial = android.get_serial(sim_id)
-            result = _sp.run(
-                ["adb", "-s", serial, "shell", "uiautomator", "dump", "/dev/tty"],
-                capture_output=True, text=True, check=False,
-            )
-            return {"status": "ok", "tree": result.stdout.strip()}
+            if is_real:
+                serial = sim_id
+            else:
+                serial = android._serial(sim_id, pinned=session.pinned_serial)
+            # Dump to a file on device, then cat it back — /dev/tty doesn't capture to stdout
+            remote_path = "/sdcard/window_dump.xml"
+            _sp.run(["adb", "-s", serial, "shell", "uiautomator", "dump", remote_path],
+                    capture_output=True, text=True, check=False, timeout=15)
+            result = _sp.run(["adb", "-s", serial, "shell", "cat", remote_path],
+                             capture_output=True, text=True, check=False, timeout=10)
+            # Clean up
+            _sp.run(["adb", "-s", serial, "shell", "rm", "-f", remote_path],
+                    capture_output=True, check=False, timeout=5)
+            tree = result.stdout.strip()
+            if not tree or "ERROR" in tree:
+                return {"status": "failed",
+                        "hint": "uiautomator dump failed — the app may not expose accessibility nodes."}
+            return {"status": "ok", "tree": tree}
 
     elif command == "a11y-tap":
         if not args:
@@ -1468,7 +2404,8 @@ end tell'''
         import subprocess as _sp
         import tempfile as _tmp
         # Use a single-step Maestro flow — works headless
-        flow_content = f"appId: \"\"\n---\n- tapOn: \"{label_text}\"\n"
+        safe_label = label_text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+        flow_content = f"appId: \"\"\n---\n- tapOn: \"{safe_label}\"\n"
         with _tmp.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(flow_content)
             flow_path = f.name
@@ -1476,10 +2413,10 @@ end tell'''
             if platform in ("ios", "watchos", "tvos", "visionos"):
                 device_id = sim_id
             else:
-                from .discover import get_android_serial
-                device_id = get_android_serial(sim_id)
-                if not device_id:
-                    raise RuntimeError("Android emulator is not running.")
+                if is_real:
+                    device_id = sim_id
+                else:
+                    device_id = android._serial(sim_id, pinned=session.pinned_serial)
             result = _sp.run(["maestro", "--device", device_id, "test", flow_path],
                               capture_output=True, text=True, check=False)
             success = result.returncode == 0
@@ -1502,8 +2439,8 @@ end tell'''
             _sp.run(["xcrun", "simctl", "io", sim_id, "sendkey", "return"],
                      capture_output=True, check=False)
         else:
-            serial = android.get_serial(sim_id)
-            android.input_text(sim_id, text)
+            serial = _android_serial_for_session()
+            android.input_text(sim_id, text, **android_kwargs)
             _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
         return {"status": "typed_and_submitted", "text": text}
@@ -1523,20 +2460,31 @@ end tell'''
         if direction not in swipe_map:
             raise RuntimeError(f"Unknown scroll direction '{direction}'. Use: up, down, left, right")
         x1, y1, x2, y2 = swipe_map[direction]
-        if platform in ("ios", "watchos", "tvos", "visionos"):
+        if platform == "tvos":
+            # tvOS: scroll = repeated focus moves in that direction
+            for _ in range(3):
+                ios.focus_move(sim_id, direction)
+                import time as _time
+                _time.sleep(0.15)
+            return {"status": "scrolled", "direction": direction, "method": "focus_move"}
+        elif platform in ("ios", "watchos", "visionos"):
             ios.swipe(sim_id, x1, y1, x2, y2, duration=0.3)
         else:
-            android.swipe(sim_id, x1, y1, x2, y2, duration=300)
+            android.swipe(sim_id, x1, y1, x2, y2, duration=300, **android_kwargs)
         return {"status": "scrolled", "direction": direction}
 
     elif command == "back":
         import subprocess as _sp
-        if platform in ("ios", "watchos", "tvos", "visionos"):
+        if platform == "tvos":
+            # tvOS: Menu button = back
+            ios.remote_button(sim_id, "menu")
+            return {"status": "back", "method": "remote_menu"}
+        elif platform in ("ios", "watchos", "visionos"):
             # iOS: swipe from left edge to go back
             ios.swipe(sim_id, 5, 400, 300, 400, duration=0.3)
             return {"status": "back", "method": "edge_swipe"}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_BACK"],
                      capture_output=True, check=False)
             return {"status": "back", "method": "keyevent"}
@@ -1547,7 +2495,7 @@ end tell'''
             _sp.run(["xcrun", "simctl", "io", sim_id, "sendkey", "home"],
                      capture_output=True, check=False)
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "shell", "input", "keyevent", "KEYCODE_HOME"],
                      capture_output=True, check=False)
         return {"status": "home"}
@@ -1558,7 +2506,7 @@ end tell'''
             return {"status": "unsupported", "platform": "ios",
                     "hint": "iOS Simulator does not expose notification clearing via simctl."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "shell", "service", "call",
                       "notification", "1"],
                      capture_output=True, check=False)
@@ -1577,7 +2525,7 @@ end tell'''
             container = result.stdout.strip() if result.returncode == 0 else None
             return {"status": "ok", "app": bundle, "container": container}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             result = _sp.run(
                 ["adb", "-s", serial, "shell", "run-as", bundle, "pwd"],
                 capture_output=True, text=True, check=False,
@@ -1608,6 +2556,112 @@ end tell'''
             return {"status": "unsupported", "platform": "android",
                     "hint": "Android emulator cloning is not supported."}
 
+    elif command == "pair":
+        import subprocess as _sp
+
+        def _find_existing_pair_id(watch_udid: str, phone_udid: str) -> str | None:
+            result = _sp.run(
+                ["xcrun", "simctl", "list", "pairs", "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            try:
+                data = json.loads(result.stdout or "{}")
+            except json.JSONDecodeError:
+                return None
+
+            for pair_id, pair in (data.get("pairs") or {}).items():
+                watch = pair.get("watch") or {}
+                phone = pair.get("phone") or {}
+                if watch.get("udid") == watch_udid and phone.get("udid") == phone_udid:
+                    return pair_id
+            return None
+
+        def _resolve_target_session(target: str) -> Session | None:
+            try:
+                return get_session(target)
+            except KeyError:
+                return None
+
+        if len(args) != 1:
+            raise RuntimeError("Usage: simemu do <session> pair <other-session|other-udid>")
+        if session.real_device or platform not in ("ios", "watchos"):
+            return {
+                "status": "unsupported",
+                "platform": platform,
+                "hint": "pair is only available for iOS/watchOS simulator sessions.",
+            }
+
+        other_ref = args[0]
+        other_session = _resolve_target_session(other_ref)
+
+        if other_session is not None:
+            if other_session.real_device or other_session.platform not in ("ios", "watchos"):
+                return {
+                    "status": "unsupported",
+                    "platform": other_session.platform,
+                    "hint": "pair requires an iOS phone session and a watchOS watch session.",
+                }
+            other_udid = other_session.sim_id
+            other_form_factor = other_session.form_factor
+        else:
+            other_udid = other_ref
+            other_form_factor = "phone" if platform == "watchos" else "watch"
+
+        if not sim_id or not other_udid:
+            return {"status": "failed", "error": "Both simulator UDIDs are required to pair."}
+
+        if session.form_factor == "watch" and other_form_factor == "phone":
+            watch_udid = sim_id
+            phone_udid = other_udid
+        elif session.form_factor == "phone" and other_form_factor == "watch":
+            watch_udid = other_udid
+            phone_udid = sim_id
+        else:
+            return {
+                "status": "unsupported",
+                "hint": "pair requires exactly one watch session and one phone session.",
+            }
+
+        pair_id = _find_existing_pair_id(watch_udid, phone_udid)
+        if not pair_id:
+            result = _sp.run(
+                ["xcrun", "simctl", "pair", watch_udid, phone_udid],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return {
+                    "status": "failed",
+                    "error": result.stderr.strip() or "Failed to create simulator pair.",
+                }
+            pair_id = result.stdout.strip()
+
+        activate = _sp.run(
+            ["xcrun", "simctl", "pair_activate", pair_id],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if activate.returncode != 0 and "already active" not in (activate.stderr or "").lower():
+            return {
+                "status": "failed",
+                "error": activate.stderr.strip() or "Failed to activate simulator pair.",
+                "pair_id": pair_id,
+            }
+
+        return {
+            "status": "paired",
+            "pair_id": pair_id,
+            "watch_udid": watch_udid,
+            "phone_udid": phone_udid,
+            "hint": "Reboot both simulator sessions to refresh WatchConnectivity pairing state.",
+        }
+
     elif command == "siri":
         if not args:
             raise RuntimeError("Usage: simemu do <session> siri <query...>")
@@ -1631,7 +2685,7 @@ end tell'''
                      capture_output=True, check=False)
             return {"status": "imported", "file": vcf_path}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             remote_path = "/sdcard/import_contacts.vcf"
             _sp.run(["adb", "-s", serial, "push", vcf_path, remote_path],
                      capture_output=True, check=False)
@@ -1654,7 +2708,7 @@ end tell'''
                             "Use Accessibility settings in the Simulator UI "
                             "or defaults write on the sim plist."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             scale_map = {"small": "0.85", "default": "1.0", "large": "1.15", "xlarge": "1.3"}
             scale = scale_map.get(size, "1.0")
             _sp.run(["adb", "-s", serial, "shell", "settings", "put", "system",
@@ -1672,7 +2726,7 @@ end tell'''
                     "hint": "Reduce motion cannot be toggled via simctl. "
                             "Use Accessibility settings in the Simulator UI."}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             scale = "0" if mode == "on" else "1"
             _sp.run(["adb", "-s", serial, "shell", "settings", "put", "global",
                       "animator_duration_scale", scale],
@@ -1690,8 +2744,17 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             log = ios.crash_log(sim_id, bundle_id=bundle)
         else:
-            log = android.crash_log(sim_id, package=bundle)
+            log = android.crash_log(sim_id, package=bundle, **android_kwargs)
         return {"status": "ok", "crash_log": log}
+
+    elif command == "log-tail":
+        tag = args[0] if args else None
+        level = args[1] if len(args) > 1 else None
+        tail_lines = int(args[2]) if len(args) > 2 else 200
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("log-tail is only supported on Android right now")
+        log = android.log_tail(sim_id, tag=tag, level=level, tail_lines=tail_lines, **android_kwargs)
+        return {"status": "ok", "log": log}
 
     elif command == "video-start":
         output = None
@@ -1707,7 +2770,7 @@ end tell'''
         if platform in ("ios", "watchos", "tvos", "visionos"):
             pid = ios.record_start(sim_id, output)
         else:
-            pid = android.record_start(sim_id, output)
+            pid = android.record_start(sim_id, output, **android_kwargs)
         return {"status": "recording", "pid": pid, "path": output}
 
     elif command == "video-stop":
@@ -1727,7 +2790,7 @@ end tell'''
             ios.boot(sim_id)
             return {"status": "rebooted", "platform": "ios"}
         else:
-            serial = android.get_serial(sim_id)
+            serial = _android_serial_for_session()
             _sp.run(["adb", "-s", serial, "reboot"],
                      capture_output=True, check=False)
             return {"status": "rebooted", "platform": "android"}
@@ -1742,9 +2805,202 @@ end tell'''
             f"auto-dismiss, wait-for-render, deeplink-proof, reset-app, "
             f"foreground-app, is-running, network, keychain-reset, icloud-sync, "
             f"app-info, a11y-tree, a11y-tap, type-submit, scroll, back, home, "
-            f"notifications-clear, app-container, clone, siri, contacts-import, "
-            f"font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
+            f"software-keyboard, notifications-clear, app-container, clone, siri, contacts-import, "
+            f"pair, font-size, reduce-motion, log-crash, video-start, video-stop, reboot"
         )
+
+
+def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: str, args: list[str]) -> dict:
+    """Full proof capture: normalize → verify → screenshot → metadata.
+
+    Usage: simemu do <session> proof [-o output.png] [--url <deep-link>]
+           [--appearance light|dark] [--wait <seconds>] [--label <name>]
+    """
+    import subprocess as _sp
+    import time as _time
+
+    android_kwargs = (
+        {"pinned_serial": session.pinned_serial}
+        if platform == "android" and not is_real and session.pinned_serial
+        else {}
+    )
+
+    # Parse flags
+    output = None
+    url = None
+    appearance = None
+    wait_seconds = 2.0
+    label = ""
+    max_size = None
+    i = 0
+    while i < len(args):
+        if args[i] == "-o" and i + 1 < len(args):
+            output = args[i + 1]; i += 2
+        elif args[i] == "--url" and i + 1 < len(args):
+            url = args[i + 1]; i += 2
+        elif args[i] == "--appearance" and i + 1 < len(args):
+            appearance = args[i + 1]; i += 2
+        elif args[i] == "--wait" and i + 1 < len(args):
+            wait_seconds = float(args[i + 1]); i += 2
+        elif args[i] == "--label" and i + 1 < len(args):
+            label = args[i + 1]; i += 2
+        elif args[i] == "--max-size" and i + 1 < len(args):
+            max_size = int(args[i + 1]); i += 2
+        else:
+            i += 1
+
+    steps: list[str] = []
+    errors: list[str] = []
+
+    # ── Step 1: Dismiss system dialogs ──────────────────────────────────
+    if platform in ("ios", "watchos", "tvos", "visionos"):
+        try:
+            ios.accept_open_app_alert(sim_id, attempts=2, delay=0.2)
+            steps.append("dismiss_alerts")
+        except Exception:
+            pass
+    else:
+        try:
+            android.dismiss_system_dialogs(sim_id, **android_kwargs)
+            steps.append("dismiss_dialogs")
+        except Exception:
+            pass
+
+    # ── Step 2: Set appearance ──────────────────────────────────────────
+    if appearance:
+        try:
+            if platform in ("ios", "watchos", "tvos", "visionos"):
+                ios.set_appearance(sim_id, appearance)
+            else:
+                android.set_appearance(sim_id, appearance, **android_kwargs)
+            steps.append(f"appearance:{appearance}")
+        except Exception as e:
+            errors.append(f"appearance: {e}")
+
+    # ── Step 3: Clean status bar (iOS) ──────────────────────────────────
+    if platform in ("ios", "watchos", "tvos", "visionos") and not is_real:
+        try:
+            ios.status_bar(sim_id, time_str="9:41", battery=100, wifi=3, network="wifi")
+            steps.append("status_bar:9:41")
+        except Exception as e:
+            errors.append(f"status_bar: {e}")
+
+    # ── Step 4: Isolate (Android) ───────────────────────────────────────
+    if platform == "android":
+        expected_pkg = None
+        with _locked_sessions() as (data, save):
+            expected_pkg = data["sessions"].get(session_id, {}).get("last_app")
+        if expected_pkg:
+            try:
+                android.stop_other_apps(sim_id, keep=expected_pkg, **android_kwargs)
+                steps.append(f"isolate:{expected_pkg}")
+            except Exception:
+                pass
+
+    # ── Step 5: Open URL if provided ────────────────────────────────────
+    if url:
+        try:
+            if platform in ("ios", "watchos", "tvos", "visionos"):
+                ios.open_url(sim_id, url)
+                expected_bundle = None
+                with _locked_sessions() as (data, save):
+                    expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
+                if expected_bundle:
+                    if not ios.complete_open_url_handoff(sim_id, expected_bundle):
+                        actual = ios.foreground_app(sim_id)
+                        errors.append(f"url_handoff: expected {expected_bundle}, got {actual}")
+            else:
+                expected_pkg_url = None
+                with _locked_sessions() as (data, save):
+                    expected_pkg_url = data["sessions"].get(session_id, {}).get("last_app")
+                android.open_url(sim_id, url, expected_package=expected_pkg_url, **android_kwargs)
+            steps.append(f"url:{url[:60]}")
+        except Exception as e:
+            errors.append(f"url: {e}")
+
+    # ── Step 6: Wait for render ─────────────────────────────────────────
+    _time.sleep(wait_seconds)
+    steps.append(f"wait:{wait_seconds}s")
+
+    # ── Step 7: Verify foreground ───────────────────────────────────────
+    expected_app = None
+    with _locked_sessions() as (data, save):
+        expected_app = data["sessions"].get(session_id, {}).get("last_app")
+
+    actual_fg = None
+    if expected_app:
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            actual_fg = ios.foreground_app(sim_id)
+        else:
+            actual_fg = android.foreground_app(sim_id, **android_kwargs)
+        if actual_fg and actual_fg != expected_app:
+            # T-LU-042: Try to activate the expected app before flagging as error
+            if platform in ("ios", "watchos", "visionos"):
+                if ios.activate_app(sim_id, expected_app):
+                    steps.append(f"reactivated:{expected_app}")
+                    actual_fg = expected_app
+            elif platform == "android":
+                _epkg = expected_app.split("/", 1)[0]
+                try:
+                    android.launch(sim_id, _epkg, [], **android_kwargs)
+                    steps.append(f"reactivated:{_epkg}")
+                    actual_fg = _epkg
+                except Exception:
+                    pass
+            if actual_fg and actual_fg != expected_app:
+                errors.append(f"foreground_mismatch: expected={expected_app} actual={actual_fg}")
+
+    # ── Step 8: Fail if critical errors ─────────────────────────────────
+    critical = [e for e in errors if "foreground_mismatch" in e or "url_handoff" in e]
+    if critical:
+        raise RuntimeError(
+            f"Proof capture aborted — device state is not trustworthy.\n"
+            f"Errors: {'; '.join(critical)}\n"
+            f"Steps completed: {', '.join(steps)}"
+        )
+
+    # ── Step 9: Capture screenshot ──────────────────────────────────────
+    if not output:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(os.environ.get("SIMEMU_OUTPUT_DIR",
+                       os.environ.get("PROJECT_SCREENSHOT_DIR", Path.home() / ".simemu")))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        suffix = f"_{label}" if label else ""
+        output = str(out_dir / f"{session_id}_proof{suffix}_{ts}.png")
+
+    if is_real and platform == "ios":
+        device.ios_screenshot(sim_id, output, max_size=max_size)
+    elif platform in ("ios", "watchos", "tvos", "visionos"):
+        ios.screenshot(sim_id, output, max_size=max_size)
+    else:
+        android.screenshot(sim_id, output, max_size=max_size, settle_ms=800, **android_kwargs)
+    steps.append(f"screenshot:{output}")
+
+    # ── Step 10: Store provenance ───────────────────────────────────────
+    proof_metadata = {
+        "steps": steps,
+        "url": url,
+        "appearance": appearance,
+        "wait_seconds": wait_seconds,
+        "label": label,
+        "foreground_app": actual_fg,
+        "expected_app": expected_app,
+        "warnings": [e for e in errors if "foreground_mismatch" not in e],
+    }
+    update_provenance(
+        session_id,
+        last_screenshot=output,
+        last_url=url,
+        last_proof=proof_metadata,
+    )
+
+    return {
+        "status": "proved",
+        "path": output,
+        "steps": steps,
+        "warnings": errors,
+        "metadata": proof_metadata,
+    }
 
 
 def _do_build(session, sim_id: str, platform: str, is_real: bool, args: list[str]) -> dict:
@@ -1776,7 +3032,12 @@ def _do_build(session, sim_id: str, platform: str, is_real: bool, args: list[str
 
     # Raw mode — escape hatch
     if raw_cmd:
-        result = subprocess.run(raw_cmd, shell=True, capture_output=not verbose, text=True)
+        import shlex
+        try:
+            cmd_parts = shlex.split(raw_cmd)
+        except ValueError as e:
+            raise RuntimeError(f"Invalid build command: {e}")
+        result = subprocess.run(cmd_parts, capture_output=not verbose, text=True)
         if result.returncode != 0:
             err = result.stderr[:2000] if result.stderr else ""
             raise RuntimeError(f"Build failed (exit {result.returncode}):\n{raw_cmd}\n{err}")
@@ -1976,11 +3237,10 @@ def _find_android_artifact(task: str):
 
 def _store_build_artifact(session_id: str, artifact_path: str):
     """Store the build artifact path in session state for auto-install."""
-    with _locked():
-        data = _read_sessions_raw()
+    with _locked_sessions() as (data, save):
         if session_id in data.get("sessions", {}):
             data["sessions"][session_id]["last_build_artifact"] = artifact_path
-            _write_sessions_raw(data)
+            save(data)
 
 
 def _get_build_artifact(session_id: str) -> str | None:
@@ -2036,11 +3296,15 @@ def lifecycle_tick() -> list[str]:
                     except Exception:
                         pass  # device may already be off
 
-                print(
+                _session_log(
                     f"[simemu-session] '{sid}' {old_status} → {new_status} "
-                    f"(idle {idle_seconds / 60:.0f}m)",
-                    flush=True,
+                    f"(idle {idle_seconds / 60:.0f}m)"
                 )
+
+        reconciled = _reconcile_android_sessions_locked(data)
+        if reconciled:
+            dirty = True
+            changed.extend(reconciled)
 
         if dirty:
             save(data)
@@ -2135,7 +3399,7 @@ def _park_session(session_id: str, session: Session) -> None:
         except Exception:
             pass
 
-    print(f"[simemu-session] Parked '{session_id}' to free memory", flush=True)
+    _session_log(f"[simemu-session] Parked '{session_id}' to free memory")
 
 
 # ── errors ───────────────────────────────────────────────────────────────────
@@ -2184,11 +3448,39 @@ def get_command_history(session_id: str) -> list[str]:
     return log_file.read_text().strip().splitlines()
 
 
+# ── T-LU-019: Session provenance ────────────────────────────────────────────
+
+def update_provenance(session_id: str, **fields) -> None:
+    """Update proof provenance metadata for a session.
+
+    Stored fields: last_app, last_url, last_screenshot, last_build,
+    last_deep_link, render_wait_ms, proof_metadata (arbitrary dict).
+
+    Provenance survives normal session writes and recovery.
+    """
+    with _locked_sessions() as (data, save):
+        session_data = data["sessions"].get(session_id)
+        if not session_data:
+            return
+        provenance = session_data.setdefault("provenance", {})
+        provenance["updated_at"] = _now_iso()
+        for key, value in fields.items():
+            provenance[key] = value
+        save(data)
+
+
+def get_provenance(session_id: str) -> dict:
+    """Return the current proof provenance for a session."""
+    data = _read_sessions_raw()
+    session_data = data["sessions"].get(session_id, {})
+    return session_data.get("provenance", {})
+
+
 # ── T-29: Safe android serial helper ─────────────────────────────────────────
 
-def _android_serial(sim_id: str) -> str:
+def _android_serial(sim_id: str, pinned_serial: str | None = None) -> str:
     """Get Android serial, raising a clear error if not available."""
-    serial = android.get_serial(sim_id)
+    serial = android._serial(sim_id, pinned=pinned_serial) if pinned_serial else android.get_serial(sim_id)
     if not serial:
         raise RuntimeError(
             f"Android emulator '{sim_id}' is not running or not adb-ready. "

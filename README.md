@@ -34,9 +34,11 @@ curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bas
 
 The installer:
 1. Checks Python 3.11+ is installed
-2. Clones the repo to `~/dev/simemu`
-3. Installs the `simemu` command via `pip install -e .`
-4. Installs the guard hook into `~/.claude/settings.json`
+2. Installs `simemu` via `pip install -e .`
+3. Sets up the monitor launchd agent (lifecycle management)
+4. Builds and installs the SimEmuBar menu bar app
+5. Installs the guard hook into `~/.claude/settings.json`
+6. Repairs broken symlinks and validates the binary path
 
 ### Manual installation
 
@@ -71,8 +73,20 @@ SESSION=$(simemu claim android | jq -r .session)
 #   --version 26          specific OS version
 #   --form-factor tablet  phone (default), tablet, watch, tv, vision
 #   --real                prefer real device over simulator
+#   --device luke-iphone  target a specific device id, name, or alias
 #   --show                keep simulator window visible (default: hidden)
 #   --label "my task"     label for tracking
+```
+
+### Relabel real devices and rename simulators
+
+```bash
+simemu relabel s-abc123 luke-iphone
+simemu claim luke-iphone
+simemu claim ios --real --device luke-iphone
+
+simemu rename s-abc123 "FitKind iPhone 17 Pro"
+simemu rename --platform ios "Aiyayai iPhone 17 Pro" "Luke iPhone 17 Pro"
 ```
 
 ### Use it

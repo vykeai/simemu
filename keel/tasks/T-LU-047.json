@@ -1,0 +1,42 @@
+{
+    "id": "T-LU-047",
+    "title": "Expand sentinel to lock bundle IDs, env configs, domain mappings per environment \u2014 prevent agents randomly changing them",
+    "description": "",
+    "product": null,
+    "lane": null,
+    "wave": "wave-22",
+    "space": null,
+    "status": "todo",
+    "priority": "high",
+    "platform": "all",
+    "assignee": null,
+    "dependsOn": [],
+    "spec": null,
+    "parentId": null,
+    "dueDate": null,
+    "context": [],
+    "acceptanceCriteria": [
+        "sentinel config supports bundle ID, env, domain per environment",
+        "sentinel validate catches drift when agent changes a locked field",
+        "Works for iOS (bundle ID), Android (applicationId), web (domain)",
+        "Does NOT break existing sentinel codegen functionality"
+    ],
+    "cloudy_run": null,
+    "statusHistory": [
+        {
+            "status": "todo",
+            "ts": "2026-04-30T08:15:53.685Z"
+        }
+    ],
+    "attachments": [],
+    "stage": null,
+    "runStatus": null,
+    "stageHistory": [],
+    "recurring": null,
+    "createdAt": "2026-04-30T08:15:53.684Z",
+    "updatedAt": "2026-04-30T08:15:53.684Z",
+    "validationOverrides": null,
+    "executionMode": null,
+    "cloudyTaskGraph": null,
+    "cloudy": null
+}

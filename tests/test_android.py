@@ -1,7 +1,9 @@
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -10,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from simemu import android
 
 
-def _mock_serial(avd_name: str) -> str:
+def _mock_serial(avd_name: str, pinned: str | None = None) -> str:
     """Stub _serial that always returns a fixed serial."""
     return "emulator-5554"
 
@@ -21,11 +23,12 @@ def _mock_get_android_serial(avd_name: str) -> str:
 
 class TestSerial(unittest.TestCase):
 
+    @patch("simemu.android.real_device.list_android_devices", return_value=[])
     @patch("simemu.android.get_android_serial", return_value=None)
-    def test_raises_when_not_running(self, mock_gas: MagicMock) -> None:
+    def test_raises_when_not_running(self, mock_gas: MagicMock, mock_real_devices: MagicMock) -> None:
         with self.assertRaises(RuntimeError) as ctx:
             android._serial("MyAVD")
-        self.assertIn("not running", str(ctx.exception))
+        self.assertIn("not connected or adb-ready", str(ctx.exception))
         self.assertIn("MyAVD", str(ctx.exception))
 
     @patch("simemu.android.get_android_serial", return_value="emulator-5554")
@@ -58,6 +61,250 @@ class TestInstall(unittest.TestCase):
                 android.install("MyAVD", f.name, timeout=5)
             self.assertIn("timed out", str(ctx.exception))
 
+    @patch("simemu.android._apk_application_id", return_value=None)
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_install_uses_caller_timeout_for_readiness(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_app_id: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
+        with tempfile.NamedTemporaryFile(suffix=".apk") as f:
+            android.install("MyAVD", f.name, timeout=5)
+        mock_ready.assert_called_once_with("MyAVD", timeout=5, pinned_serial=None)
+
+    @patch("simemu.android.verify_install")
+    @patch("simemu.android._apk_application_id", return_value="app.fitkind.dev")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_runs_post_install_verification(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_app_id: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
+        with tempfile.NamedTemporaryFile(suffix=".apk") as f:
+            android.install("MyAVD", f.name)
+        mock_verify.assert_called_once_with("MyAVD", "app.fitkind.dev", pinned_serial=None)
+
+    @patch("simemu.android.repair_install")
+    @patch("simemu.android.verify_install", side_effect=RuntimeError("broken pm"))
+    @patch("simemu.android._apk_application_id", return_value="app.fitkind.dev")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_attempts_repair_when_verification_fails(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_app_id: MagicMock,
+        mock_verify: MagicMock,
+        mock_repair: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success\n", stderr="")
+        with tempfile.NamedTemporaryFile(suffix=".apk") as f:
+            android.install("MyAVD", f.name)
+            mock_repair.assert_called_once_with(
+                "MyAVD",
+                "app.fitkind.dev",
+                f.name,
+                timeout=120,
+                pinned_serial=None,
+            )
+
+
+class TestPackageVerification(unittest.TestCase):
+    def _result(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+        return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_verify_install_passes_with_coherent_package_state(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            self._result(stdout="package:/data/app/app.fitkind.dev/base.apk\n"),
+            self._result(stdout="priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\napp.fitkind.dev/.MainActivity\n"),
+            self._result(stdout="Package [app.fitkind.dev] (123abc):\n  pkg=Package{123abc app.fitkind.dev}\n"),
+        ]
+        probe = android.verify_install("MyAVD", "app.fitkind.dev", timeout=0)
+        self.assertTrue(probe.ok)
+        self.assertIn("pm path", probe.format_report())
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_verify_install_raises_on_pkg_null_state(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            self._result(stdout=""),
+            self._result(stdout="No activity found\n"),
+            self._result(stdout="Packages:\n  Package [app.sitches.dev] (abc):\n    pkg=null\n"),
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            android.verify_install("MyAVD", "app.sitches.dev", timeout=0)
+        msg = str(ctx.exception)
+        self.assertIn("package-manager state is inconsistent", msg)
+        self.assertIn("pkg=null", msg)
+        self.assertIn("repair-install", msg)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_verify_install_raises_transport_error_without_repair_hint(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            self._result(stderr="device offline", returncode=1),
+            self._result(stderr="timed out", returncode=1),
+            self._result(stderr="device offline", returncode=1),
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            android.verify_install("MyAVD", "app.sitches.dev", timeout=0)
+        msg = str(ctx.exception)
+        self.assertIn("transport was not ready", msg)
+        self.assertNotIn("repair-install", msg)
+
+    @patch("simemu.android.verify_install", side_effect=[
+        # step 0: simple reinstall — verify succeeds immediately
+        android.PackageVerification(
+            package="app.sitches.dev",
+            pm_path="package:/data/app/app.sitches.dev/base.apk",
+            resolve_activity="app.sitches.dev/.MainActivity",
+            dumpsys="Package [app.sitches.dev]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        ),
+    ])
+    @patch("simemu.android.install")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_simple_reinstall_succeeds(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertTrue(probe.ok)
+        # Only 1 install call (step 0), no reboot needed
+        self.assertEqual(mock_install.call_count, 1)
+
+    @patch("simemu.android.verify_install", side_effect=[
+        RuntimeError("step0 reinstall bad"),  # step 0: simple reinstall verify fails
+        RuntimeError("reboot still bad"),     # step 1: reboot verify fails
+        # step 2: cold-boot verify passes
+        android.PackageVerification(
+            package="app.sitches.dev",
+            pm_path="package:/data/app/app.sitches.dev/base.apk",
+            resolve_activity="app.sitches.dev/.MainActivity",
+            dumpsys="Package [app.sitches.dev]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        ),
+    ])
+    @patch("simemu.android.install")
+    @patch("simemu.android._repair_cold_boot_cycle")
+    @patch("simemu.android._repair_reboot_cycle")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_escalates_to_cold_boot(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_reboot_cycle: MagicMock,
+        mock_cold_boot_cycle: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        probe = android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertTrue(probe.ok)
+        mock_reboot_cycle.assert_called_once_with("MyAVD", pinned_serial=None)
+        mock_cold_boot_cycle.assert_called_once_with("MyAVD", pinned_serial=None)
+        # 3 installs: step0 + reboot + cold-boot
+        self.assertEqual(3, mock_install.call_count)
+
+    @patch("simemu.android.verify_install", side_effect=RuntimeError("still broken"))
+    @patch("simemu.android.install")
+    @patch("simemu.android._repair_cold_boot_cycle")
+    @patch("simemu.android._repair_reboot_cycle")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_repair_install_raises_after_all_recovery_steps_fail(
+        self,
+        mock_ready: MagicMock,
+        mock_run: MagicMock,
+        mock_reboot_cycle: MagicMock,
+        mock_cold_boot_cycle: MagicMock,
+        mock_install: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            android.repair_install("MyAVD", "app.sitches.dev", "/tmp/app.apk")
+        self.assertIn("repair-install failed", str(ctx.exception))
+        self.assertIn("reboot:", str(ctx.exception))
+        self.assertIn("cold-boot:", str(ctx.exception))
+
+class TestForegroundVerification(unittest.TestCase):
+    def _result(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+        return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    def test_foreground_app_parses_resumed_package(
+        self,
+        mock_serial: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        mock_run.return_value = self._result(
+            stdout="  mResumedActivity: ActivityRecord{abc u0 app.fitkind.dev/.MainActivity t12}\n"
+        )
+        self.assertEqual("app.fitkind.dev", android.foreground_app("MyAVD"))
+
+    @patch("simemu.android.foreground_app", return_value="com.vivii.dev")
+    def test_wait_for_foreground_package_raises_for_wrong_app(self, mock_foreground: MagicMock) -> None:
+        with patch("simemu.android.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "Foreground app was com.vivii.dev instead"):
+                android._wait_for_foreground_package("MyAVD", "app.fitkind.dev", timeout=0.2, delay=0.01)
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_launch_verifies_foreground_package(
+        self,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.launch("MyAVD", "app.fitkind.dev")
+        mock_wait_foreground.assert_called_once_with("MyAVD", "app.fitkind.dev", pinned_serial=None)
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb", return_value="Starting: Intent { act=android.intent.action.VIEW }")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android.time.sleep")
+    def test_open_url_verifies_expected_package_when_provided(
+        self,
+        mock_sleep: MagicMock,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.open_url("MyAVD", "fitkind://debug/vault/template-detail-proof", expected_package="app.fitkind.dev")
+        mock_wait_foreground.assert_called_once_with(
+            "MyAVD",
+            "app.fitkind.dev",
+            timeout=5.0,
+            pinned_serial=None,
+        )
+
 
 class TestKey(unittest.TestCase):
 
@@ -65,19 +312,19 @@ class TestKey(unittest.TestCase):
     @patch("simemu.android._ensure_booted")
     def test_maps_named_keys(self, mock_boot: MagicMock, mock_adb: MagicMock) -> None:
         android.key("MyAVD", "home")
-        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "3")
+        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "3", pinned_serial=None)
 
     @patch("simemu.android._adb")
     @patch("simemu.android._ensure_booted")
     def test_maps_back_key(self, mock_boot: MagicMock, mock_adb: MagicMock) -> None:
         android.key("MyAVD", "back")
-        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "4")
+        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "4", pinned_serial=None)
 
     @patch("simemu.android._adb")
     @patch("simemu.android._ensure_booted")
     def test_accepts_raw_integer_keycodes(self, mock_boot: MagicMock, mock_adb: MagicMock) -> None:
         android.key("MyAVD", "42")
-        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "42")
+        mock_adb.assert_called_once_with("MyAVD", "shell", "input", "keyevent", "42", pinned_serial=None)
 
     @patch("simemu.android._ensure_booted")
     def test_raises_for_unknown_key(self, mock_boot: MagicMock) -> None:
@@ -329,6 +576,419 @@ class TestBiometrics(unittest.TestCase):
                                          mock_adb: MagicMock) -> None:
         android.biometrics("MyAVD", match=False)
         mock_adb.assert_called_once_with("MyAVD", "emu", "finger", "touch", "2")
+
+
+class TestStopOtherApps(unittest.TestCase):
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_stops_third_party_apps_except_keep(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="package:app.sitches.dev\npackage:ai.vivii.dev\npackage:com.example.other\n",
+            stderr="",
+        )
+        stopped = android.stop_other_apps("TestAVD", keep="app.sitches.dev")
+        self.assertIn("ai.vivii.dev", stopped)
+        self.assertIn("com.example.other", stopped)
+        self.assertNotIn("app.sitches.dev", stopped)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_keeps_multiple_packages(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="package:app.a\npackage:app.b\npackage:app.c\n",
+            stderr="",
+        )
+        stopped = android.stop_other_apps("TestAVD", keep=["app.a", "app.b"])
+        self.assertEqual(stopped, ["app.c"])
+
+
+class TestDismissSystemDialogs(unittest.TestCase):
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_detects_and_dismisses_anr(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="mIsAnrDialog=true Application Not Responding",
+            stderr="",
+        )
+        result = android.dismiss_system_dialogs("TestAVD")
+        self.assertTrue(result)
+        # dumpsys + keyevent 66 + keyevent 4 + broadcast = 4 calls
+        self.assertGreaterEqual(mock_run.call_count, 4)
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_returns_false_when_no_dialog(self, mock_ready, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Window #0: com.example.app/MainActivity",
+            stderr="",
+        )
+        result = android.dismiss_system_dialogs("TestAVD")
+        self.assertFalse(result)
+        mock_run.assert_called_once()
+
+
+class TestRepairInstallFastPath(unittest.TestCase):
+    @patch("simemu.android.verify_install")
+    @patch("simemu.android.install")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android.subprocess.run")
+    def test_repair_step0_returns_on_first_success(self, mock_sub, mock_ready,
+                                                     mock_install, mock_verify) -> None:
+        probe = android.PackageVerification(
+            package="com.test", pm_path="package:/data/app/com.test",
+            resolve_activity="com.test/.Main", dumpsys="Package [com.test]",
+            pm_path_ok=True, resolve_activity_ok=True, dumpsys_ok=True,
+        )
+        mock_verify.return_value = probe
+        result = android.repair_install("TestAVD", "com.test", "/tmp/app.apk")
+        # Step 0 succeeds immediately — verify called once, no reboot
+        self.assertEqual(mock_verify.call_count, 1)
+        self.assertTrue(result.ok)
+
+
+class TestBoot(unittest.TestCase):
+
+    @patch("simemu.android._read_log_excerpt")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.get_android_serial")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
+    @patch("simemu.state.check_maintenance")
+    def test_retries_without_snapshot_load_after_snapshot_failure(
+        self,
+        mock_maintenance: MagicMock,
+        mock_geny: MagicMock,
+        mock_popen: MagicMock,
+        mock_get_serial: MagicMock,
+        mock_run: MagicMock,
+        mock_read_log: MagicMock,
+    ) -> None:
+        first_proc = MagicMock()
+        first_proc.poll.return_value = 1
+        second_proc = MagicMock()
+        second_proc.poll.return_value = None
+        mock_popen.side_effect = [first_proc, second_proc]
+        mock_get_serial.side_effect = [None, None, "emulator-5554"]
+        mock_run.return_value = MagicMock(stdout="1\n", returncode=0)
+        mock_read_log.side_effect = [
+            "FATAL | A snapshot operation is pending and timeout has expired.",
+            "",
+        ]
+
+        android.boot("Biscuit_MedPhone_6.3in_API35", headless=True)
+
+        first_cmd = mock_popen.call_args_list[0].args[0]
+        second_cmd = mock_popen.call_args_list[1].args[0]
+        self.assertNotIn("-no-snapshot-load", first_cmd)
+        self.assertIn("-no-snapshot-load", second_cmd)
+        mock_run.assert_called_once()
+
+    @patch("simemu.android._read_log_excerpt", return_value="")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.get_android_serial")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.genymotion.is_genymotion_id", return_value=False)
+    @patch("simemu.state.check_maintenance")
+    def test_boot_logs_progress_to_stderr_only(
+        self,
+        mock_maintenance: MagicMock,
+        mock_geny: MagicMock,
+        mock_popen: MagicMock,
+        mock_get_serial: MagicMock,
+        mock_run: MagicMock,
+        mock_read_log: MagicMock,
+    ) -> None:
+        proc = MagicMock()
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        mock_get_serial.side_effect = [None, "emulator-5554"]
+        mock_run.return_value = MagicMock(stdout="1\n", returncode=0)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            android.boot("MedPhone_API33", headless=True)
+
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("Waiting for 'MedPhone_API33' to boot...", stderr.getvalue())
+
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._ensure_booted")
+    def test_reboot_logs_progress_to_stderr_only(
+        self,
+        mock_booted: MagicMock,
+        mock_sleep: MagicMock,
+        mock_run: MagicMock,
+        mock_serial: MagicMock,
+        mock_ready: MagicMock,
+    ) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            android.reboot("MedPhone_API33")
+
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("Rebooting...", stderr.getvalue())
+
+
+class TestReadyState(unittest.TestCase):
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android.time.time", side_effect=[0.0, 0.0, 2.0])
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android._ensure_booted")
+    def test_wait_until_ready_fails_fast_on_unauthorized_transport(
+        self,
+        mock_booted: MagicMock,
+        mock_serial: MagicMock,
+        mock_run: MagicMock,
+        mock_time: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="adb: device unauthorized.\nOtherwise check for a confirmation dialog on your device.\n",
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            android.wait_until_ready("Broken_AVD", timeout=1)
+
+        self.assertIn("unauthorized", str(ctx.exception).lower())
+        invoked = [" ".join(call.args[0]) for call in mock_run.call_args_list]
+        self.assertTrue(any("get-state" in cmd for cmd in invoked))
+        self.assertFalse(any("wait-for-device" in cmd for cmd in invoked))
+
+    @patch("simemu.android.wait_until_ready", side_effect=RuntimeError("adb device unauthorized"))
+    def test_dismiss_system_dialogs_is_best_effort_when_adb_is_unhealthy(
+        self,
+        mock_ready: MagicMock,
+    ) -> None:
+        self.assertFalse(android.dismiss_system_dialogs("Broken_AVD"))
+
+
+class TestSessionIsolation(unittest.TestCase):
+    """Test that pinned serial prevents cross-session contamination."""
+
+    @patch("simemu.android.subprocess.run")
+    def test_validate_serial_correct_avd(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Sitches_Phone_API35\nOK\n", stderr=""
+        )
+        self.assertTrue(android.validate_serial("emulator-5554", "Sitches_Phone_API35"))
+
+    @patch("simemu.android.subprocess.run")
+    def test_validate_serial_wrong_avd(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Fitkind_Phone_API35\nOK\n", stderr=""
+        )
+        self.assertFalse(android.validate_serial("emulator-5554", "Sitches_Phone_API35"))
+
+    @patch("simemu.android.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5))
+    def test_validate_serial_timeout(self, mock_run) -> None:
+        self.assertFalse(android.validate_serial("emulator-5554", "MyAVD"))
+
+    @patch("simemu.android._resolve_serial", return_value="emulator-5554")
+    @patch("simemu.android.validate_serial", return_value=True)
+    def test_serial_uses_pinned_when_valid(self, mock_validate, mock_resolve) -> None:
+        result = android._serial("MyAVD", pinned="emulator-5554")
+        self.assertEqual(result, "emulator-5554")
+        mock_validate.assert_called_once_with("emulator-5554", "MyAVD")
+        mock_resolve.assert_not_called()
+
+    @patch("simemu.android._resolve_serial", return_value="emulator-5556")
+    @patch("simemu.android.validate_serial", return_value=False)
+    def test_serial_falls_back_when_pinned_invalid(self, mock_validate, mock_resolve) -> None:
+        result = android._serial("MyAVD", pinned="emulator-5554")
+        self.assertEqual(result, "emulator-5556")
+        mock_validate.assert_called_once_with("emulator-5554", "MyAVD")
+        mock_resolve.assert_called_once()
+
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    def test_adb_with_retry_preserves_pinned_serial(self, mock_serial, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="device offline")
+        android._adb_with_retry(
+            "MyAVD",
+            ["shell", "pm", "path", "android"],
+            capture=True,
+            check=False,
+            timeout=10,
+            pinned_serial="emulator-5554",
+        )
+        self.assertEqual(2, mock_serial.call_count)
+        self.assertEqual(mock_serial.call_args_list[0].kwargs["pinned"], "emulator-5554")
+        self.assertEqual(mock_serial.call_args_list[1].kwargs["pinned"], "emulator-5554")
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_launch_passes_pinned_serial_to_foreground_wait(
+        self,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.launch("MyAVD", "app.fitkind.dev", pinned_serial="emulator-5554")
+        mock_wait_foreground.assert_called_once_with(
+            "MyAVD",
+            "app.fitkind.dev",
+            pinned_serial="emulator-5554",
+        )
+
+    @patch("simemu.android._wait_for_foreground_package")
+    @patch("simemu.android._adb", return_value="Starting: Intent { act=android.intent.action.VIEW }")
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.android.time.sleep")
+    def test_open_url_passes_pinned_serial_to_foreground_wait(
+        self,
+        mock_sleep: MagicMock,
+        mock_ready: MagicMock,
+        mock_adb: MagicMock,
+        mock_wait_foreground: MagicMock,
+    ) -> None:
+        android.open_url(
+            "MyAVD",
+            "fitkind://debug/vault/template-detail-proof",
+            expected_package="app.fitkind.dev",
+            pinned_serial="emulator-5554",
+        )
+        mock_wait_foreground.assert_called_once_with(
+            "MyAVD",
+            "app.fitkind.dev",
+            timeout=5.0,
+            pinned_serial="emulator-5554",
+        )
+
+
+class TestScreenshotFallbacks(unittest.TestCase):
+
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._capture_window_fallback", return_value=True)
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android.dismiss_system_dialogs")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.android._adb")
+    def test_screenshot_prefers_visible_window_capture(
+        self,
+        mock_adb: MagicMock,
+        mock_popen: MagicMock,
+        mock_dismiss: MagicMock,
+        mock_serial: MagicMock,
+        mock_window_fallback: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            android.screenshot("MyAVD", output, settle_ms=0)
+        mock_window_fallback.assert_called_once_with("MyAVD", output)
+        mock_popen.assert_not_called()
+        mock_adb.assert_not_called()
+
+    @patch("simemu.android._capture_is_black", return_value=False)
+    @patch("simemu.android._window_info")
+    @patch("simemu.android.subprocess.run")
+    def test_capture_window_fallback_uses_window_id(
+        self,
+        mock_run: MagicMock,
+        mock_window_info: MagicMock,
+        mock_black: MagicMock,
+    ) -> None:
+        mock_window_info.return_value = {
+            "owner": "Android Emulator",
+            "name": "Biscuit_MedPhone_6.3in_API34",
+            "window_id": 321,
+            "bounds": {"x": 10, "y": 20, "width": 1080, "height": 2400},
+            "onscreen": True,
+            "layer": 0,
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            tmp = output + ".windowtmp.png"
+
+            def _run(cmd, **kwargs):
+                Path(tmp).write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * 512))
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = _run
+
+            self.assertTrue(android._capture_window_fallback("MyAVD", output))
+            self.assertTrue(Path(output).exists())
+            self.assertIn("-l", mock_run.call_args.args[0])
+            self.assertIn("321", mock_run.call_args.args[0])
+
+    @patch("simemu.android._capture_is_black", return_value=False)
+    @patch("simemu.android.subprocess.run")
+    def test_capture_console_screenshot_uses_emulator_console(
+        self,
+        mock_run: MagicMock,
+        mock_black: MagicMock,
+    ) -> None:
+        def _run(cmd, **kwargs):
+            output_dir = Path(cmd[-1])
+            (output_dir / "Screenshot_123.png").write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * 512))
+            return MagicMock(returncode=0, stdout="OK\n", stderr="")
+
+        mock_run.side_effect = _run
+
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            self.assertTrue(android._capture_console_screenshot("emulator-5554", output))
+            self.assertTrue(Path(output).exists())
+            self.assertEqual(
+                ["adb", "-s", "emulator-5554", "emu", "screenrecord", "screenshot"],
+                mock_run.call_args.args[0][:6],
+            )
+
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._capture_window_fallback")
+    @patch("simemu.android._capture_console_screenshot", return_value=True)
+    @patch("simemu.android.shutil.which", return_value=None)
+    @patch("simemu.android._adb", side_effect=RuntimeError("device capture failed"))
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android.dismiss_system_dialogs")
+    def test_screenshot_falls_back_to_window_capture(
+        self,
+        mock_dismiss: MagicMock,
+        mock_serial: MagicMock,
+        mock_popen: MagicMock,
+        mock_run: MagicMock,
+        mock_adb: MagicMock,
+        mock_which: MagicMock,
+        mock_console_screenshot: MagicMock,
+        mock_window_fallback: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.wait.return_value = 1
+        mock_popen.return_value = proc
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+
+            def _console_capture(serial: str, path: str) -> bool:
+                Path(path).write_bytes(b"console-shot")
+                return True
+
+            mock_console_screenshot.side_effect = _console_capture
+            mock_window_fallback.return_value = False
+
+            android.screenshot("MyAVD", output, settle_ms=0)
+
+            mock_console_screenshot.assert_called_once_with("emulator-5554", output)
+            self.assertTrue(Path(output).exists())
 
 
 if __name__ == "__main__":

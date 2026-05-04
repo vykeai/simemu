@@ -6,21 +6,35 @@
   "lane": null,
   "wave": "wave-4",
   "space": "space-core",
-  "status": "todo",
+  "status": "done",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:20:13.592Z",
+      "by": "human",
+      "text": "Watchdog module with 5 health checks. Status command shows issues with hints. JSON includes health report. 10 tests."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:39.354Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T21:17:35.099Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-25T21:20:13.413Z"
     }
   ],
   "attachments": [],
@@ -29,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:39.352Z",
-  "updatedAt": "2026-03-24T22:00:39.352Z",
+  "updatedAt": "2026-03-25T21:20:13.592Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,

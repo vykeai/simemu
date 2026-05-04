@@ -6,21 +6,35 @@
   "lane": null,
   "wave": "wave-3",
   "space": "space-core",
-  "status": "todo",
+  "status": "done",
   "priority": "low",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T22:09:24.245Z",
+      "by": "human",
+      "text": "Integration kit: AGENTS snippet, execution.yaml template, setup README."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:41.185Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T22:06:10.246Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-25T22:09:23.981Z"
     }
   ],
   "attachments": [],
@@ -29,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:41.178Z",
-  "updatedAt": "2026-03-24T22:00:41.178Z",
+  "updatedAt": "2026-03-25T22:09:24.245Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,

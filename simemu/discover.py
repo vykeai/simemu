@@ -234,11 +234,100 @@ def _get_claimed_sim_ids() -> set[str]:
     return {s.sim_id for s in get_active_sessions().values()}
 
 
+def _classify_form_factor(sim: SimulatorInfo) -> str | None:
+    """Infer a coarse form factor from a discovered device name."""
+    name = sim.device_name.lower()
+
+    if any(hint in name for hint in ("ipad", "tablet")):
+        return "tablet"
+    if any(hint in name for hint in ("iphone", "pixel", "galaxy", "phone", "nexus")):
+        return "phone"
+    if any(hint in name for hint in ("apple tv", "appletv", "tv", "roku")):
+        return "tv"
+    if any(hint in name for hint in ("apple watch", "watch", "wear", "gear")):
+        return "watch"
+    if any(hint in name for hint in ("vision", "visionpro", "xr", "quest")):
+        return "vision"
+    return None
+
+
+def get_reservation(agent: str, platform: str) -> dict | None:
+    """Check if an agent has a reserved device for a platform.
+
+    Reads from ~/.simemu/config.json under "reservations":
+    {
+      "reservations": {
+        "sitches": {
+          "ios": {"device": "iPhone 17 Pro Max"},
+          "android": {"device": "Pixel 9 Pro"}
+        }
+      }
+    }
+    Returns the reservation dict (with "device" key) or None.
+    """
+    from . import state as _state
+    config_path = _state.config_dir() / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        config = json.loads(config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    reservations = config.get("reservations", {})
+    # Check by agent name (e.g. "sitches", "fitkind")
+    agent_res = reservations.get(agent, {})
+    return agent_res.get(platform)
+
+
+def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
+    """Return all available devices matching a ClaimSpec without choosing one."""
+    allocated_ids = _get_claimed_sim_ids()
+    platform = {
+        "watch": "watchos",
+        "tv": "tvos",
+        "vision": "visionos",
+    }.get(spec.form_factor, spec.platform)
+
+    if spec.real_device:
+        if platform == "ios":
+            candidates = list_real_ios(allocated_ids)
+        elif platform == "android":
+            candidates = list_real_android(allocated_ids)
+        else:
+            return []
+    else:
+        list_fn = {
+            "ios": list_ios,
+            "watchos": list_watchos,
+            "tvos": list_tvos,
+            "visionos": list_visionos,
+            "android": list_android,
+        }.get(platform)
+        if not list_fn:
+            return []
+        candidates = list_fn(allocated_ids)
+
+    if spec.device_selector:
+        selector = spec.device_selector.lower()
+        candidates = [
+            sim for sim in candidates
+            if selector in sim.device_name.lower() or selector in sim.sim_id.lower()
+        ]
+    if spec.form_factor in {"phone", "tablet"}:
+        candidates = [
+            sim for sim in candidates
+            if _classify_form_factor(sim) == spec.form_factor
+            or (spec.device_selector and _classify_form_factor(sim) is None)
+        ]
+    return candidates
+
+
 def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
     """Find the best available device matching a ClaimSpec.
 
     Scoring: booted > shutdown, exact version match > close, less memory > more.
     Maps form_factor to platform and device name filters.
+    Respects permanent reservations: if the agent has a reserved device, prefer it.
     """
     from .session import ClaimSpec  # deferred to avoid circular import
 
@@ -252,16 +341,6 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
     }
 
     platform = _FORM_FACTOR_PLATFORM.get(spec.form_factor, spec.platform)
-
-    # Device name hints for form factors
-    _FORM_FACTOR_HINTS: dict[str, list[str]] = {
-        "phone": ["iphone", "pixel", "galaxy", "phone"],
-        "tablet": ["ipad", "tablet"],
-        "watch": ["watch"],
-        "tv": ["tv", "apple tv"],
-        "vision": ["vision", "apple vision"],
-    }
-    hints = _FORM_FACTOR_HINTS.get(spec.form_factor, [])
 
     if spec.real_device:
         if platform == "ios":
@@ -293,31 +372,58 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
             f"Re-try later or create a new one."
         )
 
+    selector = spec.device_selector.lower() if spec.device_selector else ""
+    if spec.device_selector:
+        filtered = [
+            sim for sim in candidates
+            if selector in sim.device_name.lower() or selector in sim.sim_id.lower()
+        ]
+        if not filtered:
+            available = ", ".join(sim.device_name for sim in candidates)
+            raise NoSimulatorAvailable(
+                f"No available {platform} {kind} matching device selector "
+                f"'{spec.device_selector}'. Available unclaimed devices: {available}"
+            )
+        candidates = filtered
+
+    if spec.form_factor in {"phone", "tablet"}:
+        filtered = [
+            sim for sim in candidates
+            if _classify_form_factor(sim) == spec.form_factor
+            or (spec.device_selector and _classify_form_factor(sim) is None)
+        ]
+        if not filtered:
+            available = ", ".join(sim.device_name for sim in candidates)
+            from .session import get_active_sessions
+            active = get_active_sessions()
+            held_by = [
+                f"{sid} → {s.device_name} (agent: {s.agent})"
+                for sid, s in active.items()
+                if s.platform == platform
+            ]
+            ownership_hint = ""
+            if held_by:
+                ownership_hint = f". Currently claimed: {'; '.join(held_by)}"
+            raise NoSimulatorAvailable(
+                f"No available {platform} {kind} matching form factor "
+                f"'{spec.form_factor}'. Available unclaimed devices: {available}{ownership_hint}"
+            )
+        candidates = filtered
+
+    # Check for permanent reservation
+    import os as _os
+    agent = _os.environ.get("SIMEMU_AGENT", "")
+    reservation = get_reservation(agent, platform) if agent else None
+    reserved_device_name = reservation.get("device", "") if reservation else ""
+
     # Score candidates
     def _score(sim: SimulatorInfo) -> tuple:
         """Lower score = better match. Returns tuple for sorting."""
-        # Prefer a device whose slug/name matches the human label. This lets
-        # project-specific claims such as "fitkind-..." avoid unrelated AVDs
-        # that happen to sort earlier alphabetically.
-        label_score = 0
-        if spec.label:
-            name_lower = sim.device_name.lower()
-            label_tokens = [
-                token
-                for token in spec.label.lower().replace("_", "-").split("-")
-                if len(token) >= 4
-            ]
-            label_score = -sum(1 for token in label_tokens if token in name_lower)
+        # Permanent reservation match is highest priority
+        reserved_score = 0 if (reserved_device_name and reserved_device_name in sim.device_name) else 1
 
         # Prefer booted devices (saves boot time)
         booted_score = 0 if sim.booted else 1
-
-        # Prefer form factor match
-        form_score = 1
-        if hints:
-            name_lower = sim.device_name.lower()
-            if any(h in name_lower for h in hints):
-                form_score = 0
 
         # Prefer version match
         version_score = 0
@@ -331,7 +437,7 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
         # Prefer non-Genymotion (lighter on Apple Silicon)
         geny_score = 1 if sim.genymotion else 0
 
-        return (label_score, form_score, version_score, booted_score, geny_score, sim.device_name)
+        return (reserved_score, version_score, booted_score, geny_score, sim.device_name)
 
     candidates.sort(key=_score)
     return candidates[0]

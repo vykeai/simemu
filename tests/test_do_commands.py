@@ -4,7 +4,6 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -49,6 +48,7 @@ class DoCommandBase(unittest.TestCase):
         sim_id: str = "AAA-111",
         device_name: str = "iPhone 16 Pro",
         real_device: bool = False,
+        pinned_serial: str | None = None,
     ) -> None:
         now = _now_iso()
         session_data = {
@@ -71,6 +71,7 @@ class DoCommandBase(unittest.TestCase):
             "claim_os_version": None,
             "claim_real_device": real_device,
             "claim_label": "",
+            "pinned_serial": pinned_serial,
         }
         sf = Path(self.tmpdir.name) / "sessions.json"
         if sf.exists():
@@ -109,9 +110,13 @@ class TestDoInstall(DoCommandBase):
 
     @patch("simemu.session.device.ios_install")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_install_real_ios(self, mock_serial, mock_install) -> None:
+    @patch("simemu.discover.list_real_ios")
+    def test_do_install_real_ios(self, mock_list_real_ios, mock_serial, mock_install) -> None:
         self._seed("s-real01", platform="ios", sim_id="UDID-REAL",
                     device_name="iPhone 15 (real)", real_device=True)
+        mock_device = MagicMock()
+        mock_device.sim_id = "UDID-REAL"
+        mock_list_real_ios.return_value = [mock_device]
         result = do_command("s-real01", "install", ["/path/to/App.ipa"])
         mock_install.assert_called_once_with("UDID-REAL", "/path/to/App.ipa")
         self.assertEqual(result["status"], "installed")
@@ -128,19 +133,50 @@ class TestDoLaunch(DoCommandBase):
         mock_launch.assert_called_once_with("AAA-111", "com.example.App", [])
         self.assertEqual(result["status"], "launched")
 
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
     @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_launch_android(self, mock_serial, mock_launch) -> None:
+    def test_do_launch_android(self, mock_serial, mock_fg, mock_launch, mock_stop) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "launch", ["com.example.app/.MainActivity"])
         mock_launch.assert_called_once_with("Pixel_7", "com.example.app/.MainActivity", [])
         self.assertEqual(result["status"], "launched")
 
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.other.app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_launch_android_warns_on_foreground_mismatch(self, mock_serial, mock_fg, mock_launch, mock_stop) -> None:
+        """Launch succeeds but emits diagnostic when wrong app is foreground."""
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7")
+        result = do_command("s-droid1", "launch", ["com.example.app"])
+        self.assertEqual(result["status"], "launched")
+        # Diagnostic emitted to stderr — we just verify launch still completes
+
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_launch_missing_arg(self, mock_serial) -> None:
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "launch", [])
+
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_launch_android_passes_pinned_serial(self, mock_serial, mock_fg, mock_launch, mock_stop) -> None:
+        self._seed(
+            "s-droid-pin",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        do_command("s-droid-pin", "launch", ["com.example.app"])
+        mock_stop.assert_called_once_with("Pixel_7", keep="com.example.app", pinned_serial="emulator-5554")
+        mock_launch.assert_called_once_with("Pixel_7", "com.example.app", [], pinned_serial="emulator-5554")
+        mock_fg.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
 
 # ── tap ──────────────────────────────────────────────────────────────────────
@@ -167,6 +203,29 @@ class TestDoTap(DoCommandBase):
     def test_do_tap_missing_args(self, mock_serial) -> None:
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "tap", ["100"])
+
+
+class TestDoSoftwareKeyboard(DoCommandBase):
+    @patch("simemu.session.ios.software_keyboard")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_software_keyboard_ios_defaults_to_toggle(self, mock_serial, mock_keyboard) -> None:
+        result = do_command("s-test01", "software-keyboard", [])
+        mock_keyboard.assert_called_once_with("AAA-111", "toggle")
+        self.assertEqual(result["status"], "toggled")
+        self.assertEqual(result["target"], "software-keyboard")
+
+    @patch("simemu.session.ios.software_keyboard")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_software_keyboard_ios_passes_action(self, mock_serial, mock_keyboard) -> None:
+        result = do_command("s-test01", "software-keyboard", ["toggle"])
+        mock_keyboard.assert_called_once_with("AAA-111", "toggle")
+        self.assertEqual(result["status"], "toggled")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_software_keyboard_rejects_android(self, mock_serial) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        with self.assertRaisesRegex(RuntimeError, "iOS Simulator only"):
+            do_command("s-droid1", "software-keyboard", [])
 
 
 # ── swipe ────────────────────────────────────────────────────────────────────
@@ -219,28 +278,316 @@ class TestDoScreenshot(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "screenshot", ["-o", "/tmp/droid.png"])
-        mock_screenshot.assert_called_once_with("Pixel_7", "/tmp/droid.png")
+        mock_screenshot.assert_called_once_with("Pixel_7", "/tmp/droid.png", max_size=None)
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_screenshot_android_passes_pinned_serial(self, mock_serial, mock_screenshot) -> None:
+        self._seed(
+            "s-droid-pin",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        do_command("s-droid-pin", "screenshot", ["-o", "/tmp/droid.png"])
+        mock_screenshot.assert_called_once_with(
+            "Pixel_7",
+            "/tmp/droid.png",
+            max_size=None,
+            pinned_serial="emulator-5554",
+        )
+
+    # T-LU-042: screenshot activates last_app before capturing
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.activate_app", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_activates_last_app_ios(self, mock_serial, mock_activate, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-test01", "screenshot", ["-o", "/tmp/test.png"])
+        mock_activate.assert_called_once_with("AAA-111", "app.fitkind.dev")
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_activates_last_app_android(self, mock_serial, mock_launch, mock_ss) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "screenshot", ["-o", "/tmp/test.png"])
+        mock_launch.assert_called_once_with("Pixel_7", "com.fitkind.dev", [])
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.activate_app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_skips_activation_without_last_app(self, mock_serial, mock_activate, mock_ss) -> None:
+        result = do_command("s-test01", "screenshot", ["-o", "/tmp/test.png"])
+        mock_activate.assert_not_called()
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
 
 
 # ── maestro ──────────────────────────────────────────────────────────────────
 
 
 class TestDoMaestro(DoCommandBase):
+    @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
+    @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")
     @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_maestro(self, mock_serial, mock_run) -> None:
+    def test_do_maestro(self, mock_get_serial, mock_serial, mock_run, mock_fg, mock_wait) -> None:
         mock_run.return_value = MagicMock(returncode=0)
-        result = do_command("s-test01", "maestro", ["flow.yaml"])
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- assertVisible: Vault\n")
+        result = do_command("s-test01", "maestro", [str(flow)])
         self.assertEqual(result["status"], "passed")
         # Verify maestro was called with the session's sim_id
         cmd_args = mock_run.call_args[0][0]
         self.assertEqual(cmd_args[0], "maestro")
-        self.assertIn("flow.yaml", cmd_args)
+        self.assertIn(str(flow), cmd_args)
 
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_maestro_missing_arg(self, mock_serial) -> None:
+    def test_do_maestro_missing_arg(self, mock_get_serial, mock_serial) -> None:
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "maestro", [])
+
+    @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
+    @patch("simemu.session.ios.launch")
+    @patch("simemu.session.ios.foreground_app", return_value="com.other.app")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_relaunches_expected_ios_app_from_flow_appid(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_launch,
+        mock_wait,
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Vault\n")
+        result = do_command("s-test01", "maestro", [str(flow)])
+        self.assertEqual(result["status"], "passed")
+        mock_launch.assert_called_once_with("AAA-111", "app.fitkind.dev", [])
+
+    @patch("subprocess.run")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", side_effect=["com.other.app", "app.fitkind.dev"])
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_relaunches_android_last_app_with_saved_launch_args(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_fg,
+        mock_launch,
+        mock_run,
+    ) -> None:
+        self._seed(
+            "s-droid1",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
+        data["sessions"]["s-droid1"]["provenance"] = {
+            "last_launch_args": ["--debug-route=journey/root"]
+        }
+        sf.write_text(json.dumps(data))
+        mock_run.return_value = MagicMock(returncode=0)
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        mock_launch.assert_called_once_with(
+            "Pixel_7",
+            "app.fitkind.dev",
+            ["--debug-route=journey/root"],
+            pinned_serial="emulator-5554",
+        )
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_adds_reinstall_driver_and_ipv4(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        cmd_args = mock_run.call_args[0][0]
+        env = mock_run.call_args.kwargs["env"]
+        self.assertIn("--reinstall-driver", cmd_args)
+        self.assertIn("--debug-output", cmd_args)
+        self.assertIn("-Djava.net.preferIPv4Stack=true", env["JAVA_TOOL_OPTIONS"])
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_preserves_explicit_no_reinstall_driver(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow), "--no-reinstall-driver"])
+
+        self.assertEqual(result["status"], "passed")
+        cmd_args = mock_run.call_args[0][0]
+        self.assertIn("--no-reinstall-driver", cmd_args)
+        self.assertNotIn("--reinstall-driver", cmd_args)
+
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_reports_driver_boot_failure(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+        mock_sleep,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+
+        def _fake_run(cmd, env=None, **kwargs):
+            if "--debug-output" not in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            (debug_output / "maestro.log").write_text(
+                "Not able to reach the gRPC server while processing deviceInfo command\n"
+                "Caused by: io.netty.channel.AbstractChannel$AnnotatedConnectException: "
+                "Connection refused: localhost/[0:0:0:0:0:0:0:1]:7001\n"
+            )
+            return MagicMock(returncode=1)
+
+        mock_run.side_effect = _fake_run
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Android Maestro driver failed before the flow started", result["error"])
+        self.assertTrue(Path(result["debug_output"]).exists())
+
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_retries_bridge_boot_failure_once(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+        mock_sleep,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        attempts = {"count": 0}
+
+        def _fake_run(cmd, env=None, **kwargs):
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                (debug_output / "maestro.log").write_text(
+                    "Not able to reach the gRPC server while processing deviceInfo command\n"
+                    "Caused by: io.netty.channel.AbstractChannel$AnnotatedConnectException: "
+                    "Connection refused: localhost/[0:0:0:0:0:0:0:1]:7001\n"
+                )
+                return MagicMock(returncode=1)
+            attempts["count"] += 1
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = _fake_run
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
+        self.assertEqual(mock_run.call_count, 2)
+        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
+    @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
+    @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_times_out_instead_of_leaking_ui_runner(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_wait,
+    ) -> None:
+        import subprocess
+
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["maestro"], timeout=1800)
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- assertVisible: Vault\n")
+
+        result = do_command("s-test01", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_code"], 124)
+        self.assertIn("timed out", result["error"])
 
 
 # ── url ──────────────────────────────────────────────────────────────────────
@@ -248,10 +595,16 @@ class TestDoMaestro(DoCommandBase):
 
 class TestDoUrl(DoCommandBase):
     @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_url(self, mock_serial, mock_url) -> None:
+    def test_do_url(self, mock_serial, mock_complete, mock_url) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
         result = do_command("s-test01", "url", ["https://example.com"])
         mock_url.assert_called_once_with("AAA-111", "https://example.com")
+        mock_complete.assert_called_once_with("AAA-111", "app.fitkind.dev")
         self.assertEqual(result["status"], "opened")
 
     @patch("simemu.session.android.open_url")
@@ -260,12 +613,188 @@ class TestDoUrl(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "url", ["https://example.com"])
-        mock_url.assert_called_once_with("Pixel_7", "https://example.com")
+        mock_url.assert_called_once_with("Pixel_7", "https://example.com", expected_package=None)
+
+    @patch("simemu.session.android.open_url")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_android_uses_last_launched_app_for_verification(self, mock_serial, mock_fg, mock_url) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "url", ["fitkind://debug/route"])
+        mock_url.assert_called_once_with("Pixel_7", "fitkind://debug/route", expected_package="app.fitkind.dev")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_url_missing_arg(self, mock_serial) -> None:
         with self.assertRaises(RuntimeError):
             do_command("s-test01", "url", [])
+
+    @patch("simemu.session.android.open_url")
+    @patch("simemu.session.android.foreground_app", return_value="com.chrome.browser")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_android_raises_when_wrong_app_foreground(self, mock_serial, mock_fg, mock_url) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "not foreground on Android"):
+            do_command("s-droid1", "url", ["fitkind://debug/route"])
+
+    @patch("simemu.session.android.open_url")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_android_passes_when_correct_app_foreground(self, mock_serial, mock_fg, mock_url) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "url", ["fitkind://debug/route"])
+        self.assertEqual(result["status"], "opened")
+
+    @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=False)
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.is_app_running", return_value=False)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_ios_raises_springboard_diagnostic(
+        self, mock_serial, mock_running, mock_fg, mock_complete, mock_url
+    ) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "never launched"):
+            do_command("s-test01", "url", ["fitkind://debug/route"])
+
+    @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=False)
+    @patch("simemu.session.ios.activate_app", return_value=False)
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.is_app_running", side_effect=[True, False])
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=False)
+    @patch("simemu.session.ios.wait_for_foreground_app", return_value=False)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_url_ios_raises_stuck_behind_sheet_diagnostic(
+        self, mock_serial, mock_wait, mock_accept, mock_running, mock_fg, mock_activate, mock_complete, mock_url
+    ) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "stuck behind"):
+            do_command("s-test01", "url", ["fitkind://debug/route"])
+
+
+class TestDoDeepLinkProof(DoCommandBase):
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
+    @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_deeplink_proof_ios_accepts_alert(
+        self, mock_serial, mock_open_url, mock_complete_handoff, mock_screenshot
+    ) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with patch("time.sleep"):
+            result = do_command(
+                "s-test01",
+                "deeplink-proof",
+                ["fitkind://debug/route", "-o", "/tmp/proof.png"],
+            )
+        mock_open_url.assert_called_once_with("AAA-111", "fitkind://debug/route")
+        mock_complete_handoff.assert_called_once_with("AAA-111", "app.fitkind.dev")
+        mock_screenshot.assert_called_once_with("AAA-111", "/tmp/proof.png")
+        self.assertEqual("captured", result["status"])
+
+
+class TestDoForegroundApp(DoCommandBase):
+    @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_foreground_app_ios_uses_ios_helper(self, mock_serial, mock_foreground) -> None:
+        result = do_command("s-test01", "foreground-app", [])
+        mock_foreground.assert_called_once_with("AAA-111")
+        self.assertEqual("app.fitkind.dev", result["foreground_app"])
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_foreground_app_android_uses_android_helper(self, mock_serial, mock_foreground) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        result = do_command("s-droid1", "foreground-app", [])
+        mock_foreground.assert_called_once_with("Pixel_7")
+        self.assertEqual("app.fitkind.dev", result["foreground_app"])
+
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_foreground_app_android_passes_pinned_serial(self, mock_serial, mock_foreground) -> None:
+        self._seed(
+            "s-droid-pin",
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+        do_command("s-droid-pin", "foreground-app", [])
+        mock_foreground.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
+
+class TestDoPresentAndStabilize(DoCommandBase):
+    @patch("simemu.session.ios.present", return_value={"stable": True})
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_present_ios_marks_session_visible(self, mock_serial, mock_present) -> None:
+        result = do_command("s-test01", "present", [])
+        mock_present.assert_called_once_with("AAA-111")
+        self.assertEqual(True, result["stable"])
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        self.assertTrue(data["sessions"]["s-test01"]["visible"])
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_present_android_is_unsupported(self, mock_serial) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        result = do_command("s-droid1", "present", [])
+        self.assertEqual("unsupported", result["status"])
+
+    @patch("simemu.session.ios.stabilize", return_value={"stable": True, "udid": "AAA-111"})
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_stabilize_ios(self, mock_serial, mock_stabilize) -> None:
+        result = do_command("s-test01", "stabilize", [])
+        mock_stabilize.assert_called_once_with("AAA-111")
+        self.assertTrue(result["stable"])
+
+
+class TestDoVerifyInstall(DoCommandBase):
+    @patch("simemu.session.android.verify_install")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_verify_install_android(self, mock_serial, mock_verify) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        mock_verify.return_value = MagicMock(format_report=lambda: "pm path:\npackage:/data/app")
+        result = do_command("s-droid1", "verify-install", ["app.sitches.dev"])
+        mock_verify.assert_called_once_with("Pixel_7", "app.sitches.dev")
+        self.assertEqual("verified", result["status"])
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_verify_install_ios_rejected(self, mock_serial) -> None:
+        with self.assertRaises(RuntimeError):
+            do_command("s-test01", "verify-install", ["com.example.App"])
+
+
+class TestDoRepairInstall(DoCommandBase):
+    @patch("simemu.session.android.repair_install")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_repair_install_android(self, mock_serial, mock_repair) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        mock_repair.return_value = MagicMock(format_report=lambda: "pm path:\npackage:/data/app")
+        result = do_command("s-droid1", "repair-install", ["app.sitches.dev", "/tmp/app.apk"])
+        mock_repair.assert_called_once_with("Pixel_7", "app.sitches.dev", "/tmp/app.apk")
+        self.assertEqual("repaired", result["status"])
 
 
 # ── terminate ────────────────────────────────────────────────────────────────
@@ -603,14 +1132,16 @@ class TestDoStatusBar(DoCommandBase):
 
 
 class TestDoDismissAlert(DoCommandBase):
+    @patch("simemu.session.ios.click_system_alert_button")
     @patch("subprocess.run")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_dismiss_alert_ios(self, mock_serial, mock_run) -> None:
+    def test_do_dismiss_alert_ios(self, mock_serial, mock_run, mock_click) -> None:
         result = do_command("s-test01", "dismiss-alert", [])
         self.assertEqual(result["status"], "dismissed")
         # Verify xcrun simctl ui was called
         cmd_args = mock_run.call_args[0][0]
         self.assertIn("simctl", cmd_args)
+        mock_click.assert_called_once()
 
     @patch("subprocess.run")
     @patch("simemu.session.android.get_serial", return_value="emulator-5554")
@@ -626,10 +1157,17 @@ class TestDoDismissAlert(DoCommandBase):
 
 
 class TestDoAcceptAlert(DoCommandBase):
-    @patch("subprocess.run")
+    @patch("simemu.session.ios.accept_open_app_alert")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_accept_alert(self, mock_serial, mock_run) -> None:
+    def test_do_accept_alert(self, mock_serial, mock_complete, mock_accept) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
+        sf.write_text(json.dumps(data))
         result = do_command("s-test01", "accept-alert", [])
+        mock_accept.assert_called_once_with("AAA-111", attempts=2, delay=0.35)
+        mock_complete.assert_called_once_with("AAA-111", "app.fitkind.dev", attempts=3, foreground_timeout=1.0)
         self.assertEqual(result["status"], "accepted")
 
 
@@ -637,11 +1175,13 @@ class TestDoAcceptAlert(DoCommandBase):
 
 
 class TestDoDenyAlert(DoCommandBase):
+    @patch("simemu.session.ios.click_system_alert_button")
     @patch("subprocess.run")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_deny_alert(self, mock_serial, mock_run) -> None:
+    def test_do_deny_alert(self, mock_serial, mock_run, mock_click) -> None:
         result = do_command("s-test01", "deny-alert", [])
         self.assertEqual(result["status"], "denied")
+        mock_click.assert_called_once()
 
 
 # ── grant-all ────────────────────────────────────────────────────────────────
@@ -702,6 +1242,24 @@ class TestDoClearData(DoCommandBase):
             do_command("s-test01", "clear-data", [])
 
 
+class TestDoCleanRetry(DoCommandBase):
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.clear_data")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_clean_retry_android(self, mock_serial, mock_clear, mock_launch) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        result = do_command("s-droid1", "clean-retry", ["com.example.app"])
+        mock_clear.assert_called_once_with("Pixel_7", "com.example.app")
+        mock_launch.assert_called_once_with("Pixel_7", "com.example.app", [])
+        self.assertEqual(result["status"], "clean_retried")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_clean_retry_ios_rejected(self, mock_serial) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "clean-retry", ["com.example.App"])
+        self.assertIn("Android only", str(ctx.exception))
+
+
 # ── clipboard ────────────────────────────────────────────────────────────────
 
 
@@ -735,6 +1293,306 @@ class TestDoClipboard(DoCommandBase):
                     device_name="Pixel 7")
         result = do_command("s-droid1", "clipboard-get", [])
         self.assertEqual(result["status"], "unsupported")
+
+
+# ── provenance ──────────────────────────────────────────────────────────────
+
+
+class TestProvenance(DoCommandBase):
+    @patch("simemu.session.ios.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_launch_records_provenance(self, mock_serial, mock_launch) -> None:
+        from simemu.session import get_provenance
+        do_command("s-test01", "launch", ["com.example.app"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_app"], "com.example.app")
+        self.assertIn("updated_at", prov)
+
+    @patch("simemu.session.ios.open_url")
+    @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_url_records_provenance(self, mock_serial, mock_complete, mock_url) -> None:
+        from simemu.session import get_provenance
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        do_command("s-test01", "url", ["myapp://deep/link"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_url"], "myapp://deep/link")
+        self.assertEqual(prov["last_deep_link"], "myapp://deep/link")
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_records_provenance(self, mock_serial, mock_ss) -> None:
+        from simemu.session import get_provenance
+        result = do_command("s-test01", "screenshot", ["-o", "/tmp/proof.png"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_screenshot"], "/tmp/proof.png")
+
+    def test_get_provenance_empty_session(self) -> None:
+        from simemu.session import get_provenance
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov, {})
+
+    def test_get_provenance_nonexistent_session(self) -> None:
+        from simemu.session import get_provenance
+        prov = get_provenance("s-nonexistent")
+        self.assertEqual(prov, {})
+
+    @patch("simemu.session.ios.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_provenance_survives_multiple_updates(self, mock_serial, mock_launch) -> None:
+        from simemu.session import get_provenance, update_provenance
+        do_command("s-test01", "launch", ["com.first.app"])
+        update_provenance("s-test01", custom_field="custom_value")
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_app"], "com.first.app")
+        self.assertEqual(prov["custom_field"], "custom_value")
+
+
+# ── build ───────────────────────────────────────────────────────────────────
+
+
+class TestDoBuild(DoCommandBase):
+    def _write_execution_yaml(self, content: str) -> None:
+        keel_dir = Path.cwd() / "keel"
+        keel_dir.mkdir(parents=True, exist_ok=True)
+        (keel_dir / "execution.yaml").write_text(content)
+
+    def _cleanup_execution_yaml(self) -> None:
+        f = Path.cwd() / "keel" / "execution.yaml"
+        if f.exists():
+            f.unlink()
+
+    def tearDown(self) -> None:
+        self._cleanup_execution_yaml()
+        super().tearDown()
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_raw_mode(self, mock_serial) -> None:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+            result = do_command("s-test01", "build", ["--raw", "echo hello"])
+        self.assertEqual(result["status"], "built")
+        self.assertEqual(result["mode"], "raw")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_no_config_raises(self, mock_serial) -> None:
+        self._cleanup_execution_yaml()
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "build", [])
+        self.assertIn("buildVariants", str(ctx.exception))
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_ios_variant(self, mock_serial) -> None:
+        self._write_execution_yaml("""buildVariants:
+  mock:
+    ios:
+      scheme: TestApp-mock
+      project: TestApp.xcodeproj
+      configuration: Debug
+""")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="BUILD SUCCEEDED", stderr="")
+            with patch("simemu.session._find_ios_artifact", return_value=Path("/tmp/TestApp.app")):
+                result = do_command("s-test01", "build", ["--variant", "mock"])
+        self.assertEqual(result["status"], "built")
+        self.assertEqual(result["platform"], "ios")
+        self.assertEqual(result["variant"], "mock")
+        self.assertEqual(result["scheme"], "TestApp-mock")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_android_variant(self, mock_serial) -> None:
+        self._seed("s-android01", platform="android", sim_id="Pixel_8_API35", device_name="Pixel 8")
+        self._write_execution_yaml("""buildVariants:
+  dev:
+    android:
+      task: assembleDevDebug
+""")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="BUILD SUCCESSFUL", stderr="")
+            with patch("simemu.session._find_android_artifact", return_value=Path("/tmp/app-dev-debug.apk")):
+                result = do_command("s-android01", "build", ["--variant", "dev"])
+        self.assertEqual(result["status"], "built")
+        self.assertEqual(result["platform"], "android")
+        self.assertEqual(result["variant"], "dev")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_default_variant(self, mock_serial) -> None:
+        self._write_execution_yaml("""buildVariants:
+  mock:
+    ios:
+      scheme: TestApp
+      configuration: Debug
+  release:
+    ios:
+      scheme: TestApp
+      configuration: Release
+""")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="BUILD SUCCEEDED", stderr="")
+            with patch("simemu.session._find_ios_artifact", return_value=None):
+                result = do_command("s-test01", "build", [])
+        # Should use first variant (mock) as default
+        self.assertEqual(result["variant"], "mock")
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_unknown_variant_raises(self, mock_serial) -> None:
+        self._write_execution_yaml("""buildVariants:
+  mock:
+    ios:
+      scheme: TestApp
+""")
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "build", ["--variant", "nonexistent"])
+        self.assertIn("Unknown variant", str(ctx.exception))
+
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_build_failure_includes_command(self, mock_serial) -> None:
+        self._write_execution_yaml("""buildVariants:
+  mock:
+    ios:
+      scheme: TestApp
+      project: TestApp.xcodeproj
+      configuration: Debug
+""")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=65, stdout="", stderr="Build failed: no such scheme")
+            with self.assertRaises(RuntimeError) as ctx:
+                do_command("s-test01", "build", ["--variant", "mock"])
+        self.assertIn("iOS build failed", str(ctx.exception))
+        self.assertIn("xcodebuild", str(ctx.exception))
+
+
+# ── proof ───────────────────────────────────────────────────────────────────
+
+
+class TestDoProof(DoCommandBase):
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_ios_normalizes_and_captures(self, mock_serial, mock_alert,
+                                                mock_fg, mock_status, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        self.assertEqual(result["status"], "proved")
+        self.assertEqual(result["path"], "/tmp/proof.png")
+        self.assertIn("status_bar:9:41", result["steps"])
+        self.assertIn("dismiss_alerts", result["steps"])
+        mock_ss.assert_called_once()
+        mock_status.assert_called_once()
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.android.dismiss_system_dialogs", return_value=False)
+    @patch("simemu.session.android.stop_other_apps", return_value=["ai.vivii.dev"])
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_android_isolates_and_captures(self, mock_serial, mock_stop,
+                                                  mock_dismiss, mock_fg, mock_ss) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        self.assertEqual(result["status"], "proved")
+        mock_stop.assert_called_once()
+        self.assertIn("isolate:com.example.app", result["steps"])
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.activate_app", return_value=False)
+    @patch("simemu.session.ios.foreground_app", return_value="com.wrong.app")
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_fails_on_foreground_mismatch(self, mock_serial, mock_alert,
+                                                 mock_fg, mock_activate, mock_status, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.expected.app"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "not trustworthy"):
+            do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        mock_ss.assert_not_called()  # screenshot never taken
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.activate_app", return_value=True)
+    @patch("simemu.session.ios.foreground_app", return_value="com.wrong.app")
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_reactivates_and_succeeds_on_mismatch(self, mock_serial, mock_alert,
+                                                         mock_fg, mock_activate, mock_status, mock_ss) -> None:
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-test01"]["last_app"] = "com.expected.app"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        self.assertEqual(result["status"], "proved")
+        mock_activate.assert_called_once_with("AAA-111", "com.expected.app")
+        self.assertIn("reactivated:com.expected.app", result["steps"])
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.set_appearance")
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_with_appearance_flag(self, mock_serial, mock_alert, mock_fg,
+                                        mock_appear, mock_status, mock_ss) -> None:
+        result = do_command("s-test01", "proof", ["--appearance", "dark", "--wait", "0.1", "-o", "/tmp/p.png"])
+        self.assertEqual(result["status"], "proved")
+        mock_appear.assert_called_once_with("AAA-111", "dark")
+        self.assertIn("appearance:dark", result["steps"])
+
+    @patch("simemu.session.ios.screenshot")
+    @patch("simemu.session.ios.status_bar")
+    @patch("simemu.session.ios.foreground_app", return_value=None)
+    @patch("simemu.session.ios.accept_open_app_alert", return_value=True)
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_stores_provenance(self, mock_serial, mock_alert, mock_fg,
+                                      mock_status, mock_ss) -> None:
+        from simemu.session import get_provenance
+        result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1", "--label", "test"])
+        prov = get_provenance("s-test01")
+        self.assertEqual(prov["last_screenshot"], "/tmp/proof.png")
+        self.assertIn("last_proof", prov)
+        self.assertEqual(prov["last_proof"]["label"], "test")
+
+
+class TestParseVariants(unittest.TestCase):
+    def test_parse_simple_yaml(self) -> None:
+        from simemu.session import _parse_build_variants
+        yaml = """buildVariants:
+  mock:
+    ios:
+      scheme: MyApp-mock
+      configuration: Debug
+    android:
+      task: assembleLocalDebug
+  release:
+    ios:
+      scheme: MyApp
+      configuration: Release
+"""
+        result = _parse_build_variants(yaml)
+        self.assertIsNotNone(result)
+        self.assertIn("mock", result)
+        self.assertIn("release", result)
+        self.assertEqual(result["mock"]["ios"]["scheme"], "MyApp-mock")
+        self.assertEqual(result["mock"]["android"]["task"], "assembleLocalDebug")
+        self.assertEqual(result["release"]["ios"]["configuration"], "Release")
+
+    def test_parse_empty_returns_none(self) -> None:
+        from simemu.session import _parse_build_variants
+        result = _parse_build_variants("nothing: here")
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

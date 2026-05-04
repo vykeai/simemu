@@ -6,21 +6,35 @@
   "lane": null,
   "wave": "wave-3",
   "space": "space-core",
-  "status": "todo",
+  "status": "done",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:48:01.766Z",
+      "by": "human",
+      "text": "Installer checks: xcrun, adb, guard hook functional test, data dir perms. Actionable warnings."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:40.492Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T21:43:39.676Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-25T21:48:01.603Z"
     }
   ],
   "attachments": [],
@@ -29,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.491Z",
-  "updatedAt": "2026-03-24T22:00:40.491Z",
+  "updatedAt": "2026-03-25T21:48:01.766Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,

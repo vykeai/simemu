@@ -6,21 +6,48 @@
   "lane": null,
   "wave": "wave-4",
   "space": "space-core",
-  "status": "todo",
+  "status": "done",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T22:08:21.736Z",
+      "by": "human",
+      "text": "Real device connectivity checks in touch(). Raises on disconnect with reclaim hint. 3 tests."
+    },
+    {
+      "at": "2026-04-26T09:00:57.203Z",
+      "by": "human",
+      "text": "Audit complete. No github: refs found. All inter-tool deps use yalc (file:.yalc/) correctly. 5 tools consume @vykeai/fed or omnai via yalc: claudette (fed), cloudy (fed+lure+omnai), keel (fed+omnai+omnai-ui), loopy (omnai), proofy (omnai). No action needed — deps are already standardised via yalc."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:40.150Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T22:06:10.075Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-25T22:08:21.584Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-04-26T08:58:50.690Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-04-26T09:00:56.619Z"
     }
   ],
   "attachments": [],
@@ -29,7 +56,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.149Z",
-  "updatedAt": "2026-03-24T22:00:40.149Z",
+  "updatedAt": "2026-04-26T09:00:57.203Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,

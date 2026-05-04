@@ -1,0 +1,50 @@
+{
+  "id": "T-LU-045",
+  "title": "Fix CLI packaging — simemu claim fails with ModuleNotFoundError without PYTHONPATH workaround",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "wave-12",
+  "space": null,
+  "status": "done",
+  "priority": "critical",
+  "platform": "api",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [
+    "pip install -e . produces a working simemu CLI on PATH",
+    "simemu claim ios works without PYTHONPATH workaround",
+    "Works from any working directory",
+    "install.sh no longer needs PYTHONPATH hacks"
+  ],
+  "cloudy_run": null,
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-04-30T08:14:39.671Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-04-30T14:28:34.712Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-04-30T14:30:31.097Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-04-30T08:14:39.670Z",
+  "updatedAt": "2026-04-30T14:30:31.097Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "cloudyTaskGraph": null,
+  "cloudy": null
+}

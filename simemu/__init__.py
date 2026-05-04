@@ -1,1 +1,3 @@
-# simemu — simulator allocation manager
+"""simemu — simulator allocation manager"""
+
+__version__ = "0.3.0"

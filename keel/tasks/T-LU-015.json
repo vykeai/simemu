@@ -6,21 +6,35 @@
   "lane": null,
   "wave": "wave-4",
   "space": "space-core",
-  "status": "todo",
+  "status": "done",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:45:26.652Z",
+      "by": "human",
+      "text": "Schema module with all response shapes. Lightweight validator. 16 tests."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:40.654Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T21:43:37.741Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-25T21:45:26.530Z"
     }
   ],
   "attachments": [],
@@ -29,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:40.654Z",
-  "updatedAt": "2026-03-24T22:00:40.654Z",
+  "updatedAt": "2026-03-25T21:45:26.652Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,

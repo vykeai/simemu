@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # simemu installer — idempotent, safe to re-run
-# Usage: bash /Users/luke/dev/simemu/install.sh
+# Usage: bash /Users/luke/dev/onlytools/simemu/install.sh
 #    or: curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bash
 set -e
 
 REPO_URL="https://github.com/vykeai/simemu.git"
-DEFAULT_CLONE_DIR="$HOME/dev/simemu"
+DEFAULT_CLONE_DIR="$HOME/dev/onlytools/simemu"
 
 # When piped via curl, BASH_SOURCE[0] is empty — detect and clone the repo first
 if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "bash" || "${BASH_SOURCE[0]}" == "/dev/stdin" ]]; then
@@ -141,8 +141,12 @@ if [ -d "$SWIFT_DIR" ] && command -v swift >/dev/null 2>&1; then
             rm -rf "$APP_INSTALL_DIR/SimEmuBar.app"
             cp -R "$BUILT_APP" "$APP_INSTALL_DIR/SimEmuBar.app"
             ok "SimEmuBar installed to $APP_INSTALL_DIR/SimEmuBar.app"
-            # Launch it
-            open "$APP_INSTALL_DIR/SimEmuBar.app" 2>/dev/null || true
+            if "$PYTHON_ABS" -m simemu.cli menubar install >/dev/null 2>&1; then
+                ok "Menubar launch agent installed"
+            else
+                warn "Menubar launch agent install failed — falling back to one-shot launch"
+                open "$APP_INSTALL_DIR/SimEmuBar.app" 2>/dev/null || true
+            fi
         else
             warn "Build succeeded but .app bundle not found at $BUILT_APP"
         fi
@@ -236,7 +240,40 @@ with open(path, "w") as f:
 PYEOF
 ok "Guard hook registered"
 
-# ── 7. Verify installation ──────────────────────────────────────────────────
+# ── 7. Wrapper repair ──────────────────────────────────────────────────────
+info "Checking simemu wrapper binary..."
+SIMEMU_BIN=$(command -v simemu 2>/dev/null || true)
+if [ -z "$SIMEMU_BIN" ]; then
+    warn "simemu not on PATH after pip install"
+    # Try to find the pip-installed script and add a symlink
+    PIP_BIN_DIR=$("$PYTHON" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
+    if [ -n "$PIP_BIN_DIR" ] && [ -f "$PIP_BIN_DIR/simemu" ]; then
+        LINK_DIR="$HOME/bin"
+        mkdir -p "$LINK_DIR"
+        ln -sf "$PIP_BIN_DIR/simemu" "$LINK_DIR/simemu"
+        ok "Symlinked $PIP_BIN_DIR/simemu → $LINK_DIR/simemu"
+        warn "Add $LINK_DIR to your PATH if not already: export PATH=\"\$HOME/bin:\$PATH\""
+        SIMEMU_BIN="$LINK_DIR/simemu"
+    else
+        warn "Could not locate pip-installed simemu binary"
+    fi
+elif [ -L "$SIMEMU_BIN" ]; then
+    # Check if symlink target exists
+    if [ ! -e "$SIMEMU_BIN" ]; then
+        warn "simemu symlink is broken: $SIMEMU_BIN → $(readlink "$SIMEMU_BIN")"
+        PIP_BIN_DIR=$("$PYTHON" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
+        if [ -n "$PIP_BIN_DIR" ] && [ -f "$PIP_BIN_DIR/simemu" ]; then
+            ln -sf "$PIP_BIN_DIR/simemu" "$SIMEMU_BIN"
+            ok "Repaired broken symlink: $SIMEMU_BIN → $PIP_BIN_DIR/simemu"
+        fi
+    else
+        ok "simemu wrapper: $SIMEMU_BIN"
+    fi
+else
+    ok "simemu wrapper: $SIMEMU_BIN"
+fi
+
+# ── 8. Verify installation ──────────────────────────────────────────────────
 echo ""
 info "Verifying installation..."
 ERRORS=0
@@ -270,6 +307,42 @@ elif [ -d "$APP_INSTALL_DIR/SimEmuBar.app" ]; then
     ok "SimEmuBar: installed (not running)"
 else
     info "SimEmuBar: not installed"
+fi
+
+# Check platform tools
+if command -v xcrun >/dev/null 2>&1; then
+    XCODE_VER=$(xcrun --version 2>&1 | head -1 || echo "unknown")
+    ok "Xcode tools: $XCODE_VER"
+else
+    warn "xcrun not found — iOS simulators unavailable. Install: xcode-select --install"
+fi
+
+if command -v adb >/dev/null 2>&1; then
+    ADB_VER=$(adb --version 2>&1 | head -1 || echo "unknown")
+    ok "adb: $ADB_VER"
+else
+    info "adb not found — Android emulators unavailable (optional)"
+fi
+
+# Check guard hook is functional
+if [ -f "$GUARD_SCRIPT" ]; then
+    GUARD_TEST=$(echo '{"tool_input":{"command":"xcrun simctl boot test"}}' | "$PYTHON" "$GUARD_SCRIPT" 2>/dev/null)
+    if echo "$GUARD_TEST" | grep -q '"block"'; then
+        ok "Guard hook: blocking direct xcrun/adb"
+    else
+        warn "Guard hook: not blocking as expected — check $GUARD_SCRIPT"
+        ERRORS=$((ERRORS + 1))
+    fi
+else
+    warn "Guard hook script not found at $GUARD_SCRIPT"
+fi
+
+# Check data directory permissions
+if [ -w "$SIMEMU_DATA_DIR" ]; then
+    ok "Data dir: $SIMEMU_DATA_DIR (writable)"
+else
+    warn "Data dir not writable: $SIMEMU_DATA_DIR"
+    ERRORS=$((ERRORS + 1))
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────

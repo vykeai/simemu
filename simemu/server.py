@@ -26,7 +26,6 @@ import json
 import os
 import pathlib
 import socket
-import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,51 +87,80 @@ def _shutdown_idle_simulators(timeout_minutes: int) -> list[str]:
 
 
 def _kill_rogue_emulators() -> list[int]:
-    """Kill qemu/emulator processes that are not tracked in simemu state.
+    """Kill qemu/emulator processes not tracked by simemu state.
 
-    Android emulators that crash or are abandoned outside of simemu can run
-    indefinitely at 100% CPU. This scans for any qemu-system-aarch64 / emulator
-    processes and kills those whose AVD name does not match a tracked allocation.
+    An emulator is 'rogue' if:
+    - Its process name matches qemu-system-aarch64 or the Android emulator binary
+    - AND its AVD name is not found in simemu's active state
+
+    Returns list of PIDs killed.
     """
-    import re
-    import signal as _signal
+    import subprocess, signal, re as _re
 
+    def _norm_avd(value: str | None) -> str:
+        return (value or "").strip().lower().replace(" ", "_")
+
+    # Get AVD names currently tracked by simemu. Include both the legacy
+    # allocation file and the v2 session store; otherwise the daemon can kill a
+    # freshly claimed v2 Android session as "rogue" before proof capture runs.
     tracked_avds: set[str] = set()
-    for alloc in state.get_all().values():
+    for slug, alloc in state.get_all().items():
         if alloc.platform == "android" and alloc.device_name:
-            tracked_avds.add(alloc.device_name.lower())
+            tracked_avds.add(_norm_avd(alloc.device_name))
+            tracked_avds.add(_norm_avd(alloc.sim_id))
+    try:
+        for session in session_module.get_active_sessions().values():
+            if session.platform == "android":
+                tracked_avds.add(_norm_avd(session.device_name))
+                tracked_avds.add(_norm_avd(session.sim_id))
+    except Exception:
+        # Rogue cleanup should never take down known emulators just because the
+        # session store is temporarily unreadable.
+        pass
 
+    # Find all qemu/emulator processes
     try:
         out = subprocess.run(
-            ["ps", "-Ao", "pid,command"], capture_output=True, text=True
+            ["ps", "-Ao", "pid,command"],
+            capture_output=True, text=True
         ).stdout
     except Exception:
         return []
 
-    killed: list[int] = []
+    killed = []
     for line in out.splitlines():
+        line = line.strip()
         if not any(x in line for x in ("qemu-system-aarch64", "emulator -avd")):
             continue
-        parts = line.strip().split(None, 1)
+        parts = line.split(None, 1)
         if len(parts) < 2:
             continue
         try:
             pid = int(parts[0])
         except ValueError:
             continue
-        avd_match = re.search(r"-avd\s+(\S+)", parts[1])
-        avd_name = avd_match.group(1).lower() if avd_match else None
+
+        # Extract AVD name if present (-avd <name>)
+        avd_match = _re.search(r'-avd\s+(\S+)', parts[1])
+        avd_name = _norm_avd(avd_match.group(1)) if avd_match else None
+
+        # If we can identify the AVD and simemu is tracking it, leave it alone
         if avd_name and avd_name in tracked_avds:
             continue
+
+        # Rogue — kill it
         try:
-            os.kill(pid, _signal.SIGKILL)
+            import os as _os
+            _os.kill(pid, signal.SIGKILL)
             killed.append(pid)
             print(
-                f"[simemu-daemon] killed rogue emulator pid={pid} avd={avd_name or '?'}",
+                f"[simemu-daemon] killed rogue emulator PID {pid}"
+                + (f" (avd={avd_name})" if avd_name else ""),
                 flush=True,
             )
         except (ProcessLookupError, PermissionError):
             pass
+
     return killed
 
 
@@ -146,16 +174,10 @@ async def _idle_shutdown_loop(timeout_minutes: int) -> None:
     while True:
         await asyncio.sleep(60)
         _shutdown_idle_simulators(timeout_minutes)
-        # Kill any rogue Android emulator processes not tracked by simemu
-        try:
-            killed = _kill_rogue_emulators()
-            if killed:
-                print(
-                    f"[simemu-daemon] rogue watchdog killed {len(killed)} process(es): {killed}",
-                    flush=True,
-                )
-        except Exception as e:
-            print(f"[simemu-daemon] rogue watchdog error: {e}", flush=True)
+        # Kill any qemu/emulator processes not tracked by simemu
+        rogue_pids = _kill_rogue_emulators()
+        if rogue_pids:
+            print(f"[simemu-daemon] killed {len(rogue_pids)} rogue emulator(s): {rogue_pids}", flush=True)
         # v2 session lifecycle tick
         try:
             session_module.lifecycle_tick()
@@ -202,9 +224,67 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="simemu",
     description="Simulator allocation manager for multi-agent iOS/Android development.",
-    version="0.1.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
+
+
+# ── Auth + rate limiting middleware ──────────────────────────────────────────
+
+import time as _time
+from collections import defaultdict as _defaultdict
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_MAX = int(os.environ.get("SIMEMU_RATE_LIMIT", "120"))  # requests per window
+_rate_counters: dict[str, list[float]] = _defaultdict(list)
+
+_API_KEY = os.environ.get("SIMEMU_API_KEY", "")  # empty = no auth required
+
+# Paths exempt from auth (health, docs, federation)
+_AUTH_EXEMPT = {"/health", "/docs", "/openapi.json", "/redoc", "/fed/info", "/fed/runs"}
+
+
+class AuthRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # API key auth (only when SIMEMU_API_KEY is set)
+        if _API_KEY and path not in _AUTH_EXEMPT:
+            auth_header = request.headers.get("Authorization", "")
+            token = auth_header.replace("Bearer ", "").strip()
+            import hmac as _hmac
+            if not _hmac.compare_digest(token, _API_KEY):
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "unauthorized", "hint": "Set Authorization: Bearer $SIMEMU_API_KEY"},
+                )
+
+        # Rate limiting by client IP
+        client_ip = request.client.host if request.client else "unknown"
+        now = _time.time()
+        window = _rate_counters[client_ip]
+        # Prune old entries for this IP
+        _rate_counters[client_ip] = [t for t in window if now - t < _RATE_LIMIT_WINDOW]
+        # Periodic cleanup: remove stale IPs to prevent memory exhaustion
+        if len(_rate_counters) > 1000:
+            stale = [ip for ip, ts in _rate_counters.items() if not ts or ts[-1] < now - _RATE_LIMIT_WINDOW * 2]
+            for ip in stale:
+                del _rate_counters[ip]
+        if len(_rate_counters[client_ip]) >= _RATE_LIMIT_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "rate_limited",
+                         "hint": f"Max {_RATE_LIMIT_MAX} requests per {_RATE_LIMIT_WINDOW}s. Retry after a brief wait."},
+            )
+        _rate_counters[client_ip].append(now)
+
+        return await call_next(request)
+
+
+app.add_middleware(AuthRateLimitMiddleware)
 
 from .dashboard import register_dashboard
 register_dashboard(app, state.get_all)
@@ -405,6 +485,71 @@ def v2_do(req: V2DoRequest):
 def v2_sessions():
     sessions = session_module.get_active_sessions()
     return [s.to_agent_json() for s in sessions.values()]
+
+
+# ── v2 convenience routes ────────────────────────────────────────────────────
+
+@app.post("/v2/present/{session_id}", summary="Present simulator window (iOS)")
+def v2_present(session_id: str):
+    return _v2_do(session_id, "present", [])
+
+
+@app.post("/v2/stabilize/{session_id}", summary="Stabilize simulator for interaction (iOS)")
+def v2_stabilize(session_id: str):
+    return _v2_do(session_id, "stabilize", [])
+
+
+class V2VerifyInstallRequest(BaseModel):
+    package: str
+
+@app.post("/v2/verify-install/{session_id}", summary="Verify Android package-manager state")
+def v2_verify_install(session_id: str, req: V2VerifyInstallRequest):
+    return _v2_do(session_id, "verify-install", [req.package])
+
+
+class V2RepairInstallRequest(BaseModel):
+    package: str
+    apk_path: str
+
+@app.post("/v2/repair-install/{session_id}", summary="Repair Android package-manager state and reinstall")
+def v2_repair_install(session_id: str, req: V2RepairInstallRequest):
+    return _v2_do(session_id, "repair-install", [req.package, req.apk_path])
+
+
+class V2ProofRequest(BaseModel):
+    output: str | None = None
+    url: str | None = None
+    appearance: str | None = None
+    wait: float = 2.0
+    label: str = ""
+    max_size: int | None = None
+
+@app.post("/v2/proof/{session_id}", summary="Capture verified proof screenshot with normalized device state")
+def v2_proof(session_id: str, req: V2ProofRequest):
+    args: list[str] = []
+    if req.output:
+        args += ["-o", req.output]
+    if req.url:
+        args += ["--url", req.url]
+    if req.appearance:
+        args += ["--appearance", req.appearance]
+    args += ["--wait", str(req.wait)]
+    if req.label:
+        args += ["--label", req.label]
+    if req.max_size:
+        args += ["--max-size", str(req.max_size)]
+    return _v2_do(session_id, "proof", args)
+
+
+def _v2_do(session_id: str, command: str, args: list[str]):
+    """Shared handler for v2 convenience routes."""
+    try:
+        result = session_module.do_command(session_id, command, args)
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=e.to_json())
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return result or {"status": "ok"}
 
 
 # ── server entrypoint ─────────────────────────────────────────────────────────

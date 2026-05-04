@@ -7,3 +7,4 @@ build/
 .venv/
 *.log
 .DS_Store
+simemu/swift/SimEmuBar.app/

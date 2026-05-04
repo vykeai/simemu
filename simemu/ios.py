@@ -64,8 +64,30 @@ def boot(udid: str, minimize: bool = False) -> None:
     state.check_maintenance()
     if _is_booted(udid):
         return
-    _simctl("boot", udid)
-    _simctl("bootstatus", udid, "-b")
+    try:
+        _simctl("boot", udid)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or b"").decode(errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        stdout = (exc.stdout or b"").decode(errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        msg = f"{stderr}\n{stdout}".lower()
+        if "current state: booted" not in msg and "unable to boot device in current state: booted" not in msg:
+            raise
+    try:
+        # Redirect bootstatus output to stderr — it's verbose and contaminates
+        # stdout when agents parse JSON from `simemu claim`.
+        subprocess.run(
+            ["xcrun", "simctl", "bootstatus", udid, "-b"],
+            stdout=sys.stderr, check=True,
+        )
+    except subprocess.CalledProcessError:
+        # bootstatus can fail or stall even when the simulator is already usable.
+        # Fall back to a short poll of simctl list instead of treating this as fatal.
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if _is_booted(udid):
+                return
+            time.sleep(0.5)
+        raise
 
 
 def _ensure_booted(udid: str) -> None:
@@ -75,7 +97,7 @@ def _ensure_booted(udid: str) -> None:
     if not _is_booted(udid):
         raise RuntimeError(
             f"iOS simulator '{udid}' is not booted.\n"
-            f"Boot it explicitly first: simemu boot <slug>"
+            f"Wake it through the session API first: simemu do <session> boot"
         )
 
 
@@ -101,7 +123,7 @@ def install(udid: str, app_path: str, timeout: int = 120) -> None:
         except subprocess.TimeoutExpired:
             raise RuntimeError(
                 f"Install timed out after {timeout}s. The simulator may be unresponsive. "
-                f"Try: simemu reboot <slug>"
+                f"Try: simemu do <session> reboot"
             )
         if result.returncode != 0:
             raise RuntimeError(f"Install failed: {result.stderr.strip() or result.stdout.strip()}")
@@ -122,6 +144,11 @@ def _extract_ipa(ipa_path: Path) -> str:
     """Extract .ipa to a temp directory, return path to the .app bundle."""
     tmp_dir = Path(tempfile.mkdtemp(prefix="simemu_ipa_"))
     with zipfile.ZipFile(ipa_path) as z:
+        # Validate paths to prevent zip slip (path traversal)
+        for info in z.infolist():
+            target = (tmp_dir / info.filename).resolve()
+            if not str(target).startswith(str(tmp_dir.resolve())):
+                raise RuntimeError(f"Invalid .ipa: path traversal detected in {info.filename}")
         z.extractall(tmp_dir)
 
     payload = tmp_dir / "Payload"
@@ -137,8 +164,29 @@ def _extract_ipa(ipa_path: Path) -> str:
 
 def launch(udid: str, bundle_id: str, args: list[str] | None = None) -> None:
     _ensure_booted(udid)
-    cmd_args = ["launch", udid, bundle_id] + (args or [])
+    cmd_args = ["launch", "--terminate-running-process", udid, bundle_id] + (args or [])
     _simctl(*cmd_args)
+    _wait_for_app_running(udid, bundle_id)
+
+
+def activate_app(udid: str, bundle_id: str) -> bool:
+    """Bring an already-running app to the foreground without terminating it.
+
+    Uses ``simctl launch`` *without* ``--terminate-running-process`` so iOS
+    re-activates the existing process instead of cold-starting a new one.
+
+    Returns True if the app was running (and was sent an activate signal),
+    False if the app wasn't running at all (caller should use ``launch()``).
+    """
+    _ensure_booted(udid)
+    if not is_app_running(udid, bundle_id):
+        return False
+    result = subprocess.run(
+        ["xcrun", "simctl", "launch", udid, bundle_id],
+        capture_output=True, text=True, check=False,
+    )
+    # simctl launch on an already-running app returns PID in stdout on success
+    return result.returncode == 0
 
 
 def terminate(udid: str, bundle_id: str) -> None:
@@ -192,6 +240,29 @@ def screenshot(udid: str, output_path: str, fmt: Optional[str] = None,
                        capture_output=True, check=False)
 
 
+def tvos_screenshot(udid: str, output_path: str, fmt: Optional[str] = None,
+                    max_size: Optional[int] = None) -> None:
+    """Take a screenshot of a tvOS simulator. Uses --display external for TV output."""
+    _ensure_booted(udid)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["io", udid, "screenshot", "--display", "external"]
+    if fmt:
+        cmd += ["--type", fmt]
+    cmd.append(output_path)
+    try:
+        _simctl(*cmd)
+    except (subprocess.CalledProcessError, RuntimeError):
+        # Fallback: try without --display external (older Xcode versions)
+        cmd_fallback = ["io", udid, "screenshot"]
+        if fmt:
+            cmd_fallback += ["--type", fmt]
+        cmd_fallback.append(output_path)
+        _simctl(*cmd_fallback)
+    if max_size:
+        subprocess.run(["sips", "-Z", str(max_size), output_path],
+                       capture_output=True, check=False)
+
+
 def record_start(udid: str, output_path: str, codec: Optional[str] = None) -> int:
     _ensure_booted(udid)
     """
@@ -230,6 +301,232 @@ def log_stream(udid: str, predicate: Optional[str] = None, level: str = "debug")
 def open_url(udid: str, url: str) -> None:
     _ensure_booted(udid)
     _simctl("openurl", udid, url)
+
+
+def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> bool:
+    """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff."""
+    _ensure_booted(udid)
+    for _ in range(attempts):
+        result = subprocess.run(
+            ["xcrun", "simctl", "ui", udid, "alert", "accept"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return True
+        if _click_open_app_alert_button(udid):
+            return True
+        time.sleep(delay)
+    return False
+
+
+def click_system_alert_button(udid: str, labels: list[str], attempts: int = 3, delay: float = 0.35) -> bool:
+    """Best-effort click for generic iOS system-alert buttons by visible label."""
+    _ensure_booted(udid)
+    for _ in range(attempts):
+        if _click_alert_button(udid, labels):
+            return True
+        time.sleep(delay)
+    return False
+
+
+def wait_for_foreground_app(
+    udid: str,
+    bundle_id: str,
+    timeout: float = 5.0,
+    delay: float = 0.25,
+) -> bool:
+    """Wait for a specific non-system bundle to become foregrounded."""
+    _ensure_booted(udid)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if foreground_app(udid) == bundle_id:
+            return True
+        time.sleep(delay)
+    return False
+
+
+def complete_open_url_handoff(
+    udid: str,
+    bundle_id: str,
+    attempts: int = 5,
+    accept_delay: float = 0.5,
+    foreground_timeout: float = 1.25,
+) -> bool:
+    """After openurl, clear the confirmation prompt and wait for app foreground."""
+    _ensure_booted(udid)
+    for i in range(attempts):
+        # The target app can already be foregrounded while the system handoff
+        # confirmation sheet still sits on top. Give iOS a brief chance to
+        # surface the destination app, then actively clear the prompt.
+        wait_for_foreground_app(udid, bundle_id, timeout=0.35, delay=0.15)
+        accept_open_app_alert(udid, attempts=1, delay=accept_delay)
+        if wait_for_foreground_app(udid, bundle_id, timeout=foreground_timeout, delay=0.2):
+            return True
+    # Final fallback: force-activate the app to dismiss any stuck confirmation sheet.
+    # simctl launch on a running app foregrounds it and clears the sheet overlay.
+    if is_app_running(udid, bundle_id):
+        activate_app(udid, bundle_id)
+        time.sleep(0.5)
+    return is_app_running(udid, bundle_id)
+
+
+def _click_open_app_alert_button(udid: str) -> bool:
+    """Fallback for sticky iOS deeplink confirmation sheets inside Simulator."""
+    if _click_alert_button(udid, ["Open", "Continue", "Allow", "OK"]):
+        return True
+    # iOS 26+ presents the confirmation as a sheet, not a standard alert.
+    # Try clicking via the AX sheet structure (group > button pattern).
+    return _click_sheet_button(udid, ["Open", "Continue", "Allow", "OK"])
+
+
+def _click_alert_button(udid: str, labels: list[str]) -> bool:
+    """Best-effort accessibility click for a visible iOS Simulator alert button."""
+    device_name = _escape_applescript(_get_device_name(udid))
+    label_literals = ", ".join(f'"{label}"' for label in labels)
+    script = f'''
+tell application "Simulator" to activate
+tell application "System Events"
+    tell process "Simulator"
+        try
+            set targetWindow to first window whose name contains "{device_name}"
+        on error
+            return ""
+        end try
+        set wantedLabels to {{{label_literals}}}
+        repeat with wantedLabel in wantedLabels
+            try
+                click (first button of targetWindow whose name is wantedLabel)
+                return "clicked"
+            end try
+            try
+                set allElements to entire contents of targetWindow
+                repeat with e in allElements
+                    try
+                        if role of e is "AXButton" and name of e is wantedLabel then
+                            perform action "AXPress" of e
+                            return "clicked"
+                        end if
+                    end try
+                end repeat
+            end try
+        end repeat
+    end tell
+end tell
+return ""
+'''
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "clicked"
+
+
+def _click_sheet_button(udid: str, labels: list[str]) -> bool:
+    """Click a button in an iOS 26+ confirmation sheet (not a standard alert).
+
+    iOS 26 presents URL-confirmation sheets as AXSheet with nested groups.
+    This walks all elements looking for AXButton matching the given labels.
+    """
+    device_name = _escape_applescript(_get_device_name(udid))
+    label_literals = ", ".join(f'"{label}"' for label in labels)
+    script = f'''
+tell application "Simulator" to activate
+tell application "System Events"
+    tell process "Simulator"
+        try
+            set targetWindow to first window whose name contains "{device_name}"
+        on error
+            return ""
+        end try
+        set wantedLabels to {{{label_literals}}}
+        set allElems to entire contents of targetWindow
+        repeat with e in allElems
+            try
+                set subElems to entire contents of e
+                repeat with sub in subElems
+                    try
+                        if role of sub is "AXButton" then
+                            set btnName to name of sub
+                            repeat with wantedLabel in wantedLabels
+                                if btnName is wantedLabel then
+                                    perform action "AXPress" of sub
+                                    return "clicked"
+                                end if
+                            end repeat
+                        end if
+                    end try
+                end repeat
+            end try
+        end repeat
+    end tell
+end tell
+return ""
+'''
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "clicked"
+
+
+def _launchctl_bundle_ids(udid: str) -> list[str]:
+    """Return UIKit bundle IDs currently known to launchd for the simulator."""
+    _ensure_booted(udid)
+    result = subprocess.run(
+        ["xcrun", "simctl", "spawn", udid, "launchctl", "list"],
+        capture_output=True, text=True, check=False,
+    )
+    bundle_ids: list[str] = []
+    for line in result.stdout.splitlines():
+        if "UIKitApplication:" not in line:
+            continue
+        parts = line.split("UIKitApplication:")
+        if len(parts) < 2:
+            continue
+        bid = parts[1].split("[")[0].strip()
+        if bid:
+            bundle_ids.append(bid)
+    return bundle_ids
+
+
+def is_app_running(udid: str, bundle_id: str) -> bool:
+    """Return whether the target bundle currently has a UIKit process."""
+    return bundle_id in _launchctl_bundle_ids(udid)
+
+
+def _wait_for_app_running(udid: str, bundle_id: str, timeout: float = 5.0, delay: float = 0.25) -> None:
+    """Wait briefly for a launched bundle to appear in launchctl."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_app_running(udid, bundle_id):
+            return
+        time.sleep(delay)
+    raise RuntimeError(
+        f"Launch reported success but '{bundle_id}' never became a live iOS process. "
+        "The simulator may still be showing SpringBoard or an OS handoff surface."
+    )
+
+
+def foreground_app(udid: str) -> Optional[str]:
+    """Return the most plausible non-system foreground bundle ID on iOS.
+
+    simctl does not expose a reliable "frontmost app" query. We use launchctl to
+    find active UIKit bundles, but we only trust non-system bundles here. If the
+    simulator is sitting on SpringBoard or another Apple surface, return None
+    rather than inventing a misleading foreground app such as Calendar.
+    """
+    bundle_ids = _launchctl_bundle_ids(udid)
+    if not bundle_ids:
+        return None
+    non_system = [
+        bid for bid in bundle_ids
+        if not bid.startswith("com.apple.")
+    ]
+    return non_system[-1] if non_system else None
 
 
 def erase(udid: str) -> None:
@@ -393,6 +690,9 @@ _IOS_DEVICE_LOGICAL_SIZE: dict[str, tuple[int, int]] = {
     "iPadAir11":       (820, 1180),
     "iPadMini":        (744, 1133),
     "iPad":            (810, 1080),
+    # Apple TV — display output resolution (not touch coordinates)
+    "AppleTV4K":       (1920, 1080),
+    "AppleTV":         (1920, 1080),
 }
 
 
@@ -425,23 +725,35 @@ def _get_device_name(udid: str) -> str:
     raise RuntimeError(f"Simulator {udid} not found in simctl list")
 
 
-def _raise_sim_window(device_name: str) -> None:
+def _escape_applescript(s: str) -> str:
+    """Escape a string for safe interpolation into AppleScript string literals."""
+    return s.replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     """Activate Simulator and raise the target window for reliable text focus.
 
-    Buttons can often be clicked with the window merely raised, but SwiftUI
-    text fields frequently need Simulator to be the active app to receive first
-    responder status. We still keep the user's cursor hidden/restored around
-    the click itself, but we intentionally activate Simulator here so field
-    focus and paste work consistently.
+    Retries up to max_retries times with increasing delay if AXRaise fails
+    (e.g. window not yet created after boot, Simulator still launching).
     """
     import subprocess as _sp
-    _sp.run(["osascript", "-e", f'''tell application "System Events"
+    escaped = _escape_applescript(device_name)
+    for attempt in range(max_retries + 1):
+        result = _sp.run(
+            ["osascript", "-e", f'''tell application "System Events"
     tell application "Simulator" to activate
-    delay 0.1
+    delay {0.15 + attempt * 0.1}
     tell process "Simulator"
-        perform action "AXRaise" of (first window whose name contains "{device_name}")
+        perform action "AXRaise" of (first window whose name contains "{escaped}")
     end tell
-end tell'''], capture_output=True, check=False)
+end tell'''],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return
+        if attempt < max_retries:
+            time.sleep(0.3)
+    # Best-effort — don't raise if focus failed, just log
 
 
 def _frontmost_app_name() -> Optional[str]:
@@ -463,13 +775,18 @@ end tell''',
     return name or None
 
 
-def _activate_app(app_name: str) -> None:
-    escaped = app_name.replace('"', '\\"')
-    subprocess.run(
-        ["osascript", "-e", f'tell application "{escaped}" to activate'],
-        capture_output=True,
-        check=False,
-    )
+def _activate_app(app_name: str, retries: int = 2) -> None:
+    """Activate an app by name, retrying if System Events is slow."""
+    escaped = _escape_applescript(app_name)
+    for attempt in range(retries + 1):
+        result = subprocess.run(
+            ["osascript", "-e", f'tell application "{escaped}" to activate'],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            return
+        if attempt < retries:
+            time.sleep(0.2)
 
 
 def _notify_shared_desktop_wait() -> None:
@@ -630,6 +947,60 @@ def _restore_frontmost_app():
     finally:
         if previous and previous != "Simulator":
             _activate_app(previous)
+            # Verify restoration — retry once if the wrong app ended up frontmost
+            time.sleep(0.15)
+            current = _frontmost_app_name()
+            if current and current != previous:
+                _activate_app(previous)
+
+
+@contextmanager
+def _with_brief_focus(udid: str, action: str = "", session_id: str = ""):
+    """Unified focus acquisition + restoration for all interactions.
+
+    1. Requests a scouty desktop lease (if scouty is available)
+    2. Records frontmost app
+    3. Raises simulator window (with retry)
+    4. Yields for the interaction
+    5. Restores the previously frontmost app (with verification)
+    6. Releases the desktop lease
+    7. Emits structured diagnostics on failure
+
+    All interactive operations (tap, swipe, key, etc.) should use this.
+    """
+    from .desktop_lease import DesktopLease
+
+    previous_app = _frontmost_app_name()
+    device_name = _get_device_name(udid)
+
+    with DesktopLease(
+        action=action,
+        device_name=device_name,
+        platform="ios",
+        session_id=session_id,
+        reason=f"{action} on {device_name}",
+    ):
+        try:
+            _raise_sim_window(device_name)
+            yield
+        except Exception as e:
+            diag = {
+                "action": action,
+                "device": device_name,
+                "udid": udid,
+                "previous_app": previous_app,
+                "error": str(e),
+            }
+            print(json.dumps({"diagnostic": "focus_interaction_failed", **diag}), file=sys.stderr, flush=True)
+            raise
+        finally:
+            if previous_app and previous_app != "Simulator":
+                _activate_app(previous_app)
+                # Verify restoration succeeded
+                time.sleep(0.15)
+                current = _frontmost_app_name()
+                if current and current != previous_app:
+                    _activate_app(previous_app)
 
 
 def _open_sim_window(udid: str) -> None:
@@ -1064,6 +1435,7 @@ def _logical_to_screen(
 
 # macOS virtual key codes used by Simulator.app shortcuts
 _VK_H = 4    # h
+_VK_K = 40   # k
 _VK_L = 37   # l
 _VK_S = 1    # s
 _VK_RETURN = 36
@@ -1265,20 +1637,20 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
     _ensure_booted(udid)
     device_name = _get_device_name(udid)
     device_w, device_h = _get_device_logical_size(device_name)
-    _raise_sim_window(device_name)
 
-    try:
-        _run_maestro_flow(
-            udid,
-            "\n".join([
-                "- swipe:",
-                f'    start: "{_pct_string(x1, y1, device_w, device_h)}"',
-                f'    end: "{_pct_string(x2, y2, device_w, device_h)}"',
-                f"    duration: {int(duration * 1000)}",
-            ]),
-        )
-    except Exception:
-        _swipe_quartz(udid, x1, y1, x2, y2, duration)
+    with _with_brief_focus(udid, action="swipe"):
+        try:
+            _run_maestro_flow(
+                udid,
+                "\n".join([
+                    "- swipe:",
+                    f'    start: "{_pct_string(x1, y1, device_w, device_h)}"',
+                    f'    end: "{_pct_string(x2, y2, device_w, device_h)}"',
+                    f"    duration: {int(duration * 1000)}",
+                ]),
+            )
+        except Exception:
+            _swipe_quartz(udid, x1, y1, x2, y2, duration)
 
 
 def _long_press_quartz(udid: str, x: int, y: int, duration: float) -> None:
@@ -1325,22 +1697,22 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
     _ensure_booted(udid)
     device_name = _get_device_name(udid)
     device_w, device_h = _get_device_logical_size(device_name)
-    _raise_sim_window(device_name)
 
-    if abs(duration - 1.0) > 0.05:
-        _long_press_quartz(udid, x, y, duration)
-        return
+    with _with_brief_focus(udid, action="long-press"):
+        if abs(duration - 1.0) > 0.05:
+            _long_press_quartz(udid, x, y, duration)
+            return
 
-    try:
-        _run_maestro_flow(
-            udid,
-            "\n".join([
-                "- longPressOn:",
-                f'    point: "{_pct_string(x, y, device_w, device_h)}"',
-            ]),
-        )
-    except Exception:
-        _long_press_quartz(udid, x, y, duration)
+        try:
+            _run_maestro_flow(
+                udid,
+                "\n".join([
+                    "- longPressOn:",
+                    f'    point: "{_pct_string(x, y, device_w, device_h)}"',
+                ]),
+            )
+        except Exception:
+            _long_press_quartz(udid, x, y, duration)
 
 
 def rotate(udid: str, orientation: str) -> None:
@@ -1348,28 +1720,33 @@ def rotate(udid: str, orientation: str) -> None:
 
     'portrait' and 'landscape' check the current state and only rotate if needed.
     'left' / 'right' always send one rotation in that direction.
-    May bring Simulator to the front while sending the shortcut.
+    Briefly acquires focus and restores the previously frontmost app.
     """
     _ensure_booted(udid)
     orientation = orientation.lower()
 
-    if orientation in ("left", "right"):
-        vk = _VK_LEFT if orientation == "left" else _VK_RIGHT
-        _post_key(vk, ("command down",))
-        return
+    with _with_brief_focus(udid, action="rotate"):
+        if orientation in ("left", "right"):
+            vk = _VK_LEFT if orientation == "left" else _VK_RIGHT
+            _post_key(vk, ("command down",))
+            return
 
-    if orientation not in ("portrait", "landscape"):
-        raise RuntimeError(f"orientation must be portrait, landscape, left, or right — got '{orientation}'")
+        if orientation not in ("portrait", "landscape"):
+            raise RuntimeError(f"orientation must be portrait, landscape, left, or right — got '{orientation}'")
 
-    # Check current orientation from window dimensions and rotate once if needed
-    px, py, sw, sh = _get_sim_bounds(udid)
-    current = "landscape" if sw > sh else "portrait"
-    if current != orientation:
-        _post_key(_VK_RIGHT, ("command down",))
+        # Check current orientation from window dimensions and rotate once if needed
+        px, py, sw, sh = _get_sim_bounds(udid)
+        current = "landscape" if sw > sh else "portrait"
+        if current != orientation:
+            _post_key(_VK_RIGHT, ("command down",))
 
 
 # Named key → (virtual key code, modifier names, description)
-_VK_V = 9   # v
+_VK_V = 9       # v
+_VK_UP = 126    # Arrow Up
+_VK_DOWN = 125  # Arrow Down
+_VK_ESCAPE = 53 # Escape
+_VK_SPACE = 49  # Space
 
 _IOS_KEYS: dict[str, tuple[int, tuple[str, ...], str]] = {
     "home":       (_VK_H, ("command down", "shift down"), "Go to home screen (Cmd+Shift+H)"),
@@ -1379,14 +1756,63 @@ _IOS_KEYS: dict[str, tuple[int, tuple[str, ...], str]] = {
     "enter":      (_VK_RETURN, (), "Press Return / default action"),
     "return":     (_VK_RETURN, (), "Press Return / default action"),
     "paste":      (_VK_V, ("command down",), "Paste clipboard (Cmd+V)"),
+    # tvOS Siri Remote
+    "remote-up":         (_VK_UP, (), "Focus up (Arrow Up) — tvOS Siri Remote"),
+    "remote-down":       (_VK_DOWN, (), "Focus down (Arrow Down) — tvOS Siri Remote"),
+    "remote-left":       (_VK_LEFT, (), "Focus left (Arrow Left) — tvOS Siri Remote"),
+    "remote-right":      (_VK_RIGHT, (), "Focus right (Arrow Right) — tvOS Siri Remote"),
+    "remote-select":     (_VK_RETURN, (), "Select / click (Return) — tvOS Siri Remote"),
+    "remote-menu":       (_VK_ESCAPE, (), "Menu / back (Escape) — tvOS Siri Remote"),
+    "remote-play-pause": (_VK_SPACE, (), "Play/Pause (Space) — tvOS Siri Remote"),
 }
+
+
+def focus_move(udid: str, direction: str) -> None:
+    """Move focus on tvOS simulator. direction: up, down, left, right.
+
+    Maps to arrow keys via System Events — equivalent to swiping
+    the Siri Remote trackpad.
+    """
+    key_map = {"up": "remote-up", "down": "remote-down",
+               "left": "remote-left", "right": "remote-right"}
+    k = key_map.get(direction.lower())
+    if not k:
+        raise RuntimeError(f"Invalid focus direction '{direction}'. Use: up, down, left, right")
+    key(udid, k)
+
+
+def focus_select(udid: str) -> None:
+    """Press select on tvOS simulator — equivalent to clicking the Siri Remote trackpad."""
+    key(udid, "remote-select")
+
+
+def remote_button(udid: str, button: str) -> None:
+    """Press a Siri Remote button on tvOS simulator.
+
+    Supported: up, down, left, right, select, menu, play-pause, home
+    """
+    button_map = {
+        "up": "remote-up", "down": "remote-down",
+        "left": "remote-left", "right": "remote-right",
+        "select": "remote-select", "menu": "remote-menu",
+        "play-pause": "remote-play-pause", "playpause": "remote-play-pause",
+        "home": "home",
+    }
+    k = button_map.get(button.lower())
+    if not k:
+        raise RuntimeError(
+            f"Unknown remote button '{button}'. "
+            f"Supported: {', '.join(button_map)}"
+        )
+    key(udid, k)
 
 
 def key(udid: str, key_name: str) -> None:
     """Press a named hardware key on the simulator.
 
-    Supported: home, lock, siri, screenshot, enter
-    May bring Simulator to the front while sending the shortcut.
+    Supported: home, lock, siri, screenshot, enter, paste
+    tvOS remote: remote-up/down/left/right, remote-select, remote-menu, remote-play-pause
+    Briefly acquires focus and restores the previously frontmost app.
     """
     _ensure_booted(udid)
     k = key_name.lower()
@@ -1395,7 +1821,24 @@ def key(udid: str, key_name: str) -> None:
             f"Unknown iOS key '{key_name}'. Supported: {', '.join(_IOS_KEYS)}"
         )
     vk, modifiers, _ = _IOS_KEYS[k]
-    _post_key(vk, modifiers)
+    with _with_brief_focus(udid, action="key"):
+        _post_key(vk, modifiers)
+
+
+def software_keyboard(udid: str, action: str = "toggle") -> None:
+    """Control the iOS Simulator software keyboard.
+
+    Simulator exposes software-keyboard visibility through its Cmd+K shortcut.
+    Apple does not expose a simctl API for this state, so simemu owns the
+    shortcut behind a named command rather than forcing projects to call
+    osascript or Simulator menu automation directly.
+    """
+    _ensure_booted(udid)
+    normalized = action.lower()
+    if normalized != "toggle":
+        raise RuntimeError("Unsupported software-keyboard action. Supported: toggle")
+    with _with_brief_focus(udid, action="software-keyboard"):
+        _post_key(_VK_K, ("command down",))
 
 
 def status_bar(udid: str, time_str: Optional[str] = None, battery: Optional[int] = None,

@@ -6,21 +6,35 @@
   "lane": null,
   "wave": "wave-3",
   "space": "space-core",
-  "status": "todo",
+  "status": "done",
   "priority": "medium",
   "platform": "all",
-  "assignee": null,
+  "assignee": "claude",
   "dependsOn": [],
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-03-25T21:15:25.634Z",
+      "by": "human",
+      "text": "Claim policy with builtin aliases (iphone/ipad/pixel/watch/mac), config defaults, user alias overrides. 13 tests."
+    }
+  ],
   "acceptanceCriteria": [],
   "cloudy_run": null,
   "statusHistory": [
     {
       "status": "todo",
       "ts": "2026-03-24T22:00:39.525Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-03-25T21:13:37.023Z"
+    },
+    {
+      "status": "done",
+      "ts": "2026-03-25T21:15:25.514Z"
     }
   ],
   "attachments": [],
@@ -29,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-03-24T22:00:39.520Z",
-  "updatedAt": "2026-03-24T22:00:39.520Z",
+  "updatedAt": "2026-03-25T21:15:25.634Z",
   "validationOverrides": null,
   "executionMode": null,
   "cloudyTaskGraph": null,
