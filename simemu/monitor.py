@@ -10,6 +10,7 @@ Logs to ~/.simemu/monitor.log
 """
 
 import json
+import os
 import subprocess
 import signal
 import socket
@@ -17,6 +18,27 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _resolve_port() -> int:
+    env_val = os.environ.get("SIMEMU_PORT", "")
+    try:
+        port = int(env_val)
+        if 1 <= port <= 65535:
+            return port
+    except (ValueError, TypeError):
+        pass
+    try:
+        cfg = json.loads((Path.home() / ".fed" / "config.json").read_text())
+        dash = cfg.get("tools", {}).get("simemu", {}).get("dash")
+        if isinstance(dash, int) and dash > 0:
+            return dash
+    except Exception:
+        pass
+    return 7803
+
+
+_SIMEMU_PORT = _resolve_port()
 
 LOG = Path.home() / ".simemu" / "monitor.log"
 HEARTBEAT = Path.home() / ".simemu" / "monitor.heartbeat"
@@ -81,7 +103,7 @@ def run():
 
     # 3. Ensure server
     try:
-        with socket.create_connection(("127.0.0.1", 8765), timeout=1):
+        with socket.create_connection(("127.0.0.1", _SIMEMU_PORT), timeout=1):
             pass
     except OSError:
         log("server: not running, starting")

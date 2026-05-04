@@ -143,7 +143,7 @@ class NoAutoBootTests(unittest.TestCase):
     def test_android_ensure_booted_raises_not_spawns(self) -> None:
         """Without maintenance, _ensure_booted should still raise (not boot)."""
         with patch("simemu.android.get_android_serial", return_value=None):
-            with self.assertRaisesRegex(RuntimeError, "Boot it explicitly"):
+            with self.assertRaisesRegex(RuntimeError, "Wake it through the session API"):
                 android._ensure_booted("test-avd")
 
     def test_ios_ensure_booted_raises_not_spawns(self) -> None:

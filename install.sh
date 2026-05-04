@@ -4,7 +4,29 @@
 #    or: curl -fsSL https://raw.githubusercontent.com/vykeai/simemu/main/install.sh | bash
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://github.com/vykeai/simemu.git"
+DEFAULT_CLONE_DIR="$HOME/dev/simemu"
+
+# When piped via curl, BASH_SOURCE[0] is empty — detect and clone the repo first
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "bash" || "${BASH_SOURCE[0]}" == "/dev/stdin" ]]; then
+    SCRIPT_DIR=""
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+if [[ -z "$SCRIPT_DIR" ]]; then
+    # Running via curl pipe — clone the repo then re-exec from the clone
+    INSTALL_DIR="${SIMEMU_INSTALL_DIR:-$DEFAULT_CLONE_DIR}"
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        echo "→ Updating existing clone at $INSTALL_DIR"
+        git -C "$INSTALL_DIR" pull --quiet
+    else
+        echo "→ Cloning simemu to $INSTALL_DIR"
+        git clone --quiet "$REPO_URL" "$INSTALL_DIR"
+    fi
+    exec bash "$INSTALL_DIR/install.sh"
+fi
+
 INSTALL_DIR="${SIMEMU_INSTALL_DIR:-$SCRIPT_DIR}"
 GUARD_SCRIPT="$HOME/.claude/simemu-guard.py"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
