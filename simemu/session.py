@@ -2260,7 +2260,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.launch(sim_id, bundle, [])
         else:
             android.terminate(sim_id, bundle, **android_kwargs)
-            android.uninstall(sim_id, bundle, **android_kwargs)
+            try:
+                android.uninstall(sim_id, bundle, **android_kwargs)
+            except Exception as exc:
+                _session_log(
+                    f"[simemu-session] reset-app continuing after Android uninstall "
+                    f"failed for '{bundle}' on '{sim_id}': {exc}"
+                )
             android.install(sim_id, app_path, **android_kwargs)
             android.launch(sim_id, bundle, [], **android_kwargs)
         with _locked_sessions() as (data, save):
