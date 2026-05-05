@@ -149,6 +149,15 @@ _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE = re.compile(
     r"|Http2Exception: First received frame was not SETTINGS"
     r"|INTERNAL: http2 exception"
 )
+_MAESTRO_ANDROID_TRANSPORT_LOSS_RE = re.compile(
+    r"device ['\"]?emulator-\d+['\"]? not found"
+    r"|device offline"
+    r"|Command failed \(host:transport:emulator-\d+\)"
+    r"|DEADLINE_EXCEEDED: deadline exceeded"
+    r"|StatusRuntimeException: UNAVAILABLE"
+    r"|gRPC keepalive timeout"
+    r"|waiting_for_connection"
+)
 
 
 def _extract_maestro_app_id(flow_path: str) -> str | None:
@@ -305,6 +314,17 @@ def _summarize_maestro_failure(
             f"selector bug. Debug output: {debug_output}. Re-claim to retry: {reclaim}"
         )
 
+    if platform == "android" and _MAESTRO_ANDROID_TRANSPORT_LOSS_RE.search(log_text):
+        reclaim = require_session(session_id).reclaim_command()
+        return (
+            "Android Maestro lost adb/gRPC transport while the flow was running. "
+            "This usually means the emulator rebooted, the adb serial disappeared, or the "
+            "Maestro driver lost its forwarded connection before it could read hierarchy. "
+            "simemu will re-resolve the session device and retry once; if it still fails, "
+            f"treat it as simulator transport instability, not app proof. Debug output: {debug_output}. "
+            f"Re-claim to retry: {reclaim}"
+        )
+
     return None
 
 
@@ -319,6 +339,9 @@ def _retry_android_maestro_bridge(
 ) -> tuple[bool, str, str | None]:
     import subprocess as _sp
 
+    session = touch(session_id)
+    if session.pinned_serial:
+        android_kwargs = {**android_kwargs, "pinned_serial": session.pinned_serial}
     android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
     android.dismiss_system_dialogs(sim_id, **android_kwargs)
     _ensure_maestro_target_foreground(
