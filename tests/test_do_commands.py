@@ -848,16 +848,18 @@ class TestDoRepairInstall(DoCommandBase):
 class TestDoResetApp(DoCommandBase):
     @patch("simemu.session.android.launch")
     @patch("simemu.session.android.install")
+    @patch("simemu.session.android.clear_data")
     @patch("simemu.session.android.uninstall", side_effect=RuntimeError("DELETE_FAILED_INTERNAL_ERROR"))
     @patch("simemu.session.android.terminate")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_android_reset_app_continues_when_uninstall_fails(
-        self, mock_serial, mock_terminate, mock_uninstall, mock_install, mock_launch
+        self, mock_serial, mock_terminate, mock_uninstall, mock_clear_data, mock_install, mock_launch
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         result = do_command("s-droid1", "reset-app", ["app.sitches.dev", "/tmp/app.apk"])
         mock_terminate.assert_called_once_with("Pixel_7", "app.sitches.dev")
         mock_uninstall.assert_called_once_with("Pixel_7", "app.sitches.dev")
+        mock_clear_data.assert_called_once_with("Pixel_7", "app.sitches.dev")
         mock_install.assert_called_once_with("Pixel_7", "/tmp/app.apk")
         mock_launch.assert_called_once_with("Pixel_7", "app.sitches.dev", [])
         self.assertEqual("reset", result["status"])
