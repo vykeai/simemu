@@ -152,6 +152,7 @@ _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE = re.compile(
 _MAESTRO_ANDROID_TRANSPORT_LOSS_RE = re.compile(
     r"device ['\"]?emulator-\d+['\"]? not found"
     r"|device offline"
+    r"|Device emulator-\d+ was requested, but it is not connected"
     r"|Command failed \(host:transport:emulator-\d+\)"
     r"|DEADLINE_EXCEEDED: deadline exceeded"
     r"|StatusRuntimeException: UNAVAILABLE"

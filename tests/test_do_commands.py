@@ -564,6 +564,51 @@ class TestDoMaestro(DoCommandBase):
         mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_retries_requested_device_not_connected_once(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+        mock_sleep,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        attempts = {"count": 0}
+
+        def _fake_run(cmd, env=None, **kwargs):
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                (debug_output / "maestro.log").write_text(
+                    "Device emulator-5554 was requested, but it is not connected.\n"
+                )
+                return MagicMock(returncode=1)
+            attempts["count"] += 1
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = _fake_run
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
+        self.assertEqual(mock_run.call_count, 2)
+        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
     @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
     @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")
     @patch("subprocess.run")
