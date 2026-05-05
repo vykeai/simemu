@@ -26,6 +26,7 @@ from simemu.session import (
     _gen_session_id,
     _now_iso,
     _park_session,
+    _read_sessions_raw,
     claim,
     do_command,
     get_active_sessions,
@@ -536,6 +537,9 @@ class TestClaim(unittest.TestCase):
         with self.assertRaises(SessionError) as ctx:
             claim(spec)
         self.assertEqual(ctx.exception.error_type, "device_already_claimed")
+        error_json = ctx.exception.to_json()
+        self.assertIsNone(error_json["session"])
+        self.assertIn("existing_session", error_json)
 
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.ios.boot")
@@ -813,6 +817,9 @@ class TestRelease(unittest.TestCase):
         # Verify persisted too
         persisted = get_session("s-aaa111")
         self.assertEqual(persisted.status, "released")
+        raw = _read_sessions_raw()["sessions"]["s-aaa111"]
+        self.assertIn("released_at", raw)
+        self.assertIn("released_by", raw)
 
     @patch("simemu.session.window_mgr.apply_window_mode")
     @patch("simemu.session.ios.erase")

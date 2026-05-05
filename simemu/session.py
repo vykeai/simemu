@@ -718,9 +718,10 @@ def claim(spec: ClaimSpec) -> Session:
                         continue
                 raise SessionError(
                     error="device_already_claimed",
-                    session=existing_id,
+                    session=None,
                     hint=f"Device '{sim.device_name}' is already claimed by session {existing_id}. "
                          f"Release it first: simemu do {existing_id} done",
+                    existing_session=existing_id,
                 )
         data["sessions"][session_id] = asdict(session)
         save(data)
@@ -995,6 +996,8 @@ def renew(session_id: str, hours: float | None = None) -> Session:
 def release(session_id: str) -> Session:
     """Immediately release a session and free the device."""
     session = require_session(session_id)
+    released_at = _now_iso()
+    released_by = os.environ.get("SIMEMU_AGENT") or f"pid-{os.getpid()}"
 
     if not session.real_device:
         try:
@@ -1020,6 +1023,8 @@ def release(session_id: str) -> Session:
         if session_id in data["sessions"]:
             data["sessions"][session_id]["status"] = "released"
             data["sessions"][session_id]["visible"] = False
+            data["sessions"][session_id]["released_at"] = released_at
+            data["sessions"][session_id]["released_by"] = released_by
             data["sessions"][session_id].pop("last_build_artifact", None)
             save(data)
 

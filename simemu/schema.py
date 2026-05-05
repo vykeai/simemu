@@ -32,7 +32,7 @@ ERROR_SCHEMA = {
     "required": ["error", "hint"],
     "properties": {
         "error":   {"type": "string"},
-        "session": {"type": "string"},
+        "session": {"type": ["string", "null"]},
         "hint":    {"type": "string"},
     },
 }
