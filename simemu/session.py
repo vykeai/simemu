@@ -156,6 +156,8 @@ _MAESTRO_ANDROID_TRANSPORT_LOSS_RE = re.compile(
     r"|Command failed \(host:transport:emulator-\d+\)"
     r"|DEADLINE_EXCEEDED: deadline exceeded"
     r"|StatusRuntimeException: UNAVAILABLE"
+    r"|java\.io\.EOFException"
+    r"|AdbShellStream\.read"
     r"|gRPC keepalive timeout"
     r"|waiting_for_connection"
 )
