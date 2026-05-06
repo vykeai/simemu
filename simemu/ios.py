@@ -30,14 +30,25 @@ _LAST_SIM_BOUNDS: dict[str, tuple[float, float, float, float]] = {}
 _LAST_WINDOW_FRAMES: dict[str, tuple[float, float, float, float]] = {}
 
 
-def _simctl(*args, capture: bool = False, check: bool = True) -> Optional[str]:
+def _simctl(
+    *args,
+    capture: bool = False,
+    check: bool = True,
+    timeout: Optional[int] = None,
+) -> Optional[str]:
     cmd = ["xcrun", "simctl"] + list(args)
-    if capture:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=check)
-        return result.stdout.strip()
-    else:
-        subprocess.run(cmd, check=check)
-        return None
+    try:
+        if capture:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=timeout)
+            return result.stdout.strip()
+        else:
+            subprocess.run(cmd, check=check, timeout=timeout)
+            return None
+    except subprocess.TimeoutExpired as exc:
+        limit = f" after {timeout}s" if timeout is not None else ""
+        raise RuntimeError(
+            f"simctl command timed out{limit}: {' '.join(cmd)}"
+        ) from exc
 
 
 def _is_booted(udid: str) -> bool:
@@ -621,10 +632,11 @@ def clipboard_get(udid: str) -> str:
 
 def input_text(udid: str, text: str) -> None:
     _ensure_booted(udid)
-    """Paste text into the currently focused simulator field."""
+    """Type text into the currently focused simulator field."""
     import subprocess as _sp
-    # Newer Xcode builds expose simulator pasteboard via pbcopy/pbpaste instead of
-    # the older `simctl pasteboard set` subcommand.
+    # Keep the simulator pasteboard in sync for users who inspect it, but inject
+    # text with System Events. On current iOS 18/Xcode 17 simulators Cmd+V can
+    # silently no-op even when pbcopy succeeds.
     proc = _sp.run(
         ["xcrun", "simctl", "pbcopy", udid],
         input=text.encode(),
@@ -632,7 +644,8 @@ def input_text(udid: str, text: str) -> None:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to set pasteboard: {proc.stderr.decode().strip()}")
-    key(udid, "paste")
+    with _with_brief_focus(udid, action="input"):
+        _type_text(text)
 
 
 def privacy(udid: str, bundle_id: str, action: str, service: str) -> None:
@@ -648,12 +661,12 @@ def privacy(udid: str, bundle_id: str, action: str, service: str) -> None:
 def location(udid: str, lat: float, lng: float) -> None:
     _ensure_booted(udid)
     """Set a fixed GPS location on the simulator (requires Xcode 14.3+)."""
-    _simctl("location", udid, "set", f"{lat},{lng}")
+    _simctl("location", udid, "set", f"{lat},{lng}", timeout=15)
 
 
 def location_clear(udid: str) -> None:
     """Clear the fixed GPS location override."""
-    _simctl("location", udid, "clear")
+    _simctl("location", udid, "clear", timeout=15)
 
 
 # Canonical logical point dimensions (portrait) for known iOS devices.
@@ -1462,6 +1475,17 @@ tell application "System Events"
     tell process "Simulator"
         set frontmost to true
         key code {vk}{using_clause}
+    end tell
+end tell''')
+
+
+def _type_text(text: str) -> None:
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    _run_system_events(f'''
+tell application "System Events"
+    tell process "Simulator"
+        set frontmost to true
+        keystroke "{escaped}"
     end tell
 end tell''')
 

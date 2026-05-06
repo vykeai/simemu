@@ -129,6 +129,14 @@ class IOSControlTests(unittest.TestCase):
         mock_simctl.assert_called_once_with("boot", "SIM-001")
 
     @patch("simemu.ios._ensure_booted")
+    @patch("simemu.ios.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["xcrun"], timeout=15))
+    def test_location_timeout_raises_actionable_error(self, mock_run, mock_booted) -> None:
+        with self.assertRaisesRegex(RuntimeError, "simctl command timed out after 15s"):
+            ios.location("SIM-001", 51.5074, -0.1278)
+
+        mock_booted.assert_called_once_with("SIM-001")
+
+    @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
     def test_foreground_app_prefers_non_system_bundle(self, mock_run, mock_booted) -> None:
         mock_run.return_value = Mock(
@@ -199,11 +207,14 @@ class IOSControlTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Supported: toggle"):
             ios.software_keyboard("SIM-001", "show")
 
-    @patch("simemu.ios.key")
+    @patch("simemu.ios._type_text")
+    @patch("simemu.ios._with_brief_focus")
     @patch("simemu.ios.subprocess.run")
     @patch("simemu.ios._ensure_booted")
-    def test_input_text_copies_then_pastes(self, mock_booted, mock_run, mock_key) -> None:
+    def test_input_text_copies_then_types(self, mock_booted, mock_run, mock_focus, mock_type_text) -> None:
         mock_run.return_value = Mock(returncode=0, stderr=b"")
+        mock_focus.return_value.__enter__.return_value = None
+        mock_focus.return_value.__exit__.return_value = None
 
         ios.input_text("SIM-001", "review@sitches.app")
 
@@ -213,7 +224,8 @@ class IOSControlTests(unittest.TestCase):
             input=b"review@sitches.app",
             capture_output=True,
         )
-        mock_key.assert_called_once_with("SIM-001", "paste")
+        mock_focus.assert_called_once_with("SIM-001", action="input")
+        mock_type_text.assert_called_once_with("review@sitches.app")
 
     @patch("simemu.ios.is_app_running", return_value=False)
     @patch("simemu.ios._ensure_booted")
