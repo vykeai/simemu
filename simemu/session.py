@@ -292,6 +292,9 @@ def _summarize_maestro_failure(
 ) -> str | None:
     debug_root = Path(debug_output)
     log_candidates: list[Path] = []
+    command_log = debug_root / "simemu-command.log"
+    if command_log.exists():
+        log_candidates.append(command_log)
     direct_log = debug_root / "maestro.log"
     if direct_log.exists():
         log_candidates.append(direct_log)
@@ -329,6 +332,39 @@ def _summarize_maestro_failure(
     return None
 
 
+def _run_maestro_process(cmd: list[str], env: dict[str, str]):
+    """Run Maestro while preserving output for retry classification."""
+    import subprocess as _sp
+    import sys as _sys
+
+    debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+    try:
+        result = _sp.run(
+            cmd,
+            env=env,
+            timeout=MAESTRO_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except TypeError:
+        # Unit-test fakes often implement a small subset of subprocess.run.
+        result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
+    stdout = getattr(result, "stdout", "") or ""
+    stderr = getattr(result, "stderr", "") or ""
+    if not isinstance(stdout, str):
+        stdout = ""
+    if not isinstance(stderr, str):
+        stderr = ""
+    if stdout:
+        print(stdout, end="", file=_sys.stdout)
+    if stderr:
+        print(stderr, end="", file=_sys.stderr)
+    if stdout or stderr:
+        debug_output.mkdir(parents=True, exist_ok=True)
+        (debug_output / "simemu-command.log").write_text(stdout + stderr)
+    return result
+
+
 def _retry_android_maestro_bridge(
     *,
     session_id: str,
@@ -362,7 +398,7 @@ def _retry_android_maestro_bridge(
         flow_files=flow_files,
         extra_args=extra_args,
     )
-    retry_result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
+    retry_result = _run_maestro_process(cmd, env)
     return retry_result.returncode == 0, retry_debug_output, _summarize_maestro_failure(
         session_id=session_id,
         platform="android",
@@ -1650,7 +1686,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             extra_args=extra_args,
         )
         try:
-            result = _sp.run(cmd, env=env, timeout=MAESTRO_TIMEOUT_SECONDS)
+            result = _run_maestro_process(cmd, env)
         except _sp.TimeoutExpired:
             return {
                 "status": "failed",
