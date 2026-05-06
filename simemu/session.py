@@ -1014,6 +1014,15 @@ def touch(session_id: str) -> Session:
                 session.pinned_serial = serial
             if serial is None:
                 reboot_needed = True
+        if serial is not None and session.pinned_serial and session.pinned_serial != serial:
+            # The emulator can restart on a new adb port while keeping the same
+            # AVD name. Keep the session pin current so Maestro and screenshots
+            # do not target a dead serial after recovery.
+            with _locked_sessions() as (data, save):
+                if session_id in data["sessions"]:
+                    data["sessions"][session_id]["pinned_serial"] = serial
+                    save(data)
+            session.pinned_serial = serial
 
     # Real device connectivity check — verify the device is still connected
     if session.real_device:
