@@ -122,6 +122,38 @@ class TestDoInstall(DoCommandBase):
         self.assertEqual(result["status"], "installed")
 
 
+# ── a11y-tree ────────────────────────────────────────────────────────────────
+
+
+class TestDoA11yTree(DoCommandBase):
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("subprocess.run")
+    def test_android_a11y_tree_removes_stale_dump_and_fails_before_cat_on_dump_error(
+        self, run_mock, _serial_mock, _get_serial_mock
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="pixel-proof")
+        run_mock.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="ERROR: could not get idle state", stderr=""),
+        ]
+
+        result = do_command("s-droid1", "a11y-tree", [])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("uiautomator dump failed", result["hint"])
+        commands = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(
+            commands[0],
+            ["adb", "-s", "emulator-5554", "shell", "rm", "-f", "/sdcard/window_dump.xml"],
+        )
+        self.assertEqual(
+            commands[1],
+            ["adb", "-s", "emulator-5554", "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"],
+        )
+        self.assertEqual(len(commands), 2)
+
+
 # ── launch ───────────────────────────────────────────────────────────────────
 
 
@@ -278,7 +310,12 @@ class TestDoScreenshot(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "screenshot", ["-o", "/tmp/droid.png"])
-        mock_screenshot.assert_called_once_with("Pixel_7", "/tmp/droid.png", max_size=None)
+        mock_screenshot.assert_called_once_with(
+            "Pixel_7",
+            "/tmp/droid.png",
+            max_size=None,
+            pinned_serial="emulator-5554",
+        )
 
     @patch("simemu.session.android.screenshot")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -322,7 +359,27 @@ class TestDoScreenshot(DoCommandBase):
         data["sessions"]["s-droid1"]["last_app"] = "com.fitkind.dev"
         sf.write_text(json.dumps(data))
         result = do_command("s-droid1", "screenshot", ["-o", "/tmp/test.png"])
-        mock_launch.assert_called_once_with("Pixel_7", "com.fitkind.dev", [])
+        mock_launch.assert_called_once_with(
+            "Pixel_7",
+            "com.fitkind.dev",
+            [],
+            pinned_serial="emulator-5554",
+        )
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
+    @patch.dict("simemu.session.os.environ", {"SIMEMU_DISABLE_SCREENSHOT_ACTIVATE": "1"})
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_can_disable_last_app_activation_android(self, mock_serial, mock_launch, mock_ss) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "screenshot", ["-o", "/tmp/test.png"])
+        mock_launch.assert_not_called()
         mock_ss.assert_called_once()
         self.assertEqual(result["status"], "captured")
 

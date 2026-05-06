@@ -216,7 +216,7 @@ end tell'''
 
 def _capture_window_fallback(avd_name: str, output_path: str) -> bool:
     info = _window_info(avd_name)
-    if not info or not info.get("onscreen"):
+    if not info:
         return False
 
     tmp_path = output_path + ".windowtmp.png"
@@ -1324,6 +1324,22 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
     if settle_ms > 0:
         time.sleep(settle_ms / 1000.0)
 
+    if os.environ.get("SIMEMU_PREFER_WINDOW_SCREENSHOT") == "1":
+        if _capture_window_fallback(avd_name, output_path):
+            return
+        if os.environ.get("SIMEMU_WINDOW_SCREENSHOT_ONLY") == "1":
+            raise RuntimeError(
+                f"Window screenshot failed for '{avd_name}' and SIMEMU_WINDOW_SCREENSHOT_ONLY=1 is set."
+            )
+
+    if os.environ.get("SIMEMU_PREFER_CONSOLE_SCREENSHOT") == "1":
+        try:
+            serial = _serial(avd_name, pinned=pinned_serial)
+            if _capture_console_screenshot(serial, output_path):
+                return
+        except RuntimeError:
+            pass
+
     max_attempts = 4
     for attempt in range(max_attempts):
         try:
@@ -1337,13 +1353,10 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                 f"Re-claim or reboot: simemu do <session> reboot"
             )
 
-        captured = False
-        if _capture_window_fallback(avd_name, output_path):
-            break
-
         # Write to temp file, then rename — prevents leaving zero-byte files on timeout.
         # Use Popen for explicit process control — subprocess.run can leave adb
         # exec-out hanging when screencap stalls on a GPU buffer lock.
+        captured = False
         tmp_path = output_path + ".tmp"
         try:
             with open(tmp_path, "wb") as f:
@@ -1486,7 +1499,7 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                     except OSError:
                         pass
 
-        if not captured:
+        if not captured and os.environ.get("SIMEMU_DISABLE_WINDOW_SCREENSHOT_FALLBACK") != "1":
             captured = _capture_window_fallback(avd_name, output_path)
 
         if captured:

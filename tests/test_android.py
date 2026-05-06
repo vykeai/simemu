@@ -871,26 +871,97 @@ class TestSessionIsolation(unittest.TestCase):
 class TestScreenshotFallbacks(unittest.TestCase):
 
     @patch("simemu.android.time.sleep")
+    @patch("simemu.android._capture_is_black", return_value=False)
     @patch("simemu.android._capture_window_fallback", return_value=True)
     @patch("simemu.android._serial", return_value="emulator-5554")
     @patch("simemu.android.dismiss_system_dialogs")
     @patch("simemu.android.subprocess.Popen")
     @patch("simemu.android._adb")
-    def test_screenshot_prefers_visible_window_capture(
+    def test_screenshot_prefers_device_capture_before_visible_window_capture(
         self,
         mock_adb: MagicMock,
         mock_popen: MagicMock,
         mock_dismiss: MagicMock,
         mock_serial: MagicMock,
         mock_window_fallback: MagicMock,
+        mock_black: MagicMock,
         mock_sleep: MagicMock,
+    ) -> None:
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            expected_png = b"\x89PNG\r\n\x1a\n" + (b"x" * 512)
+
+            def _popen(cmd, stdout, stderr):
+                stdout.write(expected_png)
+                return proc
+
+            mock_popen.side_effect = _popen
+            android.screenshot("MyAVD", output, settle_ms=0)
+        mock_window_fallback.assert_not_called()
+        mock_popen.assert_called_once()
+        mock_adb.assert_not_called()
+
+    @patch.dict("simemu.android.os.environ", {"SIMEMU_PREFER_CONSOLE_SCREENSHOT": "1"})
+    @patch("simemu.android._capture_console_screenshot", return_value=True)
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android.dismiss_system_dialogs")
+    @patch("simemu.android.subprocess.Popen")
+    def test_screenshot_can_prefer_console_capture_for_proof_integrity(
+        self,
+        mock_popen: MagicMock,
+        mock_dismiss: MagicMock,
+        mock_serial: MagicMock,
+        mock_console_screenshot: MagicMock,
     ) -> None:
         with tempfile.TemporaryDirectory() as td:
             output = str(Path(td) / "capture.png")
             android.screenshot("MyAVD", output, settle_ms=0)
+
+        mock_console_screenshot.assert_called_once_with("emulator-5554", output)
+        mock_popen.assert_not_called()
+
+    @patch.dict("simemu.android.os.environ", {"SIMEMU_PREFER_WINDOW_SCREENSHOT": "1"})
+    @patch("simemu.android._capture_window_fallback", return_value=True)
+    @patch("simemu.android.dismiss_system_dialogs")
+    @patch("simemu.android.subprocess.Popen")
+    def test_screenshot_can_prefer_window_capture_for_proof_integrity(
+        self,
+        mock_popen: MagicMock,
+        mock_dismiss: MagicMock,
+        mock_window_fallback: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            android.screenshot("MyAVD", output, settle_ms=0)
+
         mock_window_fallback.assert_called_once_with("MyAVD", output)
         mock_popen.assert_not_called()
-        mock_adb.assert_not_called()
+
+    @patch.dict(
+        "simemu.android.os.environ",
+        {"SIMEMU_PREFER_WINDOW_SCREENSHOT": "1", "SIMEMU_WINDOW_SCREENSHOT_ONLY": "1"},
+    )
+    @patch("simemu.android._capture_window_fallback", return_value=False)
+    @patch("simemu.android.dismiss_system_dialogs")
+    @patch("simemu.android.subprocess.Popen")
+    def test_screenshot_can_require_window_capture_for_proof_integrity(
+        self,
+        mock_popen: MagicMock,
+        mock_dismiss: MagicMock,
+        mock_window_fallback: MagicMock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            with self.assertRaises(RuntimeError):
+                android.screenshot("MyAVD", output, settle_ms=0)
+
+        mock_window_fallback.assert_called_once_with("MyAVD", output)
+        mock_popen.assert_not_called()
 
     @patch("simemu.android._capture_is_black", return_value=False)
     @patch("simemu.android._window_info")
@@ -989,6 +1060,41 @@ class TestScreenshotFallbacks(unittest.TestCase):
 
             mock_console_screenshot.assert_called_once_with("emulator-5554", output)
             self.assertTrue(Path(output).exists())
+
+    @patch.dict("simemu.android.os.environ", {"SIMEMU_DISABLE_WINDOW_SCREENSHOT_FALLBACK": "1"})
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._capture_window_fallback", return_value=True)
+    @patch("simemu.android._capture_console_screenshot", return_value=False)
+    @patch("simemu.android.shutil.which", return_value=None)
+    @patch("simemu.android._adb", side_effect=RuntimeError("device capture failed"))
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.subprocess.Popen")
+    @patch("simemu.android._serial", return_value="emulator-5554")
+    @patch("simemu.android.dismiss_system_dialogs")
+    def test_screenshot_can_disable_host_window_fallback_for_proof_integrity(
+        self,
+        mock_dismiss: MagicMock,
+        mock_serial: MagicMock,
+        mock_popen: MagicMock,
+        mock_run: MagicMock,
+        mock_adb: MagicMock,
+        mock_which: MagicMock,
+        mock_console_screenshot: MagicMock,
+        mock_window_fallback: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.wait.return_value = 1
+        mock_popen.return_value = proc
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            with self.assertRaises(RuntimeError):
+                android.screenshot("MyAVD", output, settle_ms=0)
+
+        mock_window_fallback.assert_not_called()
 
 
 if __name__ == "__main__":

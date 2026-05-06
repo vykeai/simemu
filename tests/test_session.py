@@ -660,6 +660,23 @@ class TestTouch(unittest.TestCase):
         mock_boot.assert_called_once_with("Pixel_7", headless=True)
         self.assertEqual(session.status, "active")
 
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_touch_pins_android_serial_when_missing(self, mock_serial) -> None:
+        self._seed_session(status="active", platform="android", sim_id="Pixel_7", pinned_serial=None)
+        session = touch("s-aaa111")
+        stored = get_session("s-aaa111")
+        self.assertEqual(session.pinned_serial, "emulator-5554")
+        self.assertEqual(stored.pinned_serial, "emulator-5554")
+
+    @patch.dict(os.environ, {"SIMEMU_DISABLE_SESSION_AUTO_REBOOT": "1"})
+    @patch("simemu.session.android.boot")
+    def test_touch_refuses_auto_reboot_when_disabled_for_proof(self, mock_boot) -> None:
+        self._seed_session(status="parked", platform="android", sim_id="Pixel_7")
+        with self.assertRaises(RuntimeError) as ctx:
+            touch("s-aaa111")
+        self.assertIn("would auto-reboot", str(ctx.exception))
+        mock_boot.assert_not_called()
+
     def test_touch_raises_for_expired_session(self) -> None:
         self._seed_session(status="expired")
         with self.assertRaises(SessionError) as ctx:

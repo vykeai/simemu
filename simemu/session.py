@@ -16,7 +16,7 @@ import secrets
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -393,7 +393,28 @@ def _stabilize_android_maestro_driver(device_id: str) -> None:
             return ""
         return (result.stdout or "") + (result.stderr or "")
 
+    try:
+        forwards = _sp.run(
+            ["adb", "forward", "--list"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        for line in (forwards.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "tcp:7001":
+                _sp.run(
+                    ["adb", "-s", parts[0], "forward", "--remove", "tcp:7001"],
+                    capture_output=True,
+                    check=False,
+                    timeout=5,
+                )
+    except Exception:
+        pass
+
     run(["forward", "--remove", "tcp:7001"], timeout=5)
+    run(["forward", "--remove-all"], timeout=5)
 
     packages_output = run(["shell", "pm", "list", "packages"], timeout=10)
     packages = []
@@ -482,6 +503,10 @@ def _sessions_lock_file() -> Path:
     return state.state_dir() / "sessions.lock"
 
 
+def _android_maestro_lock_file() -> Path:
+    return state.state_dir() / "android-maestro.lock"
+
+
 def _migrate_schema(data: dict) -> dict:
     """Migrate sessions.json to the current schema version.
 
@@ -528,6 +553,20 @@ def _locked_sessions():
 
         if pending:
             _write_sessions_raw(pending[-1])
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+@contextmanager
+def _locked_android_maestro():
+    """Serialize Android Maestro runs because its driver uses fixed host port 7001."""
+    base = state.state_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(_android_maestro_lock_file(), "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
@@ -1016,6 +1055,12 @@ def touch(session_id: str) -> Session:
                 session.pinned_serial = serial
             if serial is None:
                 reboot_needed = True
+        if serial is not None and not session.pinned_serial:
+            with _locked_sessions() as (data, save):
+                if session_id in data["sessions"]:
+                    data["sessions"][session_id]["pinned_serial"] = serial
+                    save(data)
+            session.pinned_serial = serial
         if serial is not None and session.pinned_serial and session.pinned_serial != serial:
             # The emulator can restart on a new adb port while keeping the same
             # AVD name. Keep the session pin current so Maestro and screenshots
@@ -1052,6 +1097,11 @@ def touch(session_id: str) -> Session:
 
     # Re-boot if parked (simulators only — real devices don't boot)
     if reboot_needed:
+        if os.environ.get("SIMEMU_DISABLE_SESSION_AUTO_REBOOT") == "1":
+            raise RuntimeError(
+                f"Session '{session_id}' would auto-reboot '{session.device_name}', "
+                "but SIMEMU_DISABLE_SESSION_AUTO_REBOOT=1 is set."
+            )
         if not session.real_device:
             if session.platform in ("ios", "watchos", "tvos", "visionos"):
                 ios.boot(session.sim_id)
@@ -1682,7 +1732,11 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                 data["sessions"].get(session_id, {}).get("last_app")
             )
 
-        if _screenshot_target_app and not is_real:
+        if (
+            _screenshot_target_app
+            and not is_real
+            and os.environ.get("SIMEMU_DISABLE_SCREENSHOT_ACTIVATE") != "1"
+        ):
             if platform in ("ios", "watchos", "visionos"):
                 ios.activate_app(sim_id, _screenshot_target_app)
             elif platform == "android":
@@ -1744,58 +1798,60 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             flow_files=flow_files,
             extra_args=extra_args,
         )
-        if platform == "android":
-            _stabilize_android_maestro_driver(device_id)
-        try:
-            result = _run_maestro_process(cmd, env)
-        except _sp.TimeoutExpired:
-            return {
-                "status": "failed",
-                "exit_code": 124,
-                "debug_output": debug_output,
-                "error": f"Maestro timed out after {MAESTRO_TIMEOUT_SECONDS} seconds and was terminated.",
-            }
-        if result.returncode != 0:
-            error = _summarize_maestro_failure(
-                session_id=session_id,
-                platform=platform,
-                debug_output=debug_output,
-            )
-            if platform == "android" and error:
-                import sys as _sys
+        lock_context = _locked_android_maestro() if platform == "android" else nullcontext()
+        with lock_context:
+            if platform == "android":
+                _stabilize_android_maestro_driver(device_id)
+            try:
+                result = _run_maestro_process(cmd, env)
+            except _sp.TimeoutExpired:
+                return {
+                    "status": "failed",
+                    "exit_code": 124,
+                    "debug_output": debug_output,
+                    "error": f"Maestro timed out after {MAESTRO_TIMEOUT_SECONDS} seconds and was terminated.",
+                }
+            if result.returncode != 0:
+                error = _summarize_maestro_failure(
+                    session_id=session_id,
+                    platform=platform,
+                    debug_output=debug_output,
+                )
+                if platform == "android" and error:
+                    import sys as _sys
 
-                print(json.dumps({
-                    "diagnostic": "android_maestro_bridge_retry",
-                    "session": session_id,
-                    "sim_id": sim_id,
-                }), file=_sys.stderr, flush=True)
-                try:
-                    recovered, retry_debug_output, retry_error = _retry_android_maestro_bridge(
-                        session_id=session_id,
-                        sim_id=sim_id,
-                        expected_app=expected_app,
-                        android_kwargs=android_kwargs,
-                        flow_files=flow_files,
-                        extra_args=extra_args,
-                    )
-                except RuntimeError as exc:
-                    recovered = False
-                    retry_debug_output = debug_output
-                    retry_error = f"{error} Auto-retry could not stabilize the emulator: {exc}"
-                if recovered:
-                    return {"status": "passed", "recovered": "android_maestro_bridge_retry"}
-                debug_output = retry_debug_output
-                error = retry_error or error
+                    print(json.dumps({
+                        "diagnostic": "android_maestro_bridge_retry",
+                        "session": session_id,
+                        "sim_id": sim_id,
+                    }), file=_sys.stderr, flush=True)
+                    try:
+                        recovered, retry_debug_output, retry_error = _retry_android_maestro_bridge(
+                            session_id=session_id,
+                            sim_id=sim_id,
+                            expected_app=expected_app,
+                            android_kwargs=android_kwargs,
+                            flow_files=flow_files,
+                            extra_args=extra_args,
+                        )
+                    except RuntimeError as exc:
+                        recovered = False
+                        retry_debug_output = debug_output
+                        retry_error = f"{error} Auto-retry could not stabilize the emulator: {exc}"
+                    if recovered:
+                        return {"status": "passed", "recovered": "android_maestro_bridge_retry"}
+                    debug_output = retry_debug_output
+                    error = retry_error or error
 
-            payload = {
-                "status": "failed",
-                "exit_code": result.returncode,
-                "debug_output": debug_output,
-            }
-            if error:
-                payload["error"] = error
-            return payload
-        return {"status": "passed"}
+                payload = {
+                    "status": "failed",
+                    "exit_code": result.returncode,
+                    "debug_output": debug_output,
+                }
+                if error:
+                    payload["error"] = error
+                return payload
+            return {"status": "passed"}
 
     elif command == "url":
         if not args:
@@ -2531,10 +2587,18 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                 serial = sim_id
             else:
                 serial = android._serial(sim_id, pinned=session.pinned_serial)
-            # Dump to a file on device, then cat it back — /dev/tty doesn't capture to stdout
+            # Dump to a file on device, then cat it back — /dev/tty doesn't capture to stdout.
+            # Remove any previous dump first so a transient uiautomator failure cannot
+            # return stale XML from a prior foreground surface.
             remote_path = "/sdcard/window_dump.xml"
-            _sp.run(["adb", "-s", serial, "shell", "uiautomator", "dump", remote_path],
-                    capture_output=True, text=True, check=False, timeout=15)
+            _sp.run(["adb", "-s", serial, "shell", "rm", "-f", remote_path],
+                    capture_output=True, check=False, timeout=5)
+            dump = _sp.run(["adb", "-s", serial, "shell", "uiautomator", "dump", remote_path],
+                           capture_output=True, text=True, check=False, timeout=15)
+            if dump.returncode != 0:
+                hint = (dump.stderr or dump.stdout or "").strip()
+                return {"status": "failed",
+                        "hint": f"uiautomator dump failed — {hint or 'the app may not expose accessibility nodes.'}"}
             result = _sp.run(["adb", "-s", serial, "shell", "cat", remote_path],
                              capture_output=True, text=True, check=False, timeout=10)
             # Clean up
