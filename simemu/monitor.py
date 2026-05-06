@@ -202,12 +202,18 @@ def _recover_stale_sessions() -> None:
             except Exception:
                 pass  # can't verify — leave it
         else:
-            # Android: check if emulator process is running
+            # Android: adb lists emulator serials, not AVD names. Resolve the
+            # session by its pinned serial/AVD name so live sessions are not
+            # falsely parked during long-running proof captures.
             try:
-                out = subprocess.run(
-                    ["adb", "devices"], capture_output=True, text=True, timeout=5,
-                )
-                if session.sim_id not in out.stdout:
+                from simemu import android
+
+                if session.pinned_serial and android.validate_serial(
+                    session.pinned_serial,
+                    session.sim_id,
+                ):
+                    continue
+                if android.get_android_serial(session.sim_id, retries=2, delay=0.5) is None:
                     stale.append(sid)
             except Exception:
                 pass

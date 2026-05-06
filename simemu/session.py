@@ -158,6 +158,8 @@ _MAESTRO_ANDROID_TRANSPORT_LOSS_RE = re.compile(
     r"|Command failed \(host:transport:emulator-\d+\)"
     r"|DEADLINE_EXCEEDED: deadline exceeded"
     r"|StatusRuntimeException: UNAVAILABLE"
+    r"|StatusRuntimeException: RESOURCE_EXHAUSTED"
+    r"|RESOURCE_EXHAUSTED:.*(?:screenshot|viewHierarchy|hierarchy|grpc|gRPC)"
     r"|java\.io\.EOFException"
     r"|AdbShellStream\.read"
     r"|gRPC keepalive timeout"
@@ -1051,6 +1053,12 @@ def touch(session_id: str) -> Session:
                 # a just-captured emulator. Give the original app session a chance to
                 # reappear before reporting that a reboot would be required.
                 serial = android.get_android_serial(session.sim_id, retries=10, delay=1.0)
+                if serial is None and session.pinned_serial:
+                    # AVD-name lookup can fail transiently even while the pinned adb
+                    # transport still exists. In no-reboot proof mode, keep using the
+                    # pinned serial and let the command-level adb call return a normal
+                    # failure if the transport is truly gone.
+                    serial = session.pinned_serial
             if serial is not None and session.pinned_serial and serial != session.pinned_serial:
                 # Serial changed after reconnect — update pinned serial
                 with _locked_sessions() as (data, save):
@@ -2591,7 +2599,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if is_real:
                 serial = sim_id
             else:
-                serial = android._serial(sim_id, pinned=session.pinned_serial)
+                try:
+                    serial = android._serial(sim_id, pinned=session.pinned_serial)
+                except RuntimeError:
+                    if os.environ.get("SIMEMU_DISABLE_SESSION_AUTO_REBOOT") == "1" and session.pinned_serial:
+                        serial = session.pinned_serial
+                    else:
+                        raise
             # Dump to a file on device, then cat it back — /dev/tty doesn't capture to stdout.
             # Remove any previous dump first so a transient uiautomator failure cannot
             # return stale XML from a prior foreground surface.

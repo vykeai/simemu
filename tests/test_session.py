@@ -677,6 +677,34 @@ class TestTouch(unittest.TestCase):
         self.assertEqual(mock_serial.call_count, 2)
 
     @patch.dict(os.environ, {"SIMEMU_DISABLE_SESSION_AUTO_REBOOT": "1"})
+    @patch("simemu.session.time.sleep", return_value=None)
+    @patch("subprocess.run")
+    @patch("simemu.session.android.get_android_serial", side_effect=[None, None, None])
+    def test_touch_no_reboot_keeps_pinned_serial_on_transient_avd_lookup_loss(
+        self,
+        mock_serial,
+        mock_run,
+        mock_sleep,
+    ) -> None:
+        self._seed_session(
+            status="active",
+            platform="android",
+            sim_id="Pixel_7",
+            pinned_serial="emulator-5554",
+        )
+        session = touch("s-aaa111")
+
+        self.assertEqual(session.status, "active")
+        self.assertEqual(session.pinned_serial, "emulator-5554")
+        mock_run.assert_called_once_with(
+            ["adb", "-s", "emulator-5554", "reconnect"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(mock_serial.call_count, 3)
+
+    @patch.dict(os.environ, {"SIMEMU_DISABLE_SESSION_AUTO_REBOOT": "1"})
     @patch("simemu.session.android.boot")
     def test_touch_refuses_auto_reboot_when_disabled_for_proof(self, mock_boot) -> None:
         self._seed_session(status="parked", platform="android", sim_id="Pixel_7")

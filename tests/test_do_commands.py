@@ -153,6 +153,44 @@ class TestDoA11yTree(DoCommandBase):
         )
         self.assertEqual(len(commands), 2)
 
+    @patch.dict(os.environ, {"SIMEMU_DISABLE_SESSION_AUTO_REBOOT": "1"})
+    @patch("simemu.session.time.sleep", return_value=None)
+    @patch("simemu.session.android.get_android_serial", side_effect=[None, None, None, None])
+    @patch("simemu.session.android._serial", side_effect=RuntimeError("could not resolve emulator"))
+    @patch("subprocess.run")
+    def test_android_a11y_tree_uses_pinned_serial_when_avd_lookup_transiently_fails(
+        self,
+        run_mock,
+        _serial_mock,
+        _get_serial_mock,
+        _sleep_mock,
+    ) -> None:
+        self._seed(
+            "s-droid1",
+            platform="android",
+            sim_id="pixel-proof",
+            pinned_serial="emulator-5554",
+        )
+        run_mock.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="ERROR: transient transport failure", stderr=""),
+        ]
+
+        result = do_command("s-droid1", "a11y-tree", [])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("uiautomator dump failed", result["hint"])
+        commands = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(
+            commands[-2],
+            ["adb", "-s", "emulator-5554", "shell", "rm", "-f", "/sdcard/window_dump.xml"],
+        )
+        self.assertEqual(
+            commands[-1],
+            ["adb", "-s", "emulator-5554", "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"],
+        )
+
 
 # ── launch ───────────────────────────────────────────────────────────────────
 
@@ -667,6 +705,51 @@ class TestDoMaestro(DoCommandBase):
         self.assertEqual(len(maestro_calls), 2)
         mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_retries_resource_exhausted_hierarchy_failure_once(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+        mock_sleep,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        attempts = {"count": 0}
+
+        def _fake_run(cmd, env=None, **kwargs):
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                (debug_output / "maestro.log").write_text(
+                    "io.grpc.StatusRuntimeException: RESOURCE_EXHAUSTED: "
+                    "Failed to read viewHierarchy after screenshot capture\n"
+                )
+                return MagicMock(returncode=1)
+            attempts["count"] += 1
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = _fake_run
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
+        maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
+        self.assertEqual(len(maestro_calls), 2)
 
     @patch("simemu.session.ios.wait_for_foreground_app", return_value=True)
     @patch("simemu.session.ios.foreground_app", return_value="app.fitkind.dev")

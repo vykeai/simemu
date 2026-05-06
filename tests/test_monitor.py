@@ -1,6 +1,7 @@
 """Tests for simemu.monitor — health monitor tick."""
 
 import os
+import json
 import signal
 import tempfile
 import unittest
@@ -96,6 +97,71 @@ class TestMonitor(unittest.TestCase):
         mock_socket.return_value.__exit__ = MagicMock()
         # Should not crash even if adb fails
         monitor.run()
+
+    def _seed_android_session(self, session_id: str = "s-android", **overrides) -> None:
+        from simemu.session import _compute_expires_at, _now_iso
+
+        now = _now_iso()
+        session_data = {
+            "session_id": session_id,
+            "platform": "android",
+            "form_factor": "phone",
+            "os_version": None,
+            "real_device": False,
+            "label": "",
+            "status": "active",
+            "sim_id": "fitkind-phone-proof",
+            "device_name": "FitKind Phone Proof",
+            "agent": "test",
+            "created_at": now,
+            "heartbeat_at": now,
+            "expires_at": _compute_expires_at("active", now),
+            "resolved_os_version": "API 35",
+            "claim_platform": "android",
+            "claim_form_factor": "phone",
+            "claim_os_version": None,
+            "claim_real_device": False,
+            "claim_label": "",
+            "pinned_serial": "emulator-5554",
+        }
+        session_data.update(overrides)
+        sessions_path = os.path.join(self.tmpdir.name, "sessions.json")
+        with open(sessions_path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"sessions": {session_id: session_data}}))
+
+    @patch("simemu.android.get_android_serial")
+    @patch("simemu.android.validate_serial", return_value=True)
+    def test_recover_stale_android_keeps_running_avd_when_pinned_serial_valid(
+        self,
+        mock_validate,
+        mock_get_serial,
+    ) -> None:
+        from simemu.session import get_session
+
+        self._seed_android_session()
+
+        monitor._recover_stale_sessions()
+
+        self.assertEqual(get_session("s-android").status, "active")
+        mock_validate.assert_any_call("emulator-5554", "fitkind-phone-proof")
+        mock_get_serial.assert_not_called()
+
+    @patch("simemu.android.get_android_serial", return_value=None)
+    @patch("simemu.android.validate_serial", return_value=False)
+    def test_recover_stale_android_parks_when_avd_does_not_resolve(
+        self,
+        mock_validate,
+        mock_get_serial,
+    ) -> None:
+        from simemu.session import get_session
+
+        self._seed_android_session()
+
+        monitor._recover_stale_sessions()
+
+        self.assertEqual(get_session("s-android").status, "parked")
+        mock_validate.assert_any_call("emulator-5554", "fitkind-phone-proof")
+        mock_get_serial.assert_any_call("fitkind-phone-proof", retries=2, delay=0.5)
 
     def test_parse_etime_seconds(self) -> None:
         self.assertEqual(monitor._parse_etime_seconds("04:05"), 245)
