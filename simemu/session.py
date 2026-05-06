@@ -704,6 +704,16 @@ def claim(spec: ClaimSpec) -> Session:
         for existing_id, existing in list(data["sessions"].items()):
             if (existing.get("sim_id") == sim.sim_id
                     and existing.get("status") in ("active", "idle", "parked")):
+                existing_session = _session_from_dict(existing)
+                if _is_effectively_expired(existing_session):
+                    data["sessions"][existing_id]["status"] = "expired"
+                    data["sessions"][existing_id]["expires_at"] = _now_iso()
+                    _session_log(
+                        f"[simemu-session] Expired timed-out session '{existing_id}' "
+                        f"(device '{sim.sim_id}') to allow new claim"
+                    )
+                    continue
+
                 # Is the existing session's emulator actually running?
                 if existing.get("platform") == "android" and not existing.get("real_device"):
                     existing_serial = android.get_android_serial(sim.sim_id, retries=1, delay=0.3)

@@ -545,6 +545,34 @@ class TestClaim(unittest.TestCase):
     @patch("simemu.session.ios.boot")
     @patch("simemu.session.find_best_device")
     @patch("simemu.session.state.check_maintenance")
+    def test_claim_expires_effectively_expired_duplicate_before_reusing_device(
+        self,
+        mock_maint,
+        mock_find,
+        mock_boot,
+        mock_win,
+    ) -> None:
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        self._seed_session(
+            "s-old",
+            platform="ios",
+            sim_id="AAA-111",
+            device_name="iPhone 16 Pro",
+            status="parked",
+            expires_at=expired_at,
+        )
+        mock_find.return_value = _make_sim(booted=True)
+
+        session = claim(ClaimSpec(platform="ios"))
+
+        self.assertEqual(session.sim_id, "AAA-111")
+        stale = get_session("s-old")
+        self.assertEqual(stale.status, "expired")
+
+    @patch("simemu.session.window_mgr.apply_window_mode")
+    @patch("simemu.session.ios.boot")
+    @patch("simemu.session.find_best_device")
+    @patch("simemu.session.state.check_maintenance")
     def test_claim_applies_window_mode(self, mock_maint, mock_find, mock_boot, mock_win) -> None:
         mock_find.return_value = _make_sim(booted=True)
         spec = ClaimSpec(platform="ios", visible=False)

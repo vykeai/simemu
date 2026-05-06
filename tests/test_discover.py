@@ -258,6 +258,25 @@ class TestFindBestDevice(unittest.TestCase):
         self.assertIn("form factor 'phone'", str(ctx.exception))
         self.assertIn("iPad Air", str(ctx.exception))
 
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch(
+        "simemu.discover.list_ios",
+        return_value=[
+            SimulatorInfo("veg-1", "ios", "cabbage", False, "iOS 26.4"),
+            SimulatorInfo("veg-2", "ios", "radish", False, "iOS 26.4"),
+        ],
+    )
+    def test_unknown_lab_device_names_fall_back_to_phone(self, mock_list: MagicMock, mock_claimed: MagicMock) -> None:
+        spec = SimpleNamespace(
+            platform="ios",
+            form_factor="phone",
+            os_version=None,
+            real_device=False,
+            device_selector=None,
+        )
+        result = find_best_device(spec)
+        self.assertEqual(result.sim_id, "veg-1")
+
 
 class TestReservations(unittest.TestCase):
     """Tests for permanent device reservations."""

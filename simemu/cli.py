@@ -615,14 +615,7 @@ def cmd_acquire(args):
 
 
 def cmd_release(args):
-    alloc = state.release(args.slug, agent=_agent())
-    # If a recording was active, stop it cleanly
-    if alloc.recording_pid is not None:
-        if alloc.platform == "ios":
-            ios.record_stop(alloc.recording_pid)
-        else:
-            android.record_stop(alloc.recording_pid)
-    print(f"Released '{args.slug}' ({alloc.device_name})")
+    _reject_legacy(args)
 
 
 def cmd_status(args):

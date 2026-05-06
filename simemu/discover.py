@@ -392,6 +392,13 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
             if _classify_form_factor(sim) == spec.form_factor
             or (spec.device_selector and _classify_form_factor(sim) is None)
         ]
+        if not filtered and spec.form_factor == "phone":
+            unknown = [
+                sim for sim in candidates
+                if _classify_form_factor(sim) is None
+            ]
+            if unknown:
+                filtered = unknown
         if not filtered:
             available = ", ".join(sim.device_name for sim in candidates)
             from .session import get_active_sessions

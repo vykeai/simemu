@@ -113,6 +113,16 @@ class CliLegacyRejectionTests(unittest.TestCase):
             code = self._run_legacy_command(["acquire", "ios", "test"])
         self.assertEqual(code, 1)
 
+    def test_legacy_release_handler_never_calls_state_release(self) -> None:
+        args = Namespace(command="release", slug="cabbage")
+        stderr = io.StringIO()
+        with patch("simemu.cli.state.release") as release_mock:
+            with redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.cmd_release(args)
+        self.assertEqual(ctx.exception.code, 1)
+        release_mock.assert_not_called()
+
     def test_legacy_install_rejected(self) -> None:
         with patch.dict(os.environ, self._env):
             code = self._run_legacy_command(["install", "slug", "app.ipa"])
