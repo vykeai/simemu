@@ -148,6 +148,8 @@ _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE = re.compile(
     r"|Connection refused: localhost/(?:127\.0\.0\.1|\[[0-9a-fA-F:]+\]):7001"
     r"|Http2Exception: First received frame was not SETTINGS"
     r"|INTERNAL: http2 exception"
+    r"|Failed to install apk .*maestro-app"
+    r"|Install failed:"
 )
 _MAESTRO_ANDROID_TRANSPORT_LOSS_RE = re.compile(
     r"device ['\"]?emulator-\d+['\"]? not found"
