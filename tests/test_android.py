@@ -630,6 +630,13 @@ class TestDismissSystemDialogs(unittest.TestCase):
         self.assertFalse(result)
         mock_run.assert_called_once()
 
+    @patch("simemu.android.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["adb"], timeout=10))
+    @patch("simemu.android.wait_until_ready", return_value="emulator-5554")
+    def test_returns_false_when_dumpsys_times_out(self, mock_ready, mock_run) -> None:
+        result = android.dismiss_system_dialogs("TestAVD")
+        self.assertFalse(result)
+        mock_run.assert_called_once()
+
 
 class TestRepairInstallFastPath(unittest.TestCase):
     @patch("simemu.android.verify_install")

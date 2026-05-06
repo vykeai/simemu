@@ -1278,10 +1278,13 @@ def dismiss_system_dialogs(avd_name: str, pinned_serial: Optional[str] = None) -
         # adb shell is unhealthy, so don't block the capture on dialog cleanup.
         return False
     # Check for system dialog via dumpsys window
-    result = subprocess.run(
-        ["adb", "-s", serial, "shell", "dumpsys", "window", "windows"],
-        capture_output=True, text=True, check=False, timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["adb", "-s", serial, "shell", "dumpsys", "window", "windows"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
     has_dialog = any(
         marker in result.stdout
         for marker in ("Application Not Responding", "has crashed", "isn't responding",
