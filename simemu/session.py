@@ -1046,6 +1046,11 @@ def touch(session_id: str) -> Session:
                 serial = android.get_android_serial(session.sim_id, retries=4, delay=1.0)
             except Exception:
                 serial = None
+            if serial is None and os.environ.get("SIMEMU_DISABLE_SESSION_AUTO_REBOOT") == "1":
+                # Continuous proof commands must not reboot, but adb can briefly lose
+                # a just-captured emulator. Give the original app session a chance to
+                # reappear before reporting that a reboot would be required.
+                serial = android.get_android_serial(session.sim_id, retries=10, delay=1.0)
             if serial is not None and session.pinned_serial and serial != session.pinned_serial:
                 # Serial changed after reconnect — update pinned serial
                 with _locked_sessions() as (data, save):
