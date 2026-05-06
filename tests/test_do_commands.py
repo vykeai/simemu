@@ -1116,7 +1116,7 @@ class TestDoLocation(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "location", ["40.7128", "-74.0060"])
-        mock_loc.assert_called_once_with("Pixel_7", 40.7128, -74.0060)
+        mock_loc.assert_called_once_with("Pixel_7", 40.7128, -74.0060, pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_location_missing_args(self, mock_serial) -> None:

@@ -777,6 +777,24 @@ class TestReadyState(unittest.TestCase):
 class TestSessionIsolation(unittest.TestCase):
     """Test that pinned serial prevents cross-session contamination."""
 
+    def test_location_uses_short_timeout(self) -> None:
+        with patch("simemu.genymotion.is_genymotion_id", return_value=False):
+            with patch("simemu.android._ensure_booted") as mock_booted:
+                with patch("simemu.android._adb") as mock_adb:
+                    android.location("Pixel_7", 51.5074, -0.1278, pinned_serial="emulator-5554")
+
+        mock_booted.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+        mock_adb.assert_called_once_with(
+            "Pixel_7",
+            "emu",
+            "geo",
+            "fix",
+            "-0.1278",
+            "51.5074",
+            timeout=15,
+            pinned_serial="emulator-5554",
+        )
+
     @patch("simemu.android.subprocess.run")
     def test_validate_serial_correct_avd(self, mock_run) -> None:
         mock_run.return_value = MagicMock(

@@ -1931,8 +1931,18 @@ def location(
             "GPS location is not supported for Genymotion VMs via simemu. "
             "Use the Genymotion UI (GPS widget) to set location."
         )
+    _ensure_booted(avd_name, pinned_serial=pinned_serial)
     # adb emu geo fix <longitude> <latitude> (note: lng comes first)
-    _adb(avd_name, "emu", "geo", "fix", str(lng), str(lat), pinned_serial=pinned_serial)
+    _adb(
+        avd_name,
+        "emu",
+        "geo",
+        "fix",
+        str(lng),
+        str(lat),
+        timeout=15,
+        pinned_serial=pinned_serial,
+    )
 
 
 _ANDROID_KEYCODES: dict[str, int] = {
