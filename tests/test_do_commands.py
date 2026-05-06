@@ -560,7 +560,8 @@ class TestDoMaestro(DoCommandBase):
 
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
-        self.assertEqual(mock_run.call_count, 2)
+        maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
+        self.assertEqual(len(maestro_calls), 2)
         mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
@@ -605,7 +606,8 @@ class TestDoMaestro(DoCommandBase):
 
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
-        self.assertEqual(mock_run.call_count, 2)
+        maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
+        self.assertEqual(len(maestro_calls), 2)
         mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 

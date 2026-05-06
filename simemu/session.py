@@ -365,6 +365,51 @@ def _run_maestro_process(cmd: list[str], env: dict[str, str]):
     return result
 
 
+def _stabilize_android_maestro_driver(device_id: str) -> None:
+    """Clear stale Android Maestro driver state before launching a proof flow.
+
+    Maestro's Android bridge binds localhost:7001. When a previous run dies
+    mid-startup, the next run can connect to stale/non-gRPC traffic and fail
+    with "First received frame was not SETTINGS" before the app flow starts.
+    """
+    import subprocess as _sp
+
+    def run(args: list[str], timeout: int = 10) -> str:
+        try:
+            result = _sp.run(
+                ["adb", "-s", device_id] + args,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except Exception:
+            # Best-effort cleanup must never mask the proof command itself.
+            # This also keeps unit-test subprocess fakes focused on Maestro.
+            return ""
+        return (result.stdout or "") + (result.stderr or "")
+
+    run(["forward", "--remove", "tcp:7001"], timeout=5)
+
+    packages_output = run(["shell", "pm", "list", "packages"], timeout=10)
+    packages = []
+    for line in packages_output.splitlines():
+        package = line.strip().removeprefix("package:")
+        if "maestro" in package.lower():
+            packages.append(package)
+
+    packages.extend([
+        "dev.mobile.maestro",
+        "dev.mobile.maestro.test",
+        "maestro",
+        "maestro.test",
+    ])
+
+    for package in sorted(set(pkg for pkg in packages if pkg)):
+        run(["shell", "am", "force-stop", package], timeout=5)
+        run(["shell", "pm", "clear", package], timeout=8)
+
+
 def _retry_android_maestro_bridge(
     *,
     session_id: str,
@@ -391,6 +436,7 @@ def _retry_android_maestro_bridge(
     time.sleep(2.0)
 
     device_id = android._serial(sim_id, pinned=android_kwargs.get("pinned_serial"))
+    _stabilize_android_maestro_driver(device_id)
     cmd, env, retry_debug_output = _prepare_maestro_invocation(
         session_id=session_id,
         platform="android",
@@ -1685,6 +1731,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             flow_files=flow_files,
             extra_args=extra_args,
         )
+        if platform == "android":
+            _stabilize_android_maestro_driver(device_id)
         try:
             result = _run_maestro_process(cmd, env)
         except _sp.TimeoutExpired:
