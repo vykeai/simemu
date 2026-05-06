@@ -621,7 +621,7 @@ def clipboard_get(udid: str) -> str:
 
 def input_text(udid: str, text: str) -> None:
     _ensure_booted(udid)
-    """Paste text into the simulator via the pasteboard (works in any focused text field)."""
+    """Paste text into the currently focused simulator field."""
     import subprocess as _sp
     # Newer Xcode builds expose simulator pasteboard via pbcopy/pbpaste instead of
     # the older `simctl pasteboard set` subcommand.
@@ -632,6 +632,7 @@ def input_text(udid: str, text: str) -> None:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to set pasteboard: {proc.stderr.decode().strip()}")
+    key(udid, "paste")
 
 
 def privacy(udid: str, bundle_id: str, action: str, service: str) -> None:

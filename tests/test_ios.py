@@ -199,6 +199,22 @@ class IOSControlTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Supported: toggle"):
             ios.software_keyboard("SIM-001", "show")
 
+    @patch("simemu.ios.key")
+    @patch("simemu.ios.subprocess.run")
+    @patch("simemu.ios._ensure_booted")
+    def test_input_text_copies_then_pastes(self, mock_booted, mock_run, mock_key) -> None:
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+
+        ios.input_text("SIM-001", "review@sitches.app")
+
+        mock_booted.assert_called_once_with("SIM-001")
+        mock_run.assert_called_once_with(
+            ["xcrun", "simctl", "pbcopy", "SIM-001"],
+            input=b"review@sitches.app",
+            capture_output=True,
+        )
+        mock_key.assert_called_once_with("SIM-001", "paste")
+
     @patch("simemu.ios.is_app_running", return_value=False)
     @patch("simemu.ios._ensure_booted")
     def test_activate_app_returns_false_when_not_running(self, mock_booted, mock_running) -> None:

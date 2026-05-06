@@ -1660,7 +1660,7 @@ def cmd_input(args):
             lease.update(stage="Preparing text input", screen=alloc.device_name,
                          scenario="Keyboard input", text_preview=args.text[:40])
             ios.input_text(alloc.sim_id, args.text)
-        print(f"Text copied to '{args.slug}' pasteboard (paste with Cmd+V or long-press).")
+        print(f"Text pasted into '{args.slug}'.")
     else:
         android.input_text(alloc.sim_id, args.text)
         print(f"Text typed into '{args.slug}'.")
@@ -2488,7 +2488,7 @@ def build_parser() -> argparse.ArgumentParser:
     shake_p.set_defaults(func=cmd_shake)
 
     # input
-    input_p = sub.add_parser("input", help="Type text into focused field (Android) or set pasteboard (iOS)")
+    input_p = sub.add_parser("input", help="Type/paste text into focused field")
     input_p.add_argument("slug")
     input_p.add_argument("text", help="Text to type / paste")
     input_p.set_defaults(func=cmd_input)
