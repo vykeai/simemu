@@ -479,6 +479,28 @@ def _retry_android_maestro_bridge(
     )
 
 
+def _preflight_android_maestro_device(
+    *,
+    session_id: str,
+    sim_id: str,
+    android_kwargs: dict,
+) -> tuple[str, dict]:
+    """Wait for an Android session to be adb/pm-ready before Maestro starts.
+
+    Resolving a serial is not enough for Maestro: the driver install and gRPC
+    bridge setup also need a responsive package manager. Fail before starting
+    Maestro if the emulator is still booting or adb transport is unstable.
+    """
+    session = touch(session_id)
+    if session.pinned_serial:
+        android_kwargs = {**android_kwargs, "pinned_serial": session.pinned_serial}
+    serial = android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+    if android_kwargs.get("pinned_serial") != serial:
+        android_kwargs = {**android_kwargs, "pinned_serial": serial}
+    android.dismiss_system_dialogs(sim_id, **android_kwargs)
+    return serial, android_kwargs
+
+
 def _compute_expires_at(status: str, heartbeat_at: str) -> str:
     """Compute when a session will next transition based on current status."""
     from datetime import timedelta
@@ -1777,13 +1799,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if platform in ("ios", "watchos", "tvos", "visionos"):
             device_id = sim_id
         else:
-            try:
-                device_id = _android_serial_for_session()
-            except RuntimeError:
-                raise RuntimeError(
-                    f"Android emulator is not running. "
-                    f"Re-claim with: {session.reclaim_command()}"
-                )
+            device_id = ""
         flow_files = []
         extra_args = []
         for a in args:
@@ -1796,24 +1812,52 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             extra_args = args[1:]
 
         expected_app = _resolve_maestro_target_app(session_id, flow_files)
-        _ensure_maestro_target_foreground(
-            session_id=session_id,
-            platform=platform,
-            sim_id=sim_id,
-            expected_app=expected_app,
-            android_kwargs=android_kwargs,
-        )
 
-        cmd, env, debug_output = _prepare_maestro_invocation(
-            session_id=session_id,
-            platform=platform,
-            device_id=device_id,
-            flow_files=flow_files,
-            extra_args=extra_args,
-        )
+        if platform in ("ios", "watchos", "tvos", "visionos"):
+            _ensure_maestro_target_foreground(
+                session_id=session_id,
+                platform=platform,
+                sim_id=sim_id,
+                expected_app=expected_app,
+                android_kwargs=android_kwargs,
+            )
+            cmd, env, debug_output = _prepare_maestro_invocation(
+                session_id=session_id,
+                platform=platform,
+                device_id=device_id,
+                flow_files=flow_files,
+                extra_args=extra_args,
+            )
+        else:
+            cmd, env, debug_output = [], {}, ""
         lock_context = _locked_android_maestro() if platform == "android" else nullcontext()
         with lock_context:
             if platform == "android":
+                try:
+                    device_id, android_kwargs = _preflight_android_maestro_device(
+                        session_id=session_id,
+                        sim_id=sim_id,
+                        android_kwargs=android_kwargs,
+                    )
+                except RuntimeError as exc:
+                    raise RuntimeError(
+                        f"Android emulator is not adb-ready for Maestro. {exc} "
+                        f"Re-claim with: {session.reclaim_command()}"
+                    )
+                _ensure_maestro_target_foreground(
+                    session_id=session_id,
+                    platform=platform,
+                    sim_id=sim_id,
+                    expected_app=expected_app,
+                    android_kwargs=android_kwargs,
+                )
+                cmd, env, debug_output = _prepare_maestro_invocation(
+                    session_id=session_id,
+                    platform=platform,
+                    device_id=device_id,
+                    flow_files=flow_files,
+                    extra_args=extra_args,
+                )
                 _stabilize_android_maestro_driver(device_id)
             try:
                 result = _run_maestro_process(cmd, env)
