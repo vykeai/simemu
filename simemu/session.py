@@ -220,14 +220,49 @@ def _ensure_maestro_target_foreground(
         return
 
     expected_package = expected_app.split("/", 1)[0]
+    launch_target = expected_package
+    last_launch_component = provenance.get("last_launch_component")
+    if (
+        isinstance(last_launch_component, str)
+        and "/" in last_launch_component
+        and last_launch_component.split("/", 1)[0] == expected_package
+    ):
+        launch_target = last_launch_component
+
     current = android.foreground_app(sim_id, retries=2, delay=0.5, **android_kwargs)
     if current != expected_package:
-        android.launch(sim_id, expected_package, launch_args, **android_kwargs)
+        resolved_component = android.launch(sim_id, launch_target, launch_args, **android_kwargs)
+        if isinstance(resolved_component, str) and "/" in resolved_component:
+            update_provenance(session_id, last_launch_component=resolved_component)
     actual = android.foreground_app(sim_id, retries=3, delay=0.75, **android_kwargs)
     if actual != expected_package:
         raise RuntimeError(
             f"Maestro handoff failed: expected '{expected_package}' foreground on Android, got '{actual}'."
         )
+
+
+def _verify_or_repair_android_maestro_target(
+    *,
+    session_id: str,
+    sim_id: str,
+    expected_app: str | None,
+    android_kwargs: dict,
+) -> None:
+    if not expected_app:
+        return
+
+    expected_package = expected_app.split("/", 1)[0]
+    try:
+        android.verify_install(sim_id, expected_package, timeout=10, **android_kwargs)
+        return
+    except RuntimeError as exc:
+        apk_path = _get_build_artifact(session_id)
+        if not apk_path or not Path(apk_path).exists():
+            raise RuntimeError(
+                f"Android Maestro retry could not verify '{expected_package}' after adb transport loss, "
+                f"and no reusable APK artifact is recorded for repair-install. {exc}"
+            )
+        android.repair_install(sim_id, expected_package, apk_path, timeout=90, **android_kwargs)
 
 
 def _maestro_has_flag(args: list[str], flag: str) -> bool:
@@ -453,6 +488,12 @@ def _retry_android_maestro_bridge(
         android_kwargs = {**android_kwargs, "pinned_serial": session.pinned_serial}
     android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
     android.dismiss_system_dialogs(sim_id, **android_kwargs)
+    _verify_or_repair_android_maestro_target(
+        session_id=session_id,
+        sim_id=sim_id,
+        expected_app=expected_app,
+        android_kwargs=android_kwargs,
+    )
     _ensure_maestro_target_foreground(
         session_id=session_id,
         platform="android",
@@ -1666,6 +1707,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             raise RuntimeError("Usage: simemu do <session> launch <bundle-or-package>")
         bundle = args[0]
         extra = args[1:]
+        resolved_component = None
         if is_real and platform == "ios":
             device.ios_launch(sim_id, bundle)
         elif platform in ("ios", "watchos", "tvos", "visionos"):
@@ -1681,7 +1723,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     "stopped_count": len(stopped),
                     "stopped": stopped[:10],
                 }), file=_sys.stderr, flush=True)
-            android.launch(sim_id, bundle, extra, **android_kwargs)
+            resolved_component = android.launch(sim_id, bundle, extra, **android_kwargs)
             # Verify the right package is foregrounded
             actual_fg = android.foreground_app(sim_id, **android_kwargs)
             if actual_fg and actual_fg != expected_pkg:
@@ -1696,7 +1738,15 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if session_id in data["sessions"]:
                 data["sessions"][session_id]["last_app"] = launched_pkg
                 save(data)
-        update_provenance(session_id, last_app=launched_pkg, last_launch_args=extra[:3])
+        provenance_fields = {
+            "last_app": launched_pkg,
+            "last_launch_args": extra[:3],
+        }
+        if isinstance(resolved_component, str) and "/" in resolved_component:
+            provenance_fields["last_launch_component"] = resolved_component
+        elif platform == "android" and "/" in bundle:
+            provenance_fields["last_launch_component"] = bundle
+        update_provenance(session_id, **provenance_fields)
         return {"status": "launched", "app": bundle}
 
     elif command == "tap":
