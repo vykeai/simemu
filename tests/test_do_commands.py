@@ -479,6 +479,8 @@ class TestDoMaestro(DoCommandBase):
         self.assertEqual(result["status"], "passed")
         mock_launch.assert_called_once_with("AAA-111", "app.fitkind.dev", [])
 
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("subprocess.run")
     @patch("simemu.session.android.launch")
     @patch("simemu.session.android.foreground_app", side_effect=["com.other.app", "app.fitkind.dev"])
@@ -491,6 +493,8 @@ class TestDoMaestro(DoCommandBase):
         mock_fg,
         mock_launch,
         mock_run,
+        mock_ready,
+        mock_dismiss,
     ) -> None:
         self._seed(
             "s-droid1",
@@ -519,7 +523,11 @@ class TestDoMaestro(DoCommandBase):
             ["--debug-route=journey/root"],
             pinned_serial="emulator-5554",
         )
+        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
     @patch("subprocess.run")
     @patch("simemu.session.android._serial", return_value="emulator-5554")
@@ -530,6 +538,8 @@ class TestDoMaestro(DoCommandBase):
         mock_serial,
         mock_run,
         mock_fg,
+        mock_ready,
+        mock_dismiss,
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7", pinned_serial="emulator-5554")
@@ -545,7 +555,11 @@ class TestDoMaestro(DoCommandBase):
         self.assertIn("--reinstall-driver", cmd_args)
         self.assertIn("--debug-output", cmd_args)
         self.assertIn("-Djava.net.preferIPv4Stack=true", env["JAVA_TOOL_OPTIONS"])
+        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
     @patch("subprocess.run")
     @patch("simemu.session.android._serial", return_value="emulator-5554")
@@ -556,6 +570,8 @@ class TestDoMaestro(DoCommandBase):
         mock_serial,
         mock_run,
         mock_fg,
+        mock_ready,
+        mock_dismiss,
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7", pinned_serial="emulator-5554")
@@ -569,6 +585,37 @@ class TestDoMaestro(DoCommandBase):
         cmd_args = mock_run.call_args[0][0]
         self.assertIn("--no-reinstall-driver", cmd_args)
         self.assertNotIn("--reinstall-driver", cmd_args)
+        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", side_effect=RuntimeError("package manager not ready"))
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_fails_before_maestro_when_not_adb_ready(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertIn("Android emulator is not adb-ready for Maestro", str(ctx.exception))
+        self.assertIn("package manager not ready", str(ctx.exception))
+        mock_run.assert_not_called()
+        mock_fg.assert_not_called()
+        mock_dismiss.assert_not_called()
 
     @patch("simemu.session.time.sleep")
     @patch("simemu.session.android.dismiss_system_dialogs")
@@ -657,8 +704,10 @@ class TestDoMaestro(DoCommandBase):
         self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
         maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
         self.assertEqual(len(maestro_calls), 2)
-        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
-        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+        self.assertEqual(mock_ready.call_count, 2)
+        mock_ready.assert_any_call("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        self.assertEqual(mock_dismiss.call_count, 2)
+        mock_dismiss.assert_any_call("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.time.sleep")
     @patch("simemu.session.android.dismiss_system_dialogs")
@@ -703,8 +752,10 @@ class TestDoMaestro(DoCommandBase):
         self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
         maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
         self.assertEqual(len(maestro_calls), 2)
-        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
-        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+        self.assertEqual(mock_ready.call_count, 2)
+        mock_ready.assert_any_call("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        self.assertEqual(mock_dismiss.call_count, 2)
+        mock_dismiss.assert_any_call("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.time.sleep")
     @patch("simemu.session.android.dismiss_system_dialogs")
