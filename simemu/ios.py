@@ -710,6 +710,43 @@ _IOS_DEVICE_LOGICAL_SIZE: dict[str, tuple[int, int]] = {
 }
 
 
+_IOS_DEVICE_PIXEL_SIZE: dict[str, tuple[int, int]] = {
+    # iPhone 17 family
+    "iPhone17ProMax":  (1320, 2868),
+    "iPhone17Pro":     (1206, 2622),
+    "iPhone17":        (1179, 2556),
+    # iPhone 16 family
+    "iPhone16ProMax":  (1320, 2868),
+    "iPhone16Plus":    (1290, 2796),
+    "iPhone16Pro":     (1206, 2622),
+    "iPhone16e":       (1170, 2532),
+    "iPhone16":        (1179, 2556),
+    # iPhone 15 family
+    "iPhone15ProMax":  (1290, 2796),
+    "iPhone15Plus":    (1290, 2796),
+    "iPhone15Pro":     (1179, 2556),
+    "iPhone15":        (1179, 2556),
+    # iPhone 14 family
+    "iPhone14ProMax":  (1290, 2796),
+    "iPhone14Plus":    (1284, 2778),
+    "iPhone14Pro":     (1179, 2556),
+    "iPhone14":        (1170, 2532),
+    # iPhone SE
+    "iPhoneSE":        (750, 1334),
+    # iPad
+    "iPadPro13":       (2064, 2752),
+    "iPadPro12":       (2048, 2732),
+    "iPadPro11":       (1668, 2388),
+    "iPadAir13":       (2048, 2732),
+    "iPadAir11":       (1640, 2360),
+    "iPadMini":        (1488, 2266),
+    "iPad":            (1620, 2160),
+    # Apple TV
+    "AppleTV4K":       (1920, 1080),
+    "AppleTV":         (1920, 1080),
+}
+
+
 def _get_device_logical_size(device_name: str) -> tuple[int, int]:
     """Return the canonical (width_pt, height_pt) for a device given its display name.
 
@@ -721,6 +758,68 @@ def _get_device_logical_size(device_name: str) -> tuple[int, int]:
         if token.lower() in device_name.lower().replace(" ", "").replace("-", ""):
             return size
     return (390, 844)
+
+
+def _get_device_pixel_size(device_name: str, logical_size: tuple[int, int] | None = None) -> tuple[int, int]:
+    """Return the native screenshot pixel size for a simulator display name."""
+    normalized = device_name.lower().replace(" ", "").replace("-", "")
+    for token, size in _IOS_DEVICE_PIXEL_SIZE.items():
+        if token.lower() in normalized:
+            return size
+
+    logical_w, logical_h = logical_size or _get_device_logical_size(device_name)
+    # Unknown iPhones are usually 3x. This preserves screenshot-coordinate taps
+    # better than silently treating pixels as logical points.
+    return (logical_w * 3, logical_h * 3)
+
+
+def _orient_size(size: tuple[int, int], landscape: bool) -> tuple[int, int]:
+    width, height = size
+    if landscape and height > width:
+        return height, width
+    if not landscape and width > height:
+        return height, width
+    return width, height
+
+
+def _normalize_tap_coordinates(
+    x: float,
+    y: float,
+    device_name: str,
+    content_width: float,
+    content_height: float,
+) -> tuple[float, float, str, tuple[int, int], tuple[int, int]]:
+    """Normalize tap input to logical points.
+
+    simemu historically documented tap coordinates as pixels while iOS
+    implementation accepted logical points. Accept both to match proof
+    screenshots and existing callers.
+    """
+    landscape = content_width > content_height
+    logical_size = _orient_size(_get_device_logical_size(device_name), landscape)
+    pixel_size = _orient_size(_get_device_pixel_size(device_name, logical_size), landscape)
+    logical_w, logical_h = logical_size
+    pixel_w, pixel_h = pixel_size
+
+    if 0 <= x <= logical_w and 0 <= y <= logical_h:
+        return x, y, "logical-points", logical_size, pixel_size
+
+    if 0 <= x <= pixel_w and 0 <= y <= pixel_h:
+        return (
+            (x / pixel_w) * logical_w,
+            (y / pixel_h) * logical_h,
+            "screenshot-pixels",
+            logical_size,
+            pixel_size,
+        )
+
+    raise RuntimeError(
+        "iOS tap coordinate is outside supported ranges for "
+        f"{device_name}: got ({x:g}, {y:g}). Accepted coordinate spaces: "
+        f"logical points 0..{logical_w} x 0..{logical_h}, or full screenshot "
+        f"pixels 0..{pixel_w} x 0..{pixel_h}. If you are reading coordinates "
+        "from a resized screenshot, use --pct or capture without --max-size."
+    )
 
 
 def _get_device_name(udid: str) -> str:
@@ -1580,25 +1679,24 @@ def _post_mouse_hidden(events_fn) -> None:
         Quartz.CGDisplayShowCursor(display_id)
 
 
-def tap(udid: str, x: int, y: int) -> None:
-    """Tap at logical-point coordinates on the simulator screen.
+def tap(udid: str, x: float, y: float) -> None:
+    """Tap at logical-point or full screenshot-pixel coordinates.
 
     Raises the Simulator window and sends a System Events click at the mapped
     global screen coordinate. This is more reliable than CGEventPost-based
     mouse injection on current macOS/PyObjC setups.
     """
-    import importlib as _il
-    Quartz = _il.import_module("Quartz")
-    import time as _t
-
     _install_control_signal_handlers()
     _reset_interaction_control()
     with _interactive_overlay():
         _wait_for_desktop_idle()
         _ensure_booted(udid)
         device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
-        device_w, device_h = _get_device_logical_size(device_name)
-        cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
+        logical_x, logical_y, _coord_space, logical_size, _pixel_size = _normalize_tap_coordinates(
+            x, y, device_name, sw, sh
+        )
+        device_w, device_h = logical_size
+        cx, cy = _logical_to_screen(logical_x, logical_y, px, py, sw, sh, device_w, device_h)
         with _restore_frontmost_app():
             _check_interaction_control()
             _raise_sim_window(device_name)

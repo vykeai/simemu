@@ -2693,8 +2693,22 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     device_id = sim_id
                 else:
                     device_id = android._serial(sim_id, pinned=session.pinned_serial)
-            result = _sp.run(["maestro", "--device", device_id, "test", flow_path],
-                              capture_output=True, text=True, check=False)
+            try:
+                result = _sp.run(
+                    ["maestro", "--device", device_id, "test", flow_path],
+                    env=_maestro_env(platform),
+                    timeout=MAESTRO_TIMEOUT_SECONDS,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except _sp.TimeoutExpired:
+                return {
+                    "status": "failed",
+                    "label": label_text,
+                    "exit_code": 124,
+                    "error": f"Maestro a11y-tap timed out after {MAESTRO_TIMEOUT_SECONDS} seconds and was terminated.",
+                }
             success = result.returncode == 0
             return {"status": "tapped" if success else "failed",
                     "label": label_text, "exit_code": result.returncode}
