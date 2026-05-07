@@ -766,7 +766,7 @@ class TestDoMaestro(DoCommandBase):
     ) -> None:
         import subprocess
 
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["maestro"], timeout=1800)
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["maestro"], timeout=300)
         flow = Path(self.tmpdir.name) / "flow.yaml"
         flow.write_text("appId: app.fitkind.dev\n---\n- assertVisible: Vault\n")
 
