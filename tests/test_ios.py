@@ -227,6 +227,43 @@ class IOSControlTests(unittest.TestCase):
         mock_focus.assert_called_once_with("SIM-001", action="input")
         mock_type_text.assert_called_once_with("review@sitches.app")
 
+    def test_normalize_tap_coordinates_keeps_logical_points(self) -> None:
+        logical_x, logical_y, space, logical_size, pixel_size = ios._normalize_tap_coordinates(
+            201,
+            437,
+            "Sitches iPhone16Pro",
+            402,
+            874,
+        )
+
+        self.assertEqual((201, 437), (logical_x, logical_y))
+        self.assertEqual("logical-points", space)
+        self.assertEqual((402, 874), logical_size)
+        self.assertEqual((1206, 2622), pixel_size)
+
+    def test_normalize_tap_coordinates_accepts_screenshot_pixels(self) -> None:
+        logical_x, logical_y, space, _, _ = ios._normalize_tap_coordinates(
+            603,
+            1311,
+            "Sitches iPhone16Pro",
+            402,
+            874,
+        )
+
+        self.assertAlmostEqual(201, logical_x)
+        self.assertAlmostEqual(437, logical_y)
+        self.assertEqual("screenshot-pixels", space)
+
+    def test_normalize_tap_coordinates_rejects_unknown_coordinate_space(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Accepted coordinate spaces"):
+            ios._normalize_tap_coordinates(
+                1400,
+                2900,
+                "Sitches iPhone16Pro",
+                402,
+                874,
+            )
+
     @patch("simemu.ios.is_app_running", return_value=False)
     @patch("simemu.ios._ensure_booted")
     def test_activate_app_returns_false_when_not_running(self, mock_booted, mock_running) -> None:

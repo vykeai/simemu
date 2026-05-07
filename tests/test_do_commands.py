@@ -192,6 +192,25 @@ class TestDoA11yTree(DoCommandBase):
         )
 
 
+# ── a11y-tap ─────────────────────────────────────────────────────────────────
+
+
+class TestDoA11yTap(DoCommandBase):
+    @patch("subprocess.run")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_ios_a11y_tap_times_out_instead_of_hanging(self, _serial_mock, run_mock) -> None:
+        import subprocess
+
+        run_mock.side_effect = subprocess.TimeoutExpired(cmd=["maestro"], timeout=300)
+
+        result = do_command("s-test01", "a11y-tap", ["Get", "Started"])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["label"], "Get Started")
+        self.assertEqual(result["exit_code"], 124)
+        self.assertIn("timed out", result["error"])
+
+
 # ── launch ───────────────────────────────────────────────────────────────────
 
 
