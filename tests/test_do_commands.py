@@ -637,6 +637,7 @@ class TestDoMaestro(DoCommandBase):
         mock_dismiss.assert_not_called()
 
     @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.verify_install")
     @patch("simemu.session.android.dismiss_system_dialogs")
     @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
@@ -651,6 +652,7 @@ class TestDoMaestro(DoCommandBase):
         mock_fg,
         mock_ready,
         mock_dismiss,
+        mock_verify,
         mock_sleep,
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
@@ -679,6 +681,7 @@ class TestDoMaestro(DoCommandBase):
         self.assertTrue(Path(result["debug_output"]).exists())
 
     @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.verify_install")
     @patch("simemu.session.android.dismiss_system_dialogs")
     @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
@@ -693,6 +696,7 @@ class TestDoMaestro(DoCommandBase):
         mock_fg,
         mock_ready,
         mock_dismiss,
+        mock_verify,
         mock_sleep,
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
@@ -729,6 +733,7 @@ class TestDoMaestro(DoCommandBase):
         mock_dismiss.assert_any_call("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.verify_install")
     @patch("simemu.session.android.dismiss_system_dialogs")
     @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
@@ -743,6 +748,7 @@ class TestDoMaestro(DoCommandBase):
         mock_fg,
         mock_ready,
         mock_dismiss,
+        mock_verify,
         mock_sleep,
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
@@ -777,6 +783,158 @@ class TestDoMaestro(DoCommandBase):
         mock_dismiss.assert_any_call("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.verify_install")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch(
+        "simemu.session.android.foreground_app",
+        side_effect=[
+            "app.sitches.dev",
+            "app.sitches.dev",
+            "com.android.launcher",
+            "app.sitches.dev",
+        ],
+    )
+    @patch("simemu.session.android.launch")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_retry_reuses_saved_activity_alias(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_launch,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+        mock_verify,
+        mock_sleep,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        alias = "app.sitches.dev/app.sitches.android.app.MainActivityPepperAlias"
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["provenance"] = {
+            "last_launch_component": alias,
+            "last_launch_args": ["--profile=pepper"],
+        }
+        sf.write_text(json.dumps(data))
+        attempts = {"count": 0}
+
+        def _fake_run(cmd, env=None, **kwargs):
+            if cmd and cmd[0] != "maestro":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                (debug_output / "maestro.log").write_text(
+                    "Failed to install apk maestro-server.apk: "
+                    "Command failed (host:transport:emulator-5554): device offline\n"
+                )
+                return MagicMock(returncode=1)
+            attempts["count"] += 1
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = _fake_run
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.sitches.dev\n---\n- tapOn: My People\n")
+
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
+        mock_verify.assert_called_once_with(
+            "Pixel_7",
+            "app.sitches.dev",
+            timeout=10,
+            pinned_serial="emulator-5554",
+        )
+        mock_launch.assert_called_once_with(
+            "Pixel_7",
+            alias,
+            ["--profile=pepper"],
+            pinned_serial="emulator-5554",
+        )
+
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.repair_install")
+    @patch("simemu.session.android.verify_install", side_effect=RuntimeError("package manager lost launcher"))
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
+    @patch(
+        "simemu.session.android.foreground_app",
+        side_effect=[
+            "app.sitches.dev",
+            "app.sitches.dev",
+            "com.android.launcher",
+            "app.sitches.dev",
+        ],
+    )
+    @patch("simemu.session.android.launch")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_retry_repairs_app_after_offline_install_failure(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_launch,
+        mock_fg,
+        mock_ready,
+        mock_dismiss,
+        mock_verify,
+        mock_repair,
+        mock_sleep,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        alias = "app.sitches.dev/app.sitches.android.app.MainActivityPepperAlias"
+        apk = Path(self.tmpdir.name) / "app.apk"
+        apk.write_text("apk")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_build_artifact"] = str(apk)
+        data["sessions"]["s-droid1"]["provenance"] = {"last_launch_component": alias}
+        sf.write_text(json.dumps(data))
+        attempts = {"count": 0}
+
+        def _fake_run(cmd, env=None, **kwargs):
+            if cmd and cmd[0] != "maestro":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            debug_output = Path(cmd[cmd.index("--debug-output") + 1])
+            debug_output.mkdir(parents=True, exist_ok=True)
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                (debug_output / "maestro.log").write_text(
+                    "Failed to install apk maestro-server.apk: "
+                    "Command failed (host:transport:emulator-5554): device offline\n"
+                )
+                return MagicMock(returncode=1)
+            attempts["count"] += 1
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = _fake_run
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.sitches.dev\n---\n- tapOn: My People\n")
+
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        mock_repair.assert_called_once_with(
+            "Pixel_7",
+            "app.sitches.dev",
+            str(apk),
+            timeout=90,
+            pinned_serial="emulator-5554",
+        )
+        mock_launch.assert_called_once_with("Pixel_7", alias, [], pinned_serial="emulator-5554")
+
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.android.verify_install")
     @patch("simemu.session.android.dismiss_system_dialogs")
     @patch("simemu.session.android.wait_until_ready", return_value="emulator-5554")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
@@ -791,6 +949,7 @@ class TestDoMaestro(DoCommandBase):
         mock_fg,
         mock_ready,
         mock_dismiss,
+        mock_verify,
         mock_sleep,
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",

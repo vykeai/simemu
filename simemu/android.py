@@ -1164,7 +1164,7 @@ def launch(
     package_activity: str,
     args: list[str] | None = None,
     pinned_serial: Optional[str] = None,
-) -> None:
+) -> str | None:
     wait_until_ready(avd_name, pinned_serial=pinned_serial)
     """
     Launch an app. package_activity can be:
@@ -1194,7 +1194,7 @@ def launch(
             try:
                 _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []), pinned_serial=pinned_serial)
                 _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
-                return
+                return component
             except (subprocess.CalledProcessError, RuntimeError):
                 pass
 
@@ -1210,7 +1210,7 @@ def launch(
                 pinned_serial=pinned_serial,
             )
             _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
-            return
+            return None
         except (subprocess.CalledProcessError, RuntimeError):
             pass
 
@@ -1225,7 +1225,7 @@ def launch(
                 pinned_serial=pinned_serial,
             )
             _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
-            return
+            return f"{expected_package}/.MainActivity"
         except (subprocess.CalledProcessError, RuntimeError):
             pass
 
@@ -1245,7 +1245,7 @@ def launch(
             try:
                 _adb(avd_name, "shell", "am", "start", "-n", component, *(args or []), pinned_serial=pinned_serial)
                 _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
-                return
+                return component
             except subprocess.CalledProcessError as exc:
                 last_error = exc
         if last_error is not None:
@@ -1254,6 +1254,7 @@ def launch(
         cmd = ["shell", "am", "start", "-n", package_activity] + (args or [])
         _adb(avd_name, *cmd, pinned_serial=pinned_serial)
         _wait_for_foreground_package(avd_name, expected_package, pinned_serial=pinned_serial)
+        return package_activity
 
 
 def terminate(avd_name: str, package: str, pinned_serial: Optional[str] = None) -> None:
