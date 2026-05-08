@@ -1362,6 +1362,46 @@ class TestDoCommand(unittest.TestCase):
         result = do_command("s-aaa111", "hide", [])
         self.assertEqual(result["status"], "invisible")
 
+    @patch("simemu.session.android.tap")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    @patch("simemu.session.android.validate_serial", return_value=True)
+    @patch("subprocess.run")
+    def test_android_a11y_tap_uses_uiautomator_not_maestro(
+        self,
+        mock_run,
+        mock_validate,
+        mock_serial,
+        mock_tap,
+    ) -> None:
+        self._seed_session(
+            platform="android",
+            sim_id="Pixel_7",
+            device_name="Pixel 7",
+            pinned_serial="emulator-5554",
+        )
+
+        xml = (
+            '<hierarchy><node text="Settings" content-desc="" '
+            'resource-id="" bounds="[100,200][300,400]" /></hierarchy>'
+        )
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="UI hierchary dumped", stderr=""),
+            MagicMock(returncode=0, stdout=xml, stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+
+        result = do_command("s-aaa111", "a11y-tap", ["Settings"])
+
+        self.assertEqual(result["status"], "tapped")
+        self.assertEqual(result["method"], "uiautomator")
+        self.assertEqual(result["x"], 200)
+        self.assertEqual(result["y"], 300)
+        mock_tap.assert_called_once_with("Pixel_7", 200, 300, pinned_serial="emulator-5554")
+        flattened = [" ".join(call.args[0]) for call in mock_run.call_args_list]
+        self.assertTrue(any("uiautomator dump" in cmd for cmd in flattened))
+        self.assertFalse(any("maestro" in cmd for cmd in flattened))
+
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_command_renew(self, mock_serial) -> None:
         self._seed_session()
