@@ -408,8 +408,11 @@ class TestDoScreenshot(DoCommandBase):
 
     @patch("simemu.session.android.screenshot")
     @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", side_effect=["com.other.app", "com.fitkind.dev"])
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_screenshot_activates_last_app_android(self, mock_serial, mock_launch, mock_ss) -> None:
+    def test_screenshot_activates_last_app_android(
+        self, mock_serial, mock_foreground, mock_launch, mock_ss
+    ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())
@@ -424,6 +427,39 @@ class TestDoScreenshot(DoCommandBase):
         )
         mock_ss.assert_called_once()
         self.assertEqual(result["status"], "captured")
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.fitkind.dev")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_preserves_android_route_when_expected_app_already_foreground(
+        self, mock_serial, mock_foreground, mock_launch, mock_ss
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        result = do_command("s-droid1", "screenshot", ["-o", "/tmp/test.png"])
+        mock_launch.assert_not_called()
+        mock_ss.assert_called_once()
+        self.assertEqual(result["status"], "captured")
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", side_effect=["com.other.app", "com.other.app"])
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_screenshot_android_aborts_when_expected_app_cannot_be_foregrounded(
+        self, mock_serial, mock_foreground, mock_launch, mock_ss
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.fitkind.dev"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "Screenshot capture aborted"):
+            do_command("s-droid1", "screenshot", ["-o", "/tmp/test.png"])
+        mock_ss.assert_not_called()
 
     @patch.dict("simemu.session.os.environ", {"SIMEMU_DISABLE_SCREENSHOT_ACTIVATE": "1"})
     @patch("simemu.session.android.screenshot")
@@ -1943,6 +1979,24 @@ class TestDoProof(DoCommandBase):
         self.assertEqual(result["status"], "proved")
         mock_stop.assert_called_once()
         self.assertIn("isolate:com.example.app", result["steps"])
+
+    @patch("simemu.session.android.screenshot")
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", side_effect=[None, None])
+    @patch("simemu.session.android.dismiss_system_dialogs", return_value=False)
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_proof_android_aborts_when_foreground_cannot_be_verified(
+        self, mock_serial, mock_stop, mock_dismiss, mock_fg, mock_launch, mock_ss
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["last_app"] = "com.example.app"
+        sf.write_text(json.dumps(data))
+        with self.assertRaisesRegex(RuntimeError, "not trustworthy"):
+            do_command("s-droid1", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
+        mock_ss.assert_not_called()
 
     @patch("simemu.session.ios.screenshot")
     @patch("simemu.session.ios.status_bar")
