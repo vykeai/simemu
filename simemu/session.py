@@ -2797,7 +2797,73 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         label_text = " ".join(args)
         import subprocess as _sp
         import tempfile as _tmp
-        # Use a single-step Maestro flow — works headless
+
+        if platform == "android":
+            import xml.etree.ElementTree as _et
+
+            if is_real:
+                serial = sim_id
+            else:
+                serial = android._serial(sim_id, pinned=session.pinned_serial)
+
+            remote_path = "/sdcard/window_dump.xml"
+            _sp.run(["adb", "-s", serial, "shell", "rm", "-f", remote_path],
+                    capture_output=True, check=False, timeout=5)
+            dump = _sp.run(["adb", "-s", serial, "shell", "uiautomator", "dump", remote_path],
+                           capture_output=True, text=True, check=False, timeout=15)
+            if dump.returncode != 0:
+                hint = (dump.stderr or dump.stdout or "").strip()
+                return {"status": "failed",
+                        "label": label_text,
+                        "hint": f"uiautomator dump failed — {hint or 'the app may not expose accessibility nodes.'}"}
+            result = _sp.run(["adb", "-s", serial, "shell", "cat", remote_path],
+                             capture_output=True, text=True, check=False, timeout=10)
+            _sp.run(["adb", "-s", serial, "shell", "rm", "-f", remote_path],
+                    capture_output=True, check=False, timeout=5)
+
+            tree = (result.stdout or "").strip()
+            if not tree or "ERROR" in tree:
+                return {"status": "failed",
+                        "label": label_text,
+                        "hint": "uiautomator dump failed — the app may not expose accessibility nodes."}
+
+            def _normalized(value: str | None) -> str:
+                return " ".join((value or "").split()).casefold()
+
+            target = _normalized(label_text)
+            candidates = []
+            try:
+                root = _et.fromstring(tree)
+                for node in root.iter("node"):
+                    attrs = node.attrib
+                    values = [
+                        _normalized(attrs.get("text")),
+                        _normalized(attrs.get("content-desc")),
+                        _normalized(attrs.get("resource-id")),
+                    ]
+                    if target in values:
+                        candidates.insert(0, attrs)
+                    elif any(target and target in value for value in values):
+                        candidates.append(attrs)
+            except _et.ParseError as exc:
+                return {"status": "failed", "label": label_text, "hint": f"uiautomator XML parse failed — {exc}"}
+
+            bounds_re = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+            for attrs in candidates:
+                match = bounds_re.fullmatch(attrs.get("bounds", ""))
+                if not match:
+                    continue
+                left, top, right, bottom = (int(part) for part in match.groups())
+                if right <= left or bottom <= top:
+                    continue
+                x = (left + right) // 2
+                y = (top + bottom) // 2
+                android.tap(sim_id, x, y, **android_kwargs)
+                return {"status": "tapped", "label": label_text, "x": x, "y": y, "method": "uiautomator"}
+
+            return {"status": "failed", "label": label_text, "hint": "No matching accessible node with tappable bounds."}
+
+        # Use a single-step Maestro flow for Apple-family platforms.
         safe_label = label_text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
         flow_content = f"appId: \"\"\n---\n- tapOn: \"{safe_label}\"\n"
         with _tmp.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
