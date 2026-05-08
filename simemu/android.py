@@ -472,6 +472,74 @@ def wait_until_ready(
     )
 
 
+def wait_for_transport_recovery(
+    avd_name: str,
+    timeout: int = 45,
+    pinned_serial: Optional[str] = None,
+) -> str:
+    """Wait for an already-owned Android device to become adb/PM-ready again.
+
+    Unlike wait_until_ready(), this does not require the serial to exist before
+    entering the wait loop. Maestro can briefly drop the adb transport while the
+    emulator stays owned by this session; screenshots should wait for that
+    transient recovery instead of failing immediately.
+    """
+    deadline = time.time() + timeout
+    last_detail = "device did not recover adb transport"
+    while time.time() < deadline:
+        try:
+            serial = _serial(avd_name, pinned=pinned_serial)
+        except RuntimeError as exc:
+            last_detail = str(exc)
+            time.sleep(2)
+            continue
+
+        transport_state, transport_detail = _transport_state(serial, timeout=10)
+        if transport_state != "device":
+            last_detail = transport_detail
+            time.sleep(2)
+            continue
+
+        try:
+            boot_result = subprocess.run(
+                ["adb", "-s", serial, "shell", "getprop", "sys.boot_completed"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "adb getprop sys.boot_completed timed out"
+            time.sleep(2)
+            continue
+        if boot_result.stdout.strip() != "1":
+            last_detail = boot_result.stderr.strip() or boot_result.stdout.strip() or "Android system not boot-complete"
+            time.sleep(2)
+            continue
+
+        try:
+            pm_result = subprocess.run(
+                ["adb", "-s", serial, "shell", "pm", "path", "android"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "adb shell pm path android timed out"
+            time.sleep(2)
+            continue
+        if pm_result.returncode == 0 and "package:" in pm_result.stdout:
+            return serial
+
+        last_detail = pm_result.stderr.strip() or pm_result.stdout.strip() or "package manager not ready"
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"Android device '{avd_name}' did not recover adb transport within {timeout}s: {last_detail}"
+    )
+
+
 def _wait_for_launcher_ready(serial: str, timeout: float = 15.0) -> None:
     """Wait until the Android launcher is the foreground activity after boot.
 
@@ -1348,14 +1416,32 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
     for attempt in range(max_attempts):
         try:
             serial = _serial(avd_name, pinned=pinned_serial)
-        except RuntimeError:
-            if attempt < max_attempts - 1:
-                time.sleep(2 * (attempt + 1))
-                continue
-            raise RuntimeError(
-                f"Screenshot failed: device '{avd_name}' went offline and did not recover.\n"
-                f"Re-claim or reboot: simemu do <session> reboot"
-            )
+        except RuntimeError as exc:
+            try:
+                serial = wait_for_transport_recovery(
+                    avd_name,
+                    timeout=45 if attempt == 0 else 20,
+                    pinned_serial=pinned_serial,
+                )
+            except RuntimeError as recovery_exc:
+                if attempt < max_attempts - 1:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                detail = str(recovery_exc) or str(exc)
+                raise RuntimeError(
+                    f"Screenshot failed: device '{avd_name}' went offline and did not recover.\n"
+                    f"{detail}\n"
+                    f"Re-claim or reboot: simemu do <session> reboot"
+                )
+            else:
+                # Give SystemUI/app rendering a short settle after adb returns.
+                time.sleep(0.5)
+                if os.environ.get("SIMEMU_SCREENSHOT_RECOVERY_DIAGNOSTICS") == "1":
+                    print(
+                        f"Recovered Android adb transport for '{avd_name}' as {serial} before screenshot.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
         # Write to temp file, then rename — prevents leaving zero-byte files on timeout.
         # Use Popen for explicit process control — subprocess.run can leave adb
@@ -1937,16 +2023,18 @@ def location(
     lat: float,
     lng: float,
     pinned_serial: Optional[str] = None,
-) -> None:
-    """Set a mock GPS location via adb shell geo fix."""
+) -> dict:
+    """Set and verify the Android framework location."""
     from . import genymotion
     if genymotion.is_genymotion_id(avd_name):
         raise RuntimeError(
             "GPS location is not supported for Genymotion VMs via simemu. "
             "Use the Genymotion UI (GPS widget) to set location."
         )
-    _ensure_booted(avd_name, pinned_serial=pinned_serial)
-    # adb emu geo fix <longitude> <latitude> (note: lng comes first)
+    serial = wait_for_transport_recovery(avd_name, timeout=45, pinned_serial=pinned_serial)
+    _enable_android_location(avd_name, pinned_serial=serial)
+
+    # adb emu geo fix <longitude> <latitude> (note: lng comes first).
     _adb(
         avd_name,
         "emu",
@@ -1957,6 +2045,134 @@ def location(
         timeout=15,
         pinned_serial=pinned_serial,
     )
+    _set_android_framework_location(avd_name, lat, lng, pinned_serial=serial)
+    observed = verify_location(avd_name, lat, lng, timeout=10, pinned_serial=serial)
+    return {"lat": observed[0], "lng": observed[1]}
+
+
+def _enable_android_location(avd_name: str, pinned_serial: Optional[str] = None) -> None:
+    """Best-effort location-service enablement before injecting GPS."""
+    commands = [
+        ("shell", "cmd", "location", "set-location-enabled", "true"),
+        ("shell", "settings", "put", "secure", "location_mode", "3"),
+        ("shell", "settings", "put", "secure", "location_providers_allowed", "+gps,+network"),
+        ("shell", "settings", "put", "secure", "mock_location", "1"),
+        ("shell", "appops", "set", "android", "android:mock_location", "allow"),
+        ("shell", "appops", "set", "com.android.shell", "android:mock_location", "allow"),
+        ("shell", "appops", "set", "shell", "android:mock_location", "allow"),
+    ]
+    for command in commands:
+        try:
+            _adb(avd_name, *command, capture=True, check=False, timeout=8, pinned_serial=pinned_serial)
+        except RuntimeError:
+            pass
+
+
+def _set_android_framework_location(
+    avd_name: str,
+    lat: float,
+    lng: float,
+    pinned_serial: Optional[str] = None,
+) -> None:
+    """Inject location through Android's location service when supported.
+
+    `adb emu geo fix` is emulator-level and can be dropped by the framework on
+    some API levels. The `cmd location` test-provider path updates framework
+    state directly; unsupported subcommands are ignored so older images still
+    use the emulator-console injection.
+    """
+    location_value = f"{lat},{lng}"
+    commands = [
+        ("shell", "cmd", "location", "providers", "add-test-provider", "gps"),
+        ("shell", "cmd", "location", "providers", "set-test-provider-enabled", "gps", "true"),
+        ("shell", "cmd", "location", "providers", "set-test-provider-location", "gps", "--location", location_value),
+        ("shell", "cmd", "location", "providers", "add-test-provider", "network"),
+        ("shell", "cmd", "location", "providers", "set-test-provider-enabled", "network", "true"),
+        ("shell", "cmd", "location", "providers", "set-test-provider-location", "network", "--location", location_value),
+        ("shell", "cmd", "location", "providers", "set-test-provider-location", "fused", "--location", location_value),
+    ]
+    for command in commands:
+        try:
+            _adb(avd_name, *command, capture=True, check=False, timeout=8, pinned_serial=pinned_serial)
+        except RuntimeError:
+            pass
+
+
+def verify_location(
+    avd_name: str,
+    expected_lat: float,
+    expected_lng: float,
+    timeout: int = 10,
+    pinned_serial: Optional[str] = None,
+    tolerance: float = 0.02,
+) -> tuple[float, float]:
+    """Verify Android's location service has observed the expected coordinate."""
+    deadline = time.time() + timeout
+    last_text = ""
+    while time.time() < deadline:
+        observed, raw_text = _read_android_location(avd_name, pinned_serial=pinned_serial)
+        last_text = raw_text
+        if observed is not None:
+            lat, lng = observed
+            if abs(lat - expected_lat) <= tolerance and abs(lng - expected_lng) <= tolerance:
+                return observed
+        time.sleep(1)
+    raise RuntimeError(
+        f"Android location did not apply for '{avd_name}'. "
+        f"Expected {expected_lat},{expected_lng}; last observed "
+        f"{_format_observed_location(last_text)}."
+    )
+
+
+def _read_android_location(
+    avd_name: str,
+    pinned_serial: Optional[str] = None,
+) -> tuple[tuple[float, float] | None, str]:
+    probes = [
+        ("shell", "cmd", "location", "providers", "get-last-location", "gps"),
+        ("shell", "cmd", "location", "providers", "get-last-location", "network"),
+        ("shell", "dumpsys", "location"),
+    ]
+    combined: list[str] = []
+    for probe in probes:
+        try:
+            output = _adb(
+                avd_name,
+                *probe,
+                capture=True,
+                check=False,
+                timeout=10,
+                pinned_serial=pinned_serial,
+            ) or ""
+        except RuntimeError:
+            output = ""
+        if output:
+            combined.append(output)
+            coordinate = _parse_location_coordinate(output)
+            if coordinate is not None:
+                return coordinate, "\n".join(combined)
+    return None, "\n".join(combined)
+
+
+def _parse_location_coordinate(text: str) -> tuple[float, float] | None:
+    patterns = [
+        r"Location\[[^\]]*?\s(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)",
+        r"\blat(?:itude)?[=: ]+(-?\d+(?:\.\d+)?).*?\bl(?:on|ng|ongitude)[=: ]+(-?\d+(?:\.\d+)?)",
+        r"\b(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+    return None
+
+
+def _format_observed_location(text: str) -> str:
+    observed = _parse_location_coordinate(text)
+    if observed is None:
+        excerpt = " ".join(text.split())[:240]
+        return excerpt or "none"
+    return f"{observed[0]},{observed[1]}"
 
 
 _ANDROID_KEYCODES: dict[str, int] = {

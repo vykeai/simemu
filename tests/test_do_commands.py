@@ -672,6 +672,35 @@ class TestDoMaestro(DoCommandBase):
         mock_fg.assert_not_called()
         mock_dismiss.assert_not_called()
 
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session.android.wait_for_transport_recovery", return_value="emulator-5554")
+    @patch("simemu.session.android.wait_until_ready", side_effect=RuntimeError("Android device 'Pixel_7' is not connected or adb-ready"))
+    @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
+    @patch("subprocess.run")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_maestro_android_recovers_transient_preflight_disconnect(
+        self,
+        mock_get_serial,
+        mock_serial,
+        mock_run,
+        mock_fg,
+        mock_ready,
+        mock_recovery,
+        mock_dismiss,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        flow = Path(self.tmpdir.name) / "flow.yaml"
+        flow.write_text("appId: app.fitkind.dev\n---\n- tapOn: Journey\n")
+        result = do_command("s-droid1", "maestro", [str(flow)])
+
+        self.assertEqual(result["status"], "passed")
+        mock_recovery.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+
     @patch("simemu.session.time.sleep")
     @patch("simemu.session.android.verify_install")
     @patch("simemu.session.android.dismiss_system_dialogs")
@@ -1463,8 +1492,54 @@ class TestDoLocation(DoCommandBase):
     def test_do_location_android(self, mock_serial, mock_loc) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
+        mock_loc.return_value = {"lat": 40.7128, "lng": -74.0060}
         result = do_command("s-droid1", "location", ["40.7128", "-74.0060"])
         mock_loc.assert_called_once_with("Pixel_7", 40.7128, -74.0060, pinned_serial="emulator-5554")
+        self.assertEqual(result["verified"], {"lat": 40.7128, "lng": -74.0060})
+        data = json.loads((Path(self.tmpdir.name) / "sessions.json").read_text())
+        self.assertEqual(
+            data["sessions"]["s-droid1"]["provenance"]["last_location"],
+            {"lat": 40.7128, "lng": -74.0060},
+        )
+
+    @patch("simemu.session.android.verify_location", return_value=(51.5074, -0.1278))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_location_android_verify_only(self, mock_serial, mock_verify) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7")
+        result = do_command("s-droid1", "location", ["51.5074", "-0.1278", "--verify-only"])
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["verified"], {"lat": 51.5074, "lng": -0.1278})
+        mock_verify.assert_called_once_with("Pixel_7", 51.5074, -0.1278, pinned_serial="emulator-5554")
+
+    @patch("simemu.session.android.location")
+    @patch("simemu.session.android.verify_location", side_effect=RuntimeError("stale location"))
+    @patch("simemu.session.android.stop_other_apps", return_value=[])
+    @patch("simemu.session.android.launch")
+    @patch("simemu.session.android.foreground_app", return_value="com.example.app")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_launch_android_restores_recorded_location(
+        self,
+        mock_serial,
+        mock_fg,
+        mock_launch,
+        mock_stop,
+        mock_verify,
+        mock_location,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7",
+                    device_name="Pixel 7", pinned_serial="emulator-5554")
+        sf = Path(self.tmpdir.name) / "sessions.json"
+        data = json.loads(sf.read_text())
+        data["sessions"]["s-droid1"]["provenance"] = {"last_location": {"lat": 51.5074, "lng": -0.1278}}
+        sf.write_text(json.dumps(data))
+
+        result = do_command("s-droid1", "launch", ["com.example.app/.MainActivity"])
+
+        self.assertEqual(result["status"], "launched")
+        mock_verify.assert_called_once_with("Pixel_7", 51.5074, -0.1278, timeout=2, pinned_serial="emulator-5554")
+        mock_location.assert_called_once_with("Pixel_7", 51.5074, -0.1278, pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_location_missing_args(self, mock_serial) -> None:
