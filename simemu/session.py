@@ -488,11 +488,13 @@ def _retry_android_maestro_bridge(
 ) -> tuple[bool, str, str | None]:
     import subprocess as _sp
 
-    session = touch(session_id)
-    if session.pinned_serial:
-        android_kwargs = {**android_kwargs, "pinned_serial": session.pinned_serial}
-    android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+    raw_session = _read_sessions_raw().get("sessions", {}).get(session_id, {})
+    pinned_serial = raw_session.get("pinned_serial")
+    if pinned_serial:
+        android_kwargs = {**android_kwargs, "pinned_serial": pinned_serial}
+    _wait_for_android_maestro_transport(sim_id, android_kwargs)
     android.dismiss_system_dialogs(sim_id, **android_kwargs)
+    _restore_android_location_if_recorded(session_id, sim_id, android_kwargs)
     _verify_or_repair_android_maestro_target(
         session_id=session_id,
         sim_id=sim_id,
@@ -540,11 +542,43 @@ def _preflight_android_maestro_device(
     session = touch(session_id)
     if session.pinned_serial:
         android_kwargs = {**android_kwargs, "pinned_serial": session.pinned_serial}
-    serial = android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+    serial = _wait_for_android_maestro_transport(sim_id, android_kwargs)
     if android_kwargs.get("pinned_serial") != serial:
         android_kwargs = {**android_kwargs, "pinned_serial": serial}
     android.dismiss_system_dialogs(sim_id, **android_kwargs)
+    _restore_android_location_if_recorded(session_id, sim_id, android_kwargs)
     return serial, android_kwargs
+
+
+def _wait_for_android_maestro_transport(sim_id: str, android_kwargs: dict) -> str:
+    try:
+        return android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+    except RuntimeError as exc:
+        detail = str(exc).lower()
+        if not (
+            "not connected" in detail
+            or "offline" in detail
+            or "device not found" in detail
+            or "adb-ready" in detail
+        ):
+            raise
+        return android.wait_for_transport_recovery(sim_id, timeout=45, **android_kwargs)
+
+
+def _restore_android_location_if_recorded(session_id: str, sim_id: str, android_kwargs: dict) -> None:
+    provenance = get_provenance(session_id)
+    location_state = provenance.get("last_location")
+    if not isinstance(location_state, dict):
+        return
+    try:
+        lat = float(location_state["lat"])
+        lng = float(location_state["lng"])
+    except (KeyError, TypeError, ValueError):
+        return
+    try:
+        android.verify_location(sim_id, lat, lng, timeout=2, **android_kwargs)
+    except RuntimeError:
+        android.location(sim_id, lat, lng, **android_kwargs)
 
 
 def _compute_expires_at(status: str, heartbeat_at: str) -> str:
@@ -1719,6 +1753,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             ios.launch(sim_id, bundle, extra)
         else:
             expected_pkg = bundle.split("/", 1)[0]
+            _restore_android_location_if_recorded(session_id, sim_id, android_kwargs)
             # Isolate: force-stop other third-party apps before launch
             stopped = android.stop_other_apps(sim_id, keep=expected_pkg, **android_kwargs)
             if stopped:
@@ -1832,6 +1867,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             elif platform == "android":
                 _pkg = _android_package_name(_screenshot_target_app)
                 try:
+                    _restore_android_location_if_recorded(session_id, sim_id, android_kwargs)
                     _current = android.foreground_app(sim_id, retries=2, delay=0.4, **android_kwargs)
                     if _current != _pkg:
                         android.launch(sim_id, _pkg, [], **android_kwargs)
@@ -2177,11 +2213,23 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         if len(args) < 2:
             raise RuntimeError("Usage: simemu do <session> location <lat> <lng>")
         lat, lng = float(args[0]), float(args[1])
+        verify_only = "--verify-only" in args
         if platform in ("ios", "watchos", "tvos", "visionos"):
+            if verify_only:
+                raise RuntimeError("location --verify-only is Android only")
             ios.location(sim_id, lat, lng)
+            verification = None
         else:
-            android.location(sim_id, lat, lng, **android_kwargs)
-        return {"status": "set", "lat": lat, "lng": lng}
+            if verify_only:
+                verified_lat, verified_lng = android.verify_location(sim_id, lat, lng, **android_kwargs)
+                verification = {"lat": verified_lat, "lng": verified_lng}
+            else:
+                verification = android.location(sim_id, lat, lng, **android_kwargs)
+                update_provenance(session_id, last_location={"lat": lat, "lng": lng})
+        result = {"status": "verified" if verify_only else "set", "lat": lat, "lng": lng}
+        if isinstance(verification, dict):
+            result["verified"] = verification
+        return result
 
     elif command == "push":
         if len(args) < 2:

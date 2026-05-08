@@ -786,11 +786,18 @@ class TestSessionIsolation(unittest.TestCase):
 
     def test_location_uses_short_timeout(self) -> None:
         with patch("simemu.genymotion.is_genymotion_id", return_value=False):
-            with patch("simemu.android._ensure_booted") as mock_booted:
-                with patch("simemu.android._adb") as mock_adb:
-                    android.location("Pixel_7", 51.5074, -0.1278, pinned_serial="emulator-5554")
+            with patch("simemu.android.wait_for_transport_recovery", return_value="emulator-5554") as mock_ready:
+                with patch("simemu.android._enable_android_location") as mock_enable:
+                    with patch("simemu.android._set_android_framework_location") as mock_framework:
+                        with patch("simemu.android.verify_location", return_value=(51.5074, -0.1278)) as mock_verify:
+                            with patch("simemu.android._adb") as mock_adb:
+                                result = android.location("Pixel_7", 51.5074, -0.1278, pinned_serial="emulator-5554")
 
-        mock_booted.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+        self.assertEqual(result, {"lat": 51.5074, "lng": -0.1278})
+        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_enable.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
+        mock_framework.assert_called_once_with("Pixel_7", 51.5074, -0.1278, pinned_serial="emulator-5554")
+        mock_verify.assert_called_once_with("Pixel_7", 51.5074, -0.1278, timeout=10, pinned_serial="emulator-5554")
         mock_adb.assert_called_once_with(
             "Pixel_7",
             "emu",
@@ -801,6 +808,61 @@ class TestSessionIsolation(unittest.TestCase):
             timeout=15,
             pinned_serial="emulator-5554",
         )
+
+    def test_parse_location_coordinate_from_dumpsys_location(self) -> None:
+        text = "last location=Location[gps 51.507400,-0.127800 hAcc=5 et=+1s]"
+        self.assertEqual(android._parse_location_coordinate(text), (51.507400, -0.127800))
+
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._read_android_location", side_effect=[
+        (None, "last location=Location[gps 38.801600,-122.810900]"),
+        ((51.5074, -0.1278), "last location=Location[gps 51.507400,-0.127800]"),
+    ])
+    def test_verify_location_retries_until_expected_coordinate_is_observed(
+        self,
+        mock_read: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        self.assertEqual(
+            android.verify_location("Pixel_7", 51.5074, -0.1278, timeout=2),
+            (51.5074, -0.1278),
+        )
+        self.assertEqual(mock_read.call_count, 2)
+
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._read_android_location", return_value=((38.8016, -122.8109), "last location=Location[gps 38.801600,-122.810900]"))
+    def test_verify_location_fails_when_stale_coordinate_persists(
+        self,
+        mock_read: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            android.verify_location("Pixel_7", 51.5074, -0.1278, timeout=1)
+
+        self.assertIn("Expected 51.5074,-0.1278", str(ctx.exception))
+        self.assertIn("38.8016,-122.8109", str(ctx.exception))
+
+    def test_framework_location_injection_updates_gps_network_and_fused(self) -> None:
+        with patch("simemu.android._adb") as mock_adb:
+            android._set_android_framework_location(
+                "Pixel_7",
+                51.5074,
+                -0.1278,
+                pinned_serial="emulator-5554",
+            )
+
+        invoked = [" ".join(call.args[1:]) for call in mock_adb.call_args_list]
+        self.assertTrue(any("set-test-provider-location gps --location 51.5074,-0.1278" in cmd for cmd in invoked))
+        self.assertTrue(any("set-test-provider-location network --location 51.5074,-0.1278" in cmd for cmd in invoked))
+        self.assertTrue(any("set-test-provider-location fused --location 51.5074,-0.1278" in cmd for cmd in invoked))
+
+    def test_enable_android_location_allows_mock_location_appops(self) -> None:
+        with patch("simemu.android._adb") as mock_adb:
+            android._enable_android_location("Pixel_7", pinned_serial="emulator-5554")
+
+        invoked = [" ".join(call.args[1:]) for call in mock_adb.call_args_list]
+        self.assertTrue(any("appops set android android:mock_location allow" in cmd for cmd in invoked))
+        self.assertTrue(any("appops set com.android.shell android:mock_location allow" in cmd for cmd in invoked))
 
     @patch("simemu.android.subprocess.run")
     def test_validate_serial_correct_avd(self, mock_run) -> None:
@@ -1016,6 +1078,61 @@ class TestScreenshotFallbacks(unittest.TestCase):
 
         mock_window_fallback.assert_called_once_with("MyAVD", output)
         mock_popen.assert_not_called()
+
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._capture_is_black", return_value=False)
+    @patch("simemu.android.wait_for_transport_recovery", return_value="emulator-5554")
+    @patch("simemu.android._serial", side_effect=RuntimeError("device not found"))
+    @patch("simemu.android.dismiss_system_dialogs")
+    @patch("simemu.android.subprocess.Popen")
+    def test_screenshot_waits_for_transport_recovery_after_maestro_disconnect(
+        self,
+        mock_popen: MagicMock,
+        mock_dismiss: MagicMock,
+        mock_serial: MagicMock,
+        mock_recovery: MagicMock,
+        mock_black: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.wait.return_value = 0
+
+        def _popen(cmd, stdout, stderr):
+            stdout.write(b"\x89PNG\r\n\x1a\n" + (b"x" * 512))
+            return proc
+
+        mock_popen.side_effect = _popen
+
+        with tempfile.TemporaryDirectory() as td:
+            output = str(Path(td) / "capture.png")
+            android.screenshot("MyAVD", output, settle_ms=0)
+            self.assertTrue(Path(output).exists())
+
+        mock_recovery.assert_called_once_with("MyAVD", timeout=45, pinned_serial=None)
+        self.assertEqual(mock_popen.call_args.args[0][:4], ["adb", "-s", "emulator-5554", "exec-out"])
+
+    @patch("simemu.android.time.sleep")
+    @patch("simemu.android._transport_state", side_effect=[(None, "device offline"), ("device", "device")])
+    @patch("simemu.android._serial", side_effect=[RuntimeError("device not found"), "emulator-5554", "emulator-5554"])
+    @patch("simemu.android.subprocess.run")
+    def test_wait_for_transport_recovery_requires_boot_and_package_manager(
+        self,
+        mock_run: MagicMock,
+        mock_serial: MagicMock,
+        mock_transport: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="1\n", stderr=""),
+            MagicMock(returncode=0, stdout="package:/system/framework/framework-res.apk\n", stderr=""),
+        ]
+
+        serial = android.wait_for_transport_recovery("MyAVD", timeout=5)
+
+        self.assertEqual(serial, "emulator-5554")
+        self.assertEqual(mock_serial.call_count, 3)
+        self.assertEqual(mock_transport.call_count, 2)
 
     @patch("simemu.android._capture_is_black", return_value=False)
     @patch("simemu.android._window_info")
