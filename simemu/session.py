@@ -191,6 +191,11 @@ def _resolve_maestro_target_app(session_id: str, flow_files: list[str]) -> str |
     return data["sessions"].get(session_id, {}).get("last_app")
 
 
+def _android_package_name(app_id: str) -> str:
+    """Normalize an Android package or component string to its package name."""
+    return app_id.split("/", 1)[0]
+
+
 def _ensure_maestro_target_foreground(
     session_id: str,
     platform: str,
@@ -219,7 +224,7 @@ def _ensure_maestro_target_foreground(
                 )
         return
 
-    expected_package = expected_app.split("/", 1)[0]
+    expected_package = _android_package_name(expected_app)
     launch_target = expected_package
     last_launch_component = provenance.get("last_launch_component")
     if (
@@ -251,7 +256,7 @@ def _verify_or_repair_android_maestro_target(
     if not expected_app:
         return
 
-    expected_package = expected_app.split("/", 1)[0]
+    expected_package = _android_package_name(expected_app)
     try:
         android.verify_install(sim_id, expected_package, timeout=10, **android_kwargs)
         return
@@ -1825,11 +1830,26 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             if platform in ("ios", "watchos", "visionos"):
                 ios.activate_app(sim_id, _screenshot_target_app)
             elif platform == "android":
-                _pkg = _screenshot_target_app.split("/", 1)[0]
+                _pkg = _android_package_name(_screenshot_target_app)
                 try:
-                    android.launch(sim_id, _pkg, [], **android_kwargs)
-                except Exception:
-                    pass
+                    _current = android.foreground_app(sim_id, retries=2, delay=0.4, **android_kwargs)
+                    if _current != _pkg:
+                        android.launch(sim_id, _pkg, [], **android_kwargs)
+                        _current = android.foreground_app(
+                            sim_id, retries=3, delay=0.5, **android_kwargs
+                        )
+                    if _current != _pkg:
+                        raise RuntimeError(
+                            f"Screenshot capture aborted — expected Android package '{_pkg}' "
+                            f"foreground, got '{_current or 'unknown'}'."
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Screenshot capture aborted — could not verify Android package "
+                        f"'{_pkg}' before capture: {exc}"
+                    ) from exc
 
         if is_real and platform == "ios":
             device.ios_screenshot(sim_id, output, max_size=max_size)
@@ -3280,15 +3300,34 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
                     steps.append(f"reactivated:{expected_app}")
                     actual_fg = expected_app
             elif platform == "android":
-                _epkg = expected_app.split("/", 1)[0]
+                _epkg = _android_package_name(expected_app)
                 try:
                     android.launch(sim_id, _epkg, [], **android_kwargs)
                     steps.append(f"reactivated:{_epkg}")
-                    actual_fg = _epkg
+                    actual_fg = android.foreground_app(
+                        sim_id, retries=3, delay=0.5, **android_kwargs
+                    )
                 except Exception:
                     pass
-            if actual_fg and actual_fg != expected_app:
-                errors.append(f"foreground_mismatch: expected={expected_app} actual={actual_fg}")
+        elif platform == "android" and actual_fg is None:
+            _epkg = _android_package_name(expected_app)
+            try:
+                android.launch(sim_id, _epkg, [], **android_kwargs)
+                steps.append(f"reactivated:{_epkg}")
+                actual_fg = android.foreground_app(
+                    sim_id, retries=3, delay=0.5, **android_kwargs
+                )
+            except Exception:
+                pass
+
+        if platform == "android" and expected_app:
+            expected_compare = _android_package_name(expected_app)
+        else:
+            expected_compare = expected_app
+        if expected_compare and actual_fg != expected_compare:
+            errors.append(
+                f"foreground_mismatch: expected={expected_compare} actual={actual_fg or 'unknown'}"
+            )
 
     # ── Step 8: Fail if critical errors ─────────────────────────────────
     critical = [e for e in errors if "foreground_mismatch" in e or "url_handoff" in e]
