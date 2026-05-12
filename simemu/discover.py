@@ -18,6 +18,8 @@ class SimulatorInfo:
     runtime: str      # e.g. "iOS 26.2" or "API 35"
     real_device: bool = False   # True for physical devices, False for simulators/emulators
     genymotion: bool = False    # True for Genymotion VMs (preferred over standard AVDs)
+    device_type_identifier: str | None = None
+    device_type_name: str | None = None
 
 
 def _list_apple_simulators(
@@ -34,6 +36,7 @@ def _list_apple_simulators(
         return []
 
     data = json.loads(out)
+    device_type_names = _apple_device_type_names()
     allocated_ids = allocated_ids or set()
     results = []
 
@@ -52,16 +55,40 @@ def _list_apple_simulators(
             udid = dev["udid"]
             if udid in allocated_ids:
                 continue
+            device_type_identifier = dev.get("deviceTypeIdentifier")
             results.append(SimulatorInfo(
                 sim_id=udid,
                 platform={"iOS": "ios", "watchOS": "watchos", "tvOS": "tvos", "xrOS": "visionos"}.get(platform_filter, platform_filter.lower()),
                 device_name=dev["name"],
                 booted=dev.get("state") == "Booted",
                 runtime=runtime_label,
+                device_type_identifier=device_type_identifier,
+                device_type_name=device_type_names.get(device_type_identifier),
             ))
 
     results.sort(key=lambda s: (not s.booted, s.device_name))
     return results
+
+
+def _apple_device_type_names() -> dict[str, str]:
+    try:
+        out = subprocess.check_output(
+            ["xcrun", "simctl", "list", "devicetypes", "--json"],
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {}
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return {}
+
+    return {
+        devicetype["identifier"]: devicetype["name"]
+        for devicetype in data.get("devicetypes", [])
+        if devicetype.get("identifier") and devicetype.get("name")
+    }
 
 
 def list_ios(allocated_ids: set[str] | None = None) -> list[SimulatorInfo]:
@@ -236,7 +263,10 @@ def _get_claimed_sim_ids() -> set[str]:
 
 def _classify_form_factor(sim: SimulatorInfo) -> str | None:
     """Infer a coarse form factor from a discovered device name."""
-    name = sim.device_name.lower()
+    name = " ".join(
+        part for part in (sim.device_name, sim.device_type_name, sim.device_type_identifier)
+        if part
+    ).lower()
 
     if any(hint in name for hint in ("ipad", "tablet")):
         return "tablet"

@@ -277,6 +277,39 @@ class TestFindBestDevice(unittest.TestCase):
         result = find_best_device(spec)
         self.assertEqual(result.sim_id, "veg-1")
 
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch(
+        "simemu.discover.list_ios",
+        return_value=[
+            SimulatorInfo(
+                "ipad-veg",
+                "ios",
+                "broccoli",
+                False,
+                "iOS 26.4",
+                device_type_name="iPad Pro 11-inch (M5)",
+            ),
+            SimulatorInfo(
+                "phone-veg",
+                "ios",
+                "cabbage",
+                False,
+                "iOS 26.4",
+                device_type_name="iPhone 17",
+            ),
+        ],
+    )
+    def test_vegetable_named_ipad_matches_tablet_from_device_type(self, mock_list: MagicMock, mock_claimed: MagicMock) -> None:
+        spec = SimpleNamespace(
+            platform="ios",
+            form_factor="tablet",
+            os_version=None,
+            real_device=False,
+            device_selector=None,
+        )
+        result = find_best_device(spec)
+        self.assertEqual(result.sim_id, "ipad-veg")
+
 
 class TestReservations(unittest.TestCase):
     """Tests for permanent device reservations."""
