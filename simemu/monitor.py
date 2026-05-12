@@ -302,7 +302,7 @@ def _check_runaway_emulators() -> list[str]:
     """
     try:
         result = subprocess.run(
-            ["ps", "axww", "-o", "pid=", "-o", "pcpu=", "-o", "etime=", "-o", "comm="],
+            ["ps", "axww", "-o", "pid=", "-o", "pcpu=", "-o", "etime=", "-o", "command="],
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -313,10 +313,10 @@ def _check_runaway_emulators() -> list[str]:
         parts = line.strip().split(None, 3)
         if len(parts) != 4:
             continue
-        pid_str, cpu_str, etime_str, comm = parts
+        pid_str, cpu_str, etime_str, command = parts
 
         # Only target emulator processes
-        if "qemu-system" not in comm and "emulator" not in comm.lower():
+        if "qemu-system" not in command and "emulator" not in command.lower():
             continue
 
         try:
@@ -329,6 +329,9 @@ def _check_runaway_emulators() -> list[str]:
         if pid == os.getpid():
             continue
 
+        if _is_active_android_session_process(command):
+            continue
+
         reason = None
         if cpu_pct >= RUNAWAY_CPU_CRITICAL:
             reason = f"cpu={cpu_pct:.0f}% >= critical {RUNAWAY_CPU_CRITICAL}%"
@@ -338,7 +341,7 @@ def _check_runaway_emulators() -> list[str]:
         if not reason:
             continue
 
-        log(f"runaway: killing {pid} ({comm}): {reason}")
+        log(f"runaway: killing {pid} ({command}): {reason}")
         # SIGTERM first, then SIGKILL if still alive after 1s
         try:
             os.kill(pid, signal.SIGTERM)
@@ -350,11 +353,33 @@ def _check_runaway_emulators() -> list[str]:
             os.kill(pid, 0)
             # Still alive — escalate to SIGKILL
             os.kill(pid, signal.SIGKILL)
-            killed.append(f"{pid}:{comm} ({reason}, SIGKILL)")
+            killed.append(f"{pid}:{command} ({reason}, SIGKILL)")
         except ProcessLookupError:
-            killed.append(f"{pid}:{comm} ({reason}, SIGTERM)")
+            killed.append(f"{pid}:{command} ({reason}, SIGTERM)")
 
     return killed
+
+
+def _is_active_android_session_process(command: str) -> bool:
+    """Do not kill the emulator that an active Android proof session owns."""
+    try:
+        from simemu.session import get_active_sessions
+    except Exception:
+        return False
+
+    command_l = command.lower()
+    try:
+        sessions = get_active_sessions()
+    except Exception:
+        return False
+
+    for session in sessions.values():
+        if session.platform != "android" or session.status != "active":
+            continue
+        sim_id = (session.sim_id or "").lower()
+        if sim_id and (sim_id in command_l or sim_id.replace("_", "-") in command_l):
+            return True
+    return False
 
 
 def _reap_orphan_ui_processes(max_age_seconds: int = UI_PROCESS_MAX_AGE_SECONDS) -> list[str]:

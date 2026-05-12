@@ -168,6 +168,52 @@ class TestMonitor(unittest.TestCase):
         self.assertEqual(monitor._parse_etime_seconds("01:02:03"), 3723)
         self.assertEqual(monitor._parse_etime_seconds("2-01:02:03"), 176523)
 
+    @patch("simemu.session.get_active_sessions")
+    def test_active_android_session_process_is_not_runaway_target(
+        self,
+        mock_sessions,
+    ) -> None:
+        session = MagicMock()
+        session.platform = "android"
+        session.status = "active"
+        session.sim_id = "sitches-proof-android"
+        mock_sessions.return_value = {"s-proof": session}
+
+        command = (
+            "/usr/local/lib/android/sdk/emulator/qemu/darwin-aarch64/"
+            "qemu-system-aarch64-headless -avd sitches-proof-android"
+        )
+
+        self.assertTrue(monitor._is_active_android_session_process(command))
+
+    @patch("simemu.monitor.os.kill")
+    @patch("simemu.monitor.subprocess.run")
+    @patch("simemu.session.get_active_sessions")
+    def test_runaway_reaper_skips_active_android_session_emulator(
+        self,
+        mock_sessions,
+        mock_run,
+        mock_kill,
+    ) -> None:
+        session = MagicMock()
+        session.platform = "android"
+        session.status = "active"
+        session.sim_id = "sitches-proof-android"
+        mock_sessions.return_value = {"s-proof": session}
+        mock_run.return_value = MagicMock(
+            stdout=(
+                "12345 1400.0 00:45 "
+                "/usr/local/lib/android/sdk/emulator/qemu/darwin-aarch64/"
+                "qemu-system-aarch64-headless -avd sitches-proof-android\n"
+            ),
+            returncode=0,
+        )
+
+        killed = monitor._check_runaway_emulators()
+
+        self.assertEqual(killed, [])
+        mock_kill.assert_not_called()
+
     @patch("simemu.monitor.os.kill")
     @patch("simemu.monitor._iter_process_rows")
     @patch("simemu.session.get_active_sessions", return_value={})
