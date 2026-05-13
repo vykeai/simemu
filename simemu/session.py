@@ -551,8 +551,9 @@ def _preflight_android_maestro_device(
 
 
 def _wait_for_android_maestro_transport(sim_id: str, android_kwargs: dict) -> str:
+    timeout = int(os.environ.get("SIMEMU_ANDROID_MAESTRO_TRANSPORT_TIMEOUT", "120"))
     try:
-        return android.wait_until_ready(sim_id, timeout=45, **android_kwargs)
+        return android.wait_until_ready(sim_id, timeout=timeout, **android_kwargs)
     except RuntimeError as exc:
         detail = str(exc).lower()
         if not (
@@ -562,7 +563,7 @@ def _wait_for_android_maestro_transport(sim_id: str, android_kwargs: dict) -> st
             or "adb-ready" in detail
         ):
             raise
-        return android.wait_for_transport_recovery(sim_id, timeout=45, **android_kwargs)
+        return android.wait_for_transport_recovery(sim_id, timeout=timeout, **android_kwargs)
 
 
 def _restore_android_location_if_recorded(session_id: str, sim_id: str, android_kwargs: dict) -> None:
@@ -978,20 +979,24 @@ def get_session(session_id: str) -> Session | None:
 
 
 def _is_effectively_expired(session: Session) -> bool:
-    """Return True when a session's expiry deadline has already passed.
+    """Return True when a session's terminal expiry deadline has passed.
 
     We still run a lifecycle monitor, but session reads must be defensive in
     case the monitor/daemon is delayed or started with a bad environment.
+    ``expires_at`` is the next lifecycle transition deadline for active/idle
+    sessions, not terminal expiry; long-running commands may cross it before
+    they can refresh heartbeat.
     """
     if session.status in ("expired", "released"):
         return session.status == "expired"
-    if not session.expires_at:
+    if not session.heartbeat_at:
         return False
     try:
-        expires = datetime.fromisoformat(session.expires_at)
+        heartbeat = datetime.fromisoformat(session.heartbeat_at)
     except ValueError:
         return False
-    return datetime.now(timezone.utc) >= expires
+    from datetime import timedelta
+    return datetime.now(timezone.utc) >= heartbeat + timedelta(seconds=EXPIRE_TIMEOUT)
 
 
 def _mark_expired(session_id: str) -> None:

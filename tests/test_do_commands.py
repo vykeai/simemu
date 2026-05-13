@@ -578,7 +578,7 @@ class TestDoMaestro(DoCommandBase):
             ["--debug-route=journey/root"],
             pinned_serial="emulator-5554",
         )
-        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_ready.assert_called_once_with("Pixel_7", timeout=120, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.dismiss_system_dialogs")
@@ -610,7 +610,7 @@ class TestDoMaestro(DoCommandBase):
         self.assertIn("--reinstall-driver", cmd_args)
         self.assertIn("--debug-output", cmd_args)
         self.assertIn("-Djava.net.preferIPv4Stack=true", env["JAVA_TOOL_OPTIONS"])
-        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_ready.assert_called_once_with("Pixel_7", timeout=120, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.dismiss_system_dialogs")
@@ -640,7 +640,7 @@ class TestDoMaestro(DoCommandBase):
         cmd_args = mock_run.call_args[0][0]
         self.assertIn("--no-reinstall-driver", cmd_args)
         self.assertNotIn("--reinstall-driver", cmd_args)
-        mock_ready.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_ready.assert_called_once_with("Pixel_7", timeout=120, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.dismiss_system_dialogs")
@@ -698,7 +698,7 @@ class TestDoMaestro(DoCommandBase):
         result = do_command("s-droid1", "maestro", [str(flow)])
 
         self.assertEqual(result["status"], "passed")
-        mock_recovery.assert_called_once_with("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_recovery.assert_called_once_with("Pixel_7", timeout=120, pinned_serial="emulator-5554")
         mock_dismiss.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
     @patch("simemu.session.time.sleep")
@@ -793,7 +793,7 @@ class TestDoMaestro(DoCommandBase):
         maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
         self.assertEqual(len(maestro_calls), 2)
         self.assertEqual(mock_ready.call_count, 2)
-        mock_ready.assert_any_call("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_ready.assert_any_call("Pixel_7", timeout=120, pinned_serial="emulator-5554")
         self.assertEqual(mock_dismiss.call_count, 2)
         mock_dismiss.assert_any_call("Pixel_7", pinned_serial="emulator-5554")
 
@@ -843,7 +843,7 @@ class TestDoMaestro(DoCommandBase):
         maestro_calls = [call for call in mock_run.call_args_list if call.args[0][0] == "maestro"]
         self.assertEqual(len(maestro_calls), 2)
         self.assertEqual(mock_ready.call_count, 2)
-        mock_ready.assert_any_call("Pixel_7", timeout=45, pinned_serial="emulator-5554")
+        mock_ready.assert_any_call("Pixel_7", timeout=120, pinned_serial="emulator-5554")
         self.assertEqual(mock_dismiss.call_count, 2)
         mock_dismiss.assert_any_call("Pixel_7", pinned_serial="emulator-5554")
 

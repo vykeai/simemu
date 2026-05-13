@@ -646,6 +646,17 @@ class TestTouch(unittest.TestCase):
         self.assertNotEqual(old.heartbeat_at, updated.heartbeat_at)
         self.assertEqual(updated.status, "active")
 
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_touch_allows_active_session_past_idle_transition_before_terminal_expiry(self, mock_serial) -> None:
+        stale_but_not_terminal = (datetime.now(timezone.utc) - timedelta(seconds=IDLE_TIMEOUT + 60)).isoformat()
+        self._seed_session(
+            heartbeat_at=stale_but_not_terminal,
+            expires_at=_compute_expires_at("active", stale_but_not_terminal),
+        )
+        updated = touch("s-aaa111")
+        self.assertEqual(updated.status, "active")
+        self.assertGreater(datetime.fromisoformat(updated.heartbeat_at), datetime.fromisoformat(stale_but_not_terminal))
+
     @patch("simemu.session.ios.boot")
     def test_touch_reboots_parked_session(self, mock_boot) -> None:
         self._seed_session(status="parked")
@@ -1012,9 +1023,9 @@ class TestGetActiveSessions(unittest.TestCase):
         self.assertNotIn("s-expired", active)
         self.assertNotIn("s-released", active)
 
-    def test_excludes_effectively_expired_active_sessions(self) -> None:
+    def test_keeps_active_sessions_past_idle_transition_before_terminal_expiry(self) -> None:
         now = _now_iso()
-        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        stale_but_not_terminal = (datetime.now(timezone.utc) - timedelta(seconds=IDLE_TIMEOUT + 60)).isoformat()
         base = {
             "platform": "ios",
             "form_factor": "phone",
@@ -1047,18 +1058,18 @@ class TestGetActiveSessions(unittest.TestCase):
                     "session_id": "s-active-stale",
                     "status": "active",
                     "sim_id": "BBB-222",
-                    "expires_at": expired_at,
+                    "heartbeat_at": stale_but_not_terminal,
+                    "expires_at": _compute_expires_at("active", stale_but_not_terminal),
                 },
             }
         }))
 
         active = get_active_sessions()
         self.assertIn("s-active-fresh", active)
-        self.assertNotIn("s-active-stale", active)
+        self.assertIn("s-active-stale", active)
 
     def test_require_session_marks_effectively_expired_session(self) -> None:
-        now = _now_iso()
-        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        stale_heartbeat = (datetime.now(timezone.utc) - timedelta(seconds=EXPIRE_TIMEOUT + 60)).isoformat()
         sf = Path(self.tmpdir.name) / "sessions.json"
         sf.write_text(json.dumps({
             "sessions": {
@@ -1073,9 +1084,9 @@ class TestGetActiveSessions(unittest.TestCase):
                     "sim_id": "AAA-111",
                     "device_name": "iPhone 16 Pro",
                     "agent": "test",
-                    "created_at": now,
-                    "heartbeat_at": now,
-                    "expires_at": expired_at,
+                    "created_at": stale_heartbeat,
+                    "heartbeat_at": stale_heartbeat,
+                    "expires_at": _compute_expires_at("active", stale_heartbeat),
                     "resolved_os_version": "iOS 26.2",
                     "claim_platform": "ios",
                     "claim_form_factor": "phone",
