@@ -32,7 +32,7 @@ from . import window as window_mgr
 IDLE_TIMEOUT = 20 * 60        # active → idle after 20min
 PARK_TIMEOUT = 40 * 60        # idle → parked after 40min more (60min total)
 EXPIRE_TIMEOUT = 2 * 60 * 60  # parked → expired after 2hr total idle
-ANDROID_DISCONNECT_GRACE = 2 * 60  # tolerate transient adb loss before expiring
+ANDROID_DISCONNECT_GRACE = int(os.environ.get("SIMEMU_ANDROID_DISCONNECT_GRACE", str(10 * 60)))  # tolerate transient adb loss before expiring
 MAESTRO_TIMEOUT_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "300"))
 
 # Default memory budget in MB
