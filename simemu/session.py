@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import state, ios, android, device
-from .discover import find_best_device, find_matching_devices
+from . import exclusive
+from .discover import find_best_device, find_matching_devices, NoSimulatorAvailable
 from . import window as window_mgr
 
 
@@ -98,6 +99,16 @@ class Session:
     # validated before every command to prevent cross-session contamination
     pinned_serial: str | None = None
 
+    # Exclusive-claim ownership tracking. `pid` is the PID of the claiming
+    # process; used for stale-claim reaping when the owner dies without
+    # releasing. `claim_pgid` is the process-group at claim time (useful for
+    # killing the whole chain on cleanup). `claim_token` is an opaque secret
+    # an agent can use to prove ownership of a session (validated via the
+    # SIMEMU_SESSION_TOKEN env var when set).
+    pid: int | None = None
+    claim_pgid: int | None = None
+    claim_token: str | None = None
+
     # Stored claim spec for error recovery messages
     claim_platform: str = ""
     claim_form_factor: str = "phone"
@@ -108,7 +119,7 @@ class Session:
 
     def to_agent_json(self) -> dict:
         """Return the JSON visible to agents (no internal device details)."""
-        return {
+        out = {
             "session": self.session_id,
             "platform": self.platform,
             "form_factor": self.form_factor,
@@ -118,6 +129,9 @@ class Session:
             "created_at": self.created_at,
             "expires_at": self.expires_at,
         }
+        if self.claim_token:
+            out["claim_token"] = self.claim_token
+        return out
 
     def claim_spec(self) -> ClaimSpec:
         """Reconstruct the ClaimSpec used to create this session."""
@@ -137,6 +151,14 @@ class Session:
 
 def _gen_session_id() -> str:
     return f"s-{secrets.token_hex(3)}"
+
+
+def _safe_pgid() -> int | None:
+    """Return the current process group id, or None on platforms where it fails."""
+    try:
+        return os.getpgid(0)
+    except OSError:
+        return None
 
 
 def _now_iso() -> str:
@@ -622,7 +644,7 @@ def _compute_expires_at(status: str, heartbeat_at: str) -> str:
 
 # ── state persistence ────────────────────────────────────────────────────────
 
-SCHEMA_VERSION = 3  # Current schema version
+SCHEMA_VERSION = 4  # Current schema version
 
 
 def _sessions_file() -> Path:
@@ -662,6 +684,14 @@ def _migrate_schema(data: dict) -> dict:
         for sid, session in data.get("sessions", {}).items():
             session.setdefault("pinned_serial", None)
         data["schema_version"] = 3
+
+    if version < 4:
+        # v3 → v4: Add exclusive-claim ownership fields
+        for sid, session in data.get("sessions", {}).items():
+            session.setdefault("pid", None)
+            session.setdefault("claim_pgid", None)
+            session.setdefault("claim_token", None)
+        data["schema_version"] = 4
 
     return data
 
@@ -742,13 +772,11 @@ def _read_sessions_raw() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Clean stale .tmp files that might exist from a crashed write
-    tmp = sf.with_suffix(".tmp")
-    if tmp.exists():
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+    # NB: do NOT clean up `.tmp` here. `_read_sessions_raw` is called from
+    # lock-free paths (e.g. `get_active_sessions`), so deleting a `.tmp` that
+    # belongs to a concurrent in-flight writer would cause its
+    # `tmp.replace(sf)` to fail with FileNotFoundError. Stale `.tmp` files from
+    # crashed writes are harmless — the next write recreates and renames them.
 
     return {"sessions": {}}
 
@@ -777,7 +805,11 @@ def _write_sessions_raw(data: dict):
         except OSError:
             pass
 
-    # Atomic write: tmp → rename
+    # Atomic write: tmp → rename. `write_text` overwrites any pre-existing
+    # .tmp (e.g. one left by a previously-crashed writer), so stale .tmp files
+    # self-heal here. We deliberately do NOT clean up .tmp in the lock-free
+    # read path — doing so races with concurrent in-flight writers and causes
+    # FileNotFoundError on their replace().
     tmp.write_text(content)
     tmp.replace(sf)
 
@@ -796,9 +828,59 @@ def _session_log(message: str) -> None:
 
 # ── public API ───────────────────────────────────────────────────────────────
 
-def claim(spec: ClaimSpec) -> Session:
-    """Find the best available device matching spec, boot it, and return a session."""
+def _reap_dead_claims_locked(data: dict) -> list[str]:
+    """Mark sessions whose claimant PID is dead as expired. Returns reaped IDs."""
+    stale = exclusive.collect_stale_session_ids(data.get("sessions", {}))
+    if stale:
+        exclusive.mark_sessions_reaped(data, stale, _now_iso())
+        for sid in stale:
+            _session_log(
+                f"[simemu-session] Reaped session '{sid}' — claimant PID dead"
+            )
+    return stale
+
+
+def reap_dead_claims() -> list[str]:
+    """Public: reap sessions whose claimant PID is no longer alive."""
+    with _locked_sessions() as (data, save):
+        reaped = _reap_dead_claims_locked(data)
+        if reaped:
+            save(data)
+        return reaped
+
+
+def claim(spec: ClaimSpec, wait_seconds: int = 0) -> Session:
+    """Find the best available device matching spec, boot it, and return a session.
+
+    If `wait_seconds > 0` and no device is available (pool exhausted or every
+    candidate just got claimed by a sibling agent), retry on a short interval
+    until either a device becomes free or the budget is exhausted.
+    """
     state.check_maintenance()
+
+    deadline = time.monotonic() + max(0, wait_seconds)
+    last_err: Exception | None = None
+    while True:
+        try:
+            return _claim_once(spec)
+        except (NoSimulatorAvailable, SessionError) as exc:
+            # SessionError("device_already_claimed") and NoSimulatorAvailable
+            # are the two race conditions worth retrying. Everything else
+            # propagates immediately.
+            if isinstance(exc, SessionError) and exc.error_type != "device_already_claimed":
+                raise
+            last_err = exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(1.0, remaining))
+
+
+def _claim_once(spec: ClaimSpec) -> Session:
+    """Single-shot claim attempt. Use claim() for the public wait-aware wrapper."""
+    # Reap any sessions whose claimant process is dead before searching, so the
+    # device pool reflects reality.
+    reap_dead_claims()
 
     agent = os.environ.get("SIMEMU_AGENT") or f"pid-{os.getpid()}"
     now = _now_iso()
@@ -836,6 +918,9 @@ def claim(spec: ClaimSpec) -> Session:
             claim_real_device=True,
             claim_device_selector=spec.device_selector,
             claim_label=spec.label,
+            pid=exclusive.claimant_pid(),
+            claim_pgid=_safe_pgid(),
+            claim_token=exclusive.issue_claim_token(),
         )
         session.expires_at = _compute_expires_at("active", now)
 
@@ -950,11 +1035,17 @@ def claim(spec: ClaimSpec) -> Session:
         claim_real_device=spec.real_device,
         claim_device_selector=spec.device_selector,
         claim_label=spec.label,
+        pid=exclusive.claimant_pid(),
+        claim_pgid=_safe_pgid(),
+        claim_token=exclusive.issue_claim_token(),
     )
     session.expires_at = _compute_expires_at("active", now)
 
     # Persist session — check for duplicate sim_id under lock
     with _locked_sessions() as (data, save):
+        # Reap any dead-PID claimants before evaluating contention.
+        _reap_dead_claims_locked(data)
+
         # Check if another active session already has this device
         for existing_id, existing in list(data["sessions"].items()):
             if (existing.get("sim_id") == sim.sim_id
@@ -1142,6 +1233,23 @@ def require_session(session_id: str) -> Session:
             session=session_id,
             hint=f"Session was released. Re-claim with: {session.reclaim_command()}",
         )
+
+    # Optional token validation — enabled by setting SIMEMU_SESSION_TOKEN in
+    # the env. When unset, ownership is trust-on-first-use (preserves the
+    # existing CLI contract: agents that just received a session id can use it
+    # without juggling secrets). When set, the value MUST match the token
+    # issued at claim time. Sessions created before this feature have no
+    # token and are exempted (legacy compat).
+    presented = os.environ.get("SIMEMU_SESSION_TOKEN")
+    if presented and session.claim_token and not exclusive.validate_token(
+        session.claim_token, presented
+    ):
+        raise SessionError(
+            error="session_token_mismatch",
+            session=session_id,
+            hint="SIMEMU_SESSION_TOKEN does not match the token issued at claim time.",
+        )
+
     return session
 
 
