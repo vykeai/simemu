@@ -236,7 +236,7 @@ def cmd_claim(args):
         visible=visible,
     )
     try:
-        session = session_module.claim(spec)
+        session = session_module.claim(spec, wait_seconds=int(getattr(args, "wait", 0) or 0))
         _print_json(session.to_agent_json())
     except SessionError as e:
         _print_json(e.to_json())
@@ -340,6 +340,58 @@ def cmd_config(args):
             _print_json(config)
         else:
             print("No config set (using defaults)")
+
+
+def cmd_claims(args):
+    """Show exclusive-claim ownership of every live session."""
+    from . import exclusive
+    from datetime import datetime, timezone
+
+    if getattr(args, "reap", False):
+        reaped = session_module.reap_dead_claims()
+    else:
+        reaped = []
+
+    active = session_module.get_active_sessions()
+    now = datetime.now(timezone.utc)
+
+    rows = []
+    for sid, sess in active.items():
+        try:
+            created = datetime.fromisoformat(sess.created_at)
+            age_s = int((now - created).total_seconds())
+        except Exception:
+            age_s = -1
+        rows.append({
+            "session": sid,
+            "platform": sess.platform,
+            "device_name": sess.device_name,
+            "sim_id": sess.sim_id,
+            "agent": sess.agent,
+            "pid": sess.pid,
+            "pid_alive": exclusive.is_pid_alive(sess.pid) if sess.pid else None,
+            "status": sess.status,
+            "age_seconds": age_s,
+            "token_prefix": (sess.claim_token[:8] + "…") if sess.claim_token else None,
+        })
+
+    if getattr(args, "json", False):
+        _print_json({"claims": rows, "reaped": reaped})
+        return
+
+    if reaped:
+        print(f"Reaped {len(reaped)} stale claim(s): {', '.join(reaped)}")
+    if not rows:
+        print("No active claims.")
+        return
+    print(f"{'SESSION':<12} {'PLATFORM':<10} {'DEVICE':<24} {'PID':<8} {'ALIVE':<6} {'AGE':<8} {'TOKEN':<10} AGENT")
+    print("─" * 100)
+    for r in rows:
+        alive = "yes" if r["pid_alive"] else ("no" if r["pid_alive"] is False else "—")
+        age = f"{r['age_seconds']}s" if r["age_seconds"] >= 0 else "?"
+        print(f"{r['session']:<12} {r['platform']:<10} {r['device_name'][:23]:<24} "
+              f"{str(r['pid'] or '—'):<8} {alive:<6} {age:<8} "
+              f"{r['token_prefix'] or '—':<10} {r['agent']}")
 
 
 def cmd_sessions(args):
@@ -2043,6 +2095,11 @@ def build_parser() -> argparse.ArgumentParser:
     claim_p.add_argument("--show", action="store_true", dest="visible",
                          help="Keep simulator window visible (default: hidden)")
     claim_p.add_argument("--label", help="Human label for display (e.g. 'proof capture')")
+    claim_p.add_argument(
+        "--wait", type=int, default=0, metavar="SECONDS",
+        help="If the device pool is exhausted or every candidate is already claimed, "
+             "wait up to SECONDS for a device to become free before failing (default: 0, fail immediately).",
+    )
     claim_p.set_defaults(func=cmd_claim)
 
     # do
@@ -2100,6 +2157,19 @@ def build_parser() -> argparse.ArgumentParser:
     sess_p = sub.add_parser("sessions", help="List all active v2 sessions")
     sess_p.add_argument("--json", action="store_true", help="Output as JSON")
     sess_p.set_defaults(func=cmd_sessions)
+
+    # claims (alias: locks) — exclusive-claim introspection
+    for name in ("claims", "locks"):
+        c_p = sub.add_parser(
+            name,
+            help="Show exclusive claims: UDID, claimant PID (alive?), session token prefix, age",
+        )
+        c_p.add_argument("--json", action="store_true", help="Output as JSON")
+        c_p.add_argument(
+            "--reap", action="store_true",
+            help="Reap claims whose owner PID is dead before printing",
+        )
+        c_p.set_defaults(func=cmd_claims)
 
     # status (v2 — system overview)
     st = sub.add_parser("status", help="Show system overview: sessions, simulators, services")
@@ -2767,11 +2837,11 @@ def cmd_maintenance(args):
 
 
 # Maintenance-exempt commands (can run during maintenance)
-_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
+_MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd_claims", "cmd_config", "cmd_maintenance", "cmd_serve", "cmd_daemon", "cmd_menubar"}
 
 # v2 + admin commands — everything else is legacy and rejected
 _V2_COMMANDS = {
-    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config",
+    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_claims", "cmd_config",
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
     "cmd_list", "cmd_list_devices",  # discovery is still useful
