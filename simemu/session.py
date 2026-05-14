@@ -2312,10 +2312,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "dismiss-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            # Try simctl ui alert dismiss, fall back to Maestro
-            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
-                     capture_output=True, check=False)
-            ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow"])
+            # T-LU-262: dismiss = deny intent; raise if no path actually worked.
+            return ios.dismiss_system_alert(sim_id, "deny") | {"status": "dismissed"}
         else:
             # Android: press Enter key to dismiss
             _sp.run(["adb", "-s", _android_serial_for_session(),
@@ -2326,7 +2324,10 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "accept-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35)
+            # T-LU-262: raise loudly when no path actually pressed Allow/Open
+            # so callers don't think the alert was handled when it wasn't.
+            if not ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35):
+                raise ios._ios26_alert_unreachable_error("accepted")
             expected_bundle = None
             with _locked_sessions() as (data, save):
                 expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
@@ -2341,9 +2342,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "deny-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "deny"],
-                     capture_output=True, check=False)
-            ios.click_system_alert_button(sim_id, ["Don’t Allow", "Cancel", "Not Now", "Close"])
+            # T-LU-262: returns {"status":"denied", ...} or raises RuntimeError.
+            return ios.dismiss_system_alert(sim_id, "deny")
         else:
             _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_BACK"],

@@ -314,8 +314,65 @@ def open_url(udid: str, url: str) -> None:
     _simctl("openurl", udid, url)
 
 
+_SIMCTL_UI_ALERT_AVAILABLE: Optional[bool] = None
+
+
+def _simctl_ui_alert_available() -> bool:
+    """Return True iff `xcrun simctl ui ... alert` is a known subcommand.
+
+    Xcode 26.5+ removed `simctl ui alert`. Calling it returns nonzero with a
+    stderr like `error: unknown subcommand 'alert'`. We probe once per process
+    and cache. T-LU-262: silently no-oping was masking a real automation gap.
+    """
+    global _SIMCTL_UI_ALERT_AVAILABLE
+    if _SIMCTL_UI_ALERT_AVAILABLE is not None:
+        return _SIMCTL_UI_ALERT_AVAILABLE
+    try:
+        result = subprocess.run(
+            ["xcrun", "simctl", "ui", "--help"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        _SIMCTL_UI_ALERT_AVAILABLE = False
+        return False
+    combined = (result.stdout or "") + (result.stderr or "")
+    # `simctl ui --help` on supporting Xcode versions lists "alert" as a
+    # subcommand. On Xcode 26.5 the help no longer mentions it.
+    _SIMCTL_UI_ALERT_AVAILABLE = "alert" in combined
+    return _SIMCTL_UI_ALERT_AVAILABLE
+
+
+def _reset_simctl_ui_alert_cache() -> None:
+    """Test hook: clear the cached availability probe."""
+    global _SIMCTL_UI_ALERT_AVAILABLE
+    _SIMCTL_UI_ALERT_AVAILABLE = None
+
+
+# Labels iOS uses on its confirmation overlays, grouped by intended verdict.
+_ACCEPT_LABELS = ["Open", "Continue", "Allow", "OK", "Allow Once",
+                  "Allow While Using App", "Always Allow"]
+_DENY_LABELS = ["Don’t Allow", "Cancel", "Not Now", "Close", "Deny"]
+
+
+def _ios26_alert_unreachable_error(verdict: str) -> RuntimeError:
+    """Build the standard 'no working path' error for T-LU-262."""
+    return RuntimeError(
+        f"iOS system permission overlay could not be {verdict} by any automation "
+        "tool we tested: xcrun simctl ui alert (removed in Xcode 26.5+), "
+        "AppleScript click_system_alert_button, Maestro tapOn, and Quartz "
+        "CGEventPost all failed. See T-LU-262 for context. Use TCC pre-grant or "
+        "plist pre-seed instead, or run on iOS <26."
+    )
+
+
 def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> bool:
-    """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff."""
+    """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff.
+
+    Returns True when either simctl or an AppleScript fallback succeeded.
+    Returns False when every retry exhausted with no path working — callers
+    should treat that as the T-LU-262 unreachable-alert case and surface a
+    RuntimeError rather than silently report success.
+    """
     _ensure_booted(udid)
     for _ in range(attempts):
         result = subprocess.run(
@@ -338,6 +395,47 @@ def click_system_alert_button(udid: str, labels: list[str], attempts: int = 3, d
             return True
         time.sleep(delay)
     return False
+
+
+def dismiss_system_alert(udid: str, verdict: str) -> dict:
+    """Accept or deny an on-screen iOS system permission alert, raising loudly when nothing works.
+
+    verdict: "accept" or "deny".
+
+    T-LU-262: on Xcode 26.5+ the `simctl ui alert` subcommand was removed, and
+    every AppleScript / Maestro / Quartz fallback also fails to actually
+    dismiss iOS 26.4+ permission overlays. Previously we silently returned
+    "denied" or "accepted" without taking any action. Now we surface the
+    failure as a RuntimeError so callers can take it seriously (e.g. pre-grant
+    TCC, pre-seed plists, or run on iOS <26).
+
+    Returns a dict like {"status": "accepted"|"denied", "method": <how>}.
+    """
+    if verdict not in ("accept", "deny"):
+        raise ValueError(f"verdict must be 'accept' or 'deny', got {verdict!r}")
+    _ensure_booted(udid)
+
+    method: Optional[str] = None
+    simctl_alert_ok = _simctl_ui_alert_available()
+    if simctl_alert_ok:
+        result = subprocess.run(
+            ["xcrun", "simctl", "ui", udid, "alert", verdict],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            method = "simctl"
+
+    if method is None:
+        labels = _ACCEPT_LABELS if verdict == "accept" else _DENY_LABELS
+        if click_system_alert_button(udid, labels):
+            method = "applescript"
+
+    if method is None:
+        raise _ios26_alert_unreachable_error(
+            "accepted" if verdict == "accept" else "denied"
+        )
+
+    return {"status": "accepted" if verdict == "accept" else "denied", "method": method}
 
 
 def wait_for_foreground_app(

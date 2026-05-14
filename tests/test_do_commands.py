@@ -1682,16 +1682,25 @@ class TestDoStatusBar(DoCommandBase):
 
 
 class TestDoDismissAlert(DoCommandBase):
-    @patch("simemu.session.ios.click_system_alert_button")
-    @patch("subprocess.run")
+    @patch("simemu.session.ios.dismiss_system_alert",
+           return_value={"status": "denied", "method": "applescript"})
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_dismiss_alert_ios(self, mock_serial, mock_run, mock_click) -> None:
+    def test_do_dismiss_alert_ios(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262: dismiss routes through ios.dismiss_system_alert, which
+        # raises if no automation path actually clicked anything.
         result = do_command("s-test01", "dismiss-alert", [])
         self.assertEqual(result["status"], "dismissed")
-        # Verify xcrun simctl ui was called
-        cmd_args = mock_run.call_args[0][0]
-        self.assertIn("simctl", cmd_args)
-        mock_click.assert_called_once()
+        mock_dismiss.assert_called_once_with("AAA-111", "deny")
+
+    @patch("simemu.session.ios.dismiss_system_alert",
+           side_effect=RuntimeError("T-LU-262: iOS 26 alert unreachable"))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_dismiss_alert_ios_raises_when_no_path_works(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262 (the actual fix): when every automation path fails we
+        # surface a RuntimeError rather than silently report 'dismissed'.
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "dismiss-alert", [])
+        self.assertIn("T-LU-262", str(ctx.exception))
 
     @patch("subprocess.run")
     @patch("simemu.session.android.get_serial", return_value="emulator-5554")
@@ -1725,13 +1734,22 @@ class TestDoAcceptAlert(DoCommandBase):
 
 
 class TestDoDenyAlert(DoCommandBase):
-    @patch("simemu.session.ios.click_system_alert_button")
-    @patch("subprocess.run")
+    @patch("simemu.session.ios.dismiss_system_alert",
+           return_value={"status": "denied", "method": "simctl"})
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_deny_alert(self, mock_serial, mock_run, mock_click) -> None:
+    def test_do_deny_alert(self, mock_serial, mock_dismiss) -> None:
         result = do_command("s-test01", "deny-alert", [])
         self.assertEqual(result["status"], "denied")
-        mock_click.assert_called_once()
+        mock_dismiss.assert_called_once_with("AAA-111", "deny")
+
+    @patch("simemu.session.ios.dismiss_system_alert",
+           side_effect=RuntimeError("T-LU-262: iOS 26 alert unreachable"))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_deny_alert_raises_when_no_path_works(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262: explicit failure beats silent 'denied'.
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "deny-alert", [])
+        self.assertIn("T-LU-262", str(ctx.exception))
 
 
 # ── grant-all ────────────────────────────────────────────────────────────────
