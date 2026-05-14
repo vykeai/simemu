@@ -56,13 +56,36 @@ class TestSessionsCrashSafe(unittest.TestCase):
         data = _read_sessions_raw()
         self.assertEqual(data, {"sessions": {}})
 
-    def test_read_cleans_stale_tmp(self) -> None:
+    def test_stale_tmp_is_harmless_on_read(self) -> None:
+        """A stale .tmp from a crashed writer must NOT affect lock-free reads.
+
+        Previously _read_sessions_raw deleted .tmp during the cold-start path,
+        which raced with concurrent in-flight writers (their tmp.replace(sf)
+        would FileNotFoundError mid-flight). The contract is now: read leaves
+        .tmp alone; the next write either consumes it (via tmp.replace) or
+        overwrites it (via tmp.write_text). See test_stale_tmp_self_heals_on_write.
+        """
         sf = _sessions_file()
         sf.parent.mkdir(parents=True, exist_ok=True)
         tmp = sf.with_suffix(".tmp")
         tmp.write_text("stale tmp from crashed write")
-        _read_sessions_raw()
+        data = _read_sessions_raw()
+        # Read returns empty (no primary, no backup) but does NOT touch .tmp.
+        self.assertEqual(data, {"sessions": {}})
+
+    def test_stale_tmp_self_heals_on_write(self) -> None:
+        """A stale .tmp left by a crashed writer is reclaimed by the next write."""
+        sf = _sessions_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        tmp = sf.with_suffix(".tmp")
+        tmp.write_text("stale tmp from crashed write")
+        _write_sessions_raw({"sessions": {"s-new": {"status": "active"}}})
+        # write moved .tmp → sf, so .tmp is gone and sf has the new content.
         self.assertFalse(tmp.exists())
+        self.assertEqual(
+            json.loads(sf.read_text())["sessions"]["s-new"]["status"],
+            "active",
+        )
 
     def test_write_validates_json_roundtrip(self) -> None:
         data = {"sessions": {"s-1": {"status": "active"}}}
