@@ -1720,18 +1720,34 @@ class TestDoDismissAlert(DoCommandBase):
 
 
 class TestDoAcceptAlert(DoCommandBase):
-    @patch("simemu.session.ios.accept_open_app_alert")
+    @patch("simemu.session.ios.dismiss_system_alert",
+           return_value={"status": "accepted", "method": "applescript"})
     @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_accept_alert(self, mock_serial, mock_complete, mock_accept) -> None:
+        # T-LU-262 / codex P2 (2026-05-14): accept-alert routes through
+        # dismiss_system_alert("accept") so the broader _ACCEPT_LABELS
+        # (Allow Once / Allow While Using App / Always Allow) are tried,
+        # not just the narrow Open/Continue/Allow/OK subset.
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())
         data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
         sf.write_text(json.dumps(data))
         result = do_command("s-test01", "accept-alert", [])
-        mock_accept.assert_called_once_with("AAA-111", attempts=2, delay=0.35)
+        mock_accept.assert_called_once_with("AAA-111", "accept")
         mock_complete.assert_called_once_with("AAA-111", "app.fitkind.dev", attempts=3, foreground_timeout=1.0)
         self.assertEqual(result["status"], "accepted")
+        # method propagation invariant — same as TestDoDismissAlert.
+        self.assertEqual(result["method"], "applescript")
+
+    @patch("simemu.session.ios.dismiss_system_alert",
+           side_effect=RuntimeError("T-LU-262: iOS 26 alert unreachable"))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_accept_alert_raises_when_no_path_works(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262: explicit failure beats silent 'accepted'.
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "accept-alert", [])
+        self.assertIn("T-LU-262", str(ctx.exception))
 
 
 # ── deny-alert ───────────────────────────────────────────────────────────────

@@ -2327,15 +2327,23 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "accept-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            # T-LU-262: raise loudly when no path actually pressed Allow/Open
-            # so callers don't think the alert was handled when it wasn't.
-            if not ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35):
-                raise ios.ios26_alert_unreachable_error("accepted")
+            # T-LU-262: route through dismiss_system_alert("accept") so the
+            # broader _ACCEPT_LABELS (Allow Once / Allow While Using App /
+            # Always Allow) are tried, not just the narrow Open/Continue/Allow/OK
+            # subset that accept_open_app_alert covers. dismiss_system_alert
+            # already raises ios26_alert_unreachable_error on total failure.
+            # Codex adversarial P2 (2026-05-14): the previous version failed
+            # on real iOS permission dialogs whose affirmative button is one
+            # of the "Allow * Using App" variants.
+            result = ios.dismiss_system_alert(sim_id, "accept")
             expected_bundle = None
             with _locked_sessions() as (data, save):
                 expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
             if expected_bundle:
                 ios.complete_open_url_handoff(sim_id, expected_bundle, attempts=3, foreground_timeout=1.0)
+            # Mirror the dismiss-alert shape: keep "method" from the inner
+            # call, override "status" to the caller-facing verb "accepted".
+            return result | {"status": "accepted"}
         else:
             _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
