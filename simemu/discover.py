@@ -255,6 +255,52 @@ class NoSimulatorAvailable(RuntimeError):
     pass
 
 
+class AmbiguousDeviceSelector(RuntimeError):
+    """Raised when --device <X> substring-matches multiple distinct device names.
+
+    T-LU-263: previously, `--device 'iPhone 17'` greedily resolved to
+    'iPhone 17 Pro' when both 'iPhone 17' and 'iPhone 17 Pro' were available.
+    Now we require either an exact device-name match (case-insensitive) or a
+    substring match that resolves to a single distinct device name.
+    """
+    pass
+
+
+def _resolve_device_selector(
+    candidates: list[SimulatorInfo],
+    selector: str,
+) -> list[SimulatorInfo]:
+    """Filter candidates by a --device selector with exact-match-wins semantics.
+
+    Rules:
+      1. If `selector` exactly equals (case-insensitive) the `device_name` of
+         one or more candidates, return only those candidates.
+      2. Otherwise, do a substring match against `device_name` or `sim_id`.
+         If the substring matches 2+ *distinct* device names, raise
+         AmbiguousDeviceSelector.
+      3. Otherwise return the substring matches (a single device name,
+         possibly with multiple instances) — current behaviour.
+    """
+    selector_lower = selector.lower()
+
+    exact = [sim for sim in candidates if sim.device_name.lower() == selector_lower]
+    if exact:
+        return exact
+
+    substring = [
+        sim for sim in candidates
+        if selector_lower in sim.device_name.lower() or selector_lower in sim.sim_id.lower()
+    ]
+    distinct_names = sorted({sim.device_name for sim in substring})
+    if len(distinct_names) > 1:
+        names_list = ", ".join(f"'{name}'" for name in distinct_names)
+        raise AmbiguousDeviceSelector(
+            f"Device selector '{selector}' matches multiple devices: {names_list}. "
+            f"Use the exact device name (e.g. --device '{distinct_names[0]}') to disambiguate."
+        )
+    return substring
+
+
 def _get_claimed_sim_ids() -> set[str]:
     """Return sim_ids of all active sessions (claimed devices)."""
     from .session import get_active_sessions
@@ -338,11 +384,7 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
         candidates = list_fn(allocated_ids)
 
     if spec.device_selector:
-        selector = spec.device_selector.lower()
-        candidates = [
-            sim for sim in candidates
-            if selector in sim.device_name.lower() or selector in sim.sim_id.lower()
-        ]
+        candidates = _resolve_device_selector(candidates, spec.device_selector)
     if spec.form_factor in {"phone", "tablet"}:
         candidates = [
             sim for sim in candidates
@@ -402,12 +444,9 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
             f"Re-try later or create a new one."
         )
 
-    selector = spec.device_selector.lower() if spec.device_selector else ""
     if spec.device_selector:
-        filtered = [
-            sim for sim in candidates
-            if selector in sim.device_name.lower() or selector in sim.sim_id.lower()
-        ]
+        # Exact-match-wins; ambiguity raises explicitly. See T-LU-263.
+        filtered = _resolve_device_selector(candidates, spec.device_selector)
         if not filtered:
             available = ", ".join(sim.device_name for sim in candidates)
             raise NoSimulatorAvailable(
@@ -537,7 +576,8 @@ def find_simulator(
         )
 
     if device_name:
-        matches = [s for s in sims if device_name.lower() in s.device_name.lower()]
+        # Exact-match-wins; ambiguity raises explicitly. See T-LU-263.
+        matches = _resolve_device_selector(sims, device_name)
         if not matches:
             available = ", ".join(s.device_name for s in sims)
             raise NoSimulatorAvailable(

@@ -401,5 +401,22 @@ class BriefFocusTests(unittest.TestCase):
                 mock_raise.assert_called_once_with("iPhone 17 Pro")
 
 
+class SimWindowMatchTests(unittest.TestCase):
+    """T-LU-263: AppleScript predicate must not greedy-match sibling device names."""
+
+    def test_predicate_is_exact_or_starts_with_paren(self) -> None:
+        clause = ios._sim_window_match("iPhone 17")
+        # Must anchor on equality or the parenthesised runtime suffix.
+        self.assertIn('name is "iPhone 17"', clause)
+        self.assertIn('name starts with "iPhone 17 ("', clause)
+        # Must NOT use the greedy `contains` operator.
+        self.assertNotIn("contains", clause)
+
+    def test_predicate_escapes_quotes(self) -> None:
+        clause = ios._sim_window_match('Weird "Sim"')
+        # Quotes get backslash-escaped for safe AppleScript interpolation.
+        self.assertIn(r'\"Sim\"', clause)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -392,14 +392,14 @@ def _click_open_app_alert_button(udid: str) -> bool:
 
 def _click_alert_button(udid: str, labels: list[str]) -> bool:
     """Best-effort accessibility click for a visible iOS Simulator alert button."""
-    device_name = _escape_applescript(_get_device_name(udid))
+    window_match = _sim_window_match(_get_device_name(udid))
     label_literals = ", ".join(f'"{label}"' for label in labels)
     script = f'''
 tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
         try
-            set targetWindow to first window whose name contains "{device_name}"
+            set targetWindow to first window whose {window_match}
         on error
             return ""
         end try
@@ -440,14 +440,14 @@ def _click_sheet_button(udid: str, labels: list[str]) -> bool:
     iOS 26 presents URL-confirmation sheets as AXSheet with nested groups.
     This walks all elements looking for AXButton matching the given labels.
     """
-    device_name = _escape_applescript(_get_device_name(udid))
+    window_match = _sim_window_match(_get_device_name(udid))
     label_literals = ", ".join(f'"{label}"' for label in labels)
     script = f'''
 tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
         try
-            set targetWindow to first window whose name contains "{device_name}"
+            set targetWindow to first window whose {window_match}
         on error
             return ""
         end try
@@ -843,6 +843,22 @@ def _escape_applescript(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"')
 
 
+def _sim_window_match(device_name: str) -> str:
+    """AppleScript predicate that matches the Simulator window for `device_name` exactly.
+
+    Simulator window titles take the form '<device-name> (<runtime>)', e.g.
+    'iPhone 17 (26.5)'. A naive `name contains "iPhone 17"` greedy-matches
+    'iPhone 17 Pro (26.5)' too. T-LU-263: anchor on an exact name OR a name
+    that starts with '<device-name> (' so 'iPhone 17' never picks up
+    'iPhone 17 Pro'.
+
+    The returned string is an AppleScript expression suitable for use as
+    `whose <expr>` (it already contains the boolean operators).
+    """
+    escaped = _escape_applescript(device_name)
+    return f'(name is "{escaped}" or name starts with "{escaped} (")'
+
+
 def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     """Activate Simulator and raise the target window for reliable text focus.
 
@@ -850,14 +866,14 @@ def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     (e.g. window not yet created after boot, Simulator still launching).
     """
     import subprocess as _sp
-    escaped = _escape_applescript(device_name)
+    window_match = _sim_window_match(device_name)
     for attempt in range(max_retries + 1):
         result = _sp.run(
             ["osascript", "-e", f'''tell application "System Events"
     tell application "Simulator" to activate
     delay {0.15 + attempt * 0.1}
     tell process "Simulator"
-        perform action "AXRaise" of (first window whose name contains "{escaped}")
+        perform action "AXRaise" of (first window whose {window_match})
     end tell
 end tell'''],
             capture_output=True, text=True, check=False,
@@ -1134,13 +1150,14 @@ def _get_sim_bounds(udid: str) -> tuple[float, float, float, float]:
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
 
     # Primary approach: find the AXGroup content area (excludes toolbar/chrome)
     r = _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set grp to first UI element of w whose role is "AXGroup"
         set p to position of grp
         set s to size of grp
@@ -1163,7 +1180,7 @@ end tell''',
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set p to position of w
         set s to size of w
         return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
@@ -1209,11 +1226,12 @@ def _get_window_frame(udid: str) -> tuple[float, float, float, float]:
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
     r = _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set p to position of w
         set s to size of w
         return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
@@ -1237,7 +1255,12 @@ end tell''',
         for window in windows:
             owner = str(window.get("kCGWindowOwnerName") or "")
             name = str(window.get("kCGWindowName") or "")
-            if owner != "Simulator" or device_name not in name:
+            # T-LU-263: match exactly or with the parenthesised runtime suffix
+            # (e.g. 'iPhone 17 (26.5)') so 'iPhone 17' never picks up
+            # 'iPhone 17 Pro'.
+            if owner != "Simulator" or not (
+                name == device_name or name.startswith(f"{device_name} (")
+            ):
                 continue
             bounds = window.get("kCGWindowBounds") or {}
             width = float(bounds.get("Width", 0))
@@ -1273,11 +1296,12 @@ def _set_window_frame(udid: str, x: float, y: float, width: float, height: float
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
     _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set position of w to {{{int(x)}, {int(y)}}}
         set size of w to {{{int(width)}, {int(height)}}}
         perform action "AXRaise" of w
@@ -2009,10 +2033,11 @@ def focus(udid: str) -> None:
     import subprocess as _sp
     _open_sim_window(udid)
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
     _sp.run(["osascript", "-e", f'''tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
-        perform action "AXRaise" of (first window whose name contains "{device_name}")
+        perform action "AXRaise" of (first window whose {window_match})
     end tell
 end tell'''], capture_output=True, check=False)
 

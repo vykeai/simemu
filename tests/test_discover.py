@@ -9,8 +9,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from simemu.discover import (
+    AmbiguousDeviceSelector,
     NoSimulatorAvailable,
     SimulatorInfo,
+    _resolve_device_selector,
     find_best_device,
     find_simulator,
     get_android_serial,
@@ -195,8 +197,9 @@ class TestFindSimulator(unittest.TestCase):
     def test_filters_by_device_name(self, mock_co: MagicMock, mock_claimed: MagicMock) -> None:
         mock_co.return_value = SIMCTL_JSON.encode()
         sim = find_simulator("ios", device_name="iPhone 16")
-        # Both match "iPhone 16" substring — but booted "iPhone 16 Pro" sorts first
-        self.assertIn("iPhone 16", sim.device_name)
+        # T-LU-263: exact name match wins over substring (so 'iPhone 16'
+        # resolves to 'iPhone 16', NOT 'iPhone 16 Pro').
+        self.assertEqual(sim.device_name, "iPhone 16")
 
     @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
     @patch("simemu.discover.subprocess.check_output", side_effect=FileNotFoundError)
@@ -376,6 +379,94 @@ class TestReservations(unittest.TestCase):
         result = find_best_device(spec)
         self.assertEqual(result.device_name, "iPhone 17 Pro Max")
         os.environ.pop("SIMEMU_AGENT", None)
+
+
+class TestDeviceSelectorResolution(unittest.TestCase):
+    """T-LU-263: --device <X> must prefer exact match and reject ambiguity."""
+
+    def _sims(self) -> list[SimulatorInfo]:
+        return [
+            SimulatorInfo("iphone17", "ios", "iPhone 17", True, "iOS 26.5"),
+            SimulatorInfo("iphone17pro", "ios", "iPhone 17 Pro", True, "iOS 26.5"),
+            SimulatorInfo("iphone17promax", "ios", "iPhone 17 Pro Max", False, "iOS 26.5"),
+        ]
+
+    def test_exact_match_wins_over_substring(self) -> None:
+        """`--device 'iPhone 17'` should resolve to 'iPhone 17', not 'iPhone 17 Pro'."""
+        result = _resolve_device_selector(self._sims(), "iPhone 17")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].device_name, "iPhone 17")
+
+    def test_exact_match_case_insensitive(self) -> None:
+        result = _resolve_device_selector(self._sims(), "iphone 17")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].device_name, "iPhone 17")
+
+    def test_substring_ambiguity_raises(self) -> None:
+        """Substring matching 2+ distinct names must raise, not silently pick one."""
+        # 'iPhone 17 Pro' substring still matches both 'iPhone 17 Pro' AND
+        # 'iPhone 17 Pro Max'. No exact match, so it must raise.
+        with self.assertRaises(AmbiguousDeviceSelector) as ctx:
+            _resolve_device_selector(self._sims(), "iPhone 17 P")
+        msg = str(ctx.exception)
+        self.assertIn("iPhone 17 Pro", msg)
+        self.assertIn("iPhone 17 Pro Max", msg)
+        # Should NOT mention the unrelated 'iPhone 17' (substring "iPhone 17 P"
+        # does not occur in plain "iPhone 17")
+        self.assertNotIn("'iPhone 17',", msg)
+        self.assertNotIn("'iPhone 17'.", msg)
+
+    def test_single_substring_match_resolves(self) -> None:
+        """When only one device matches the substring, return it."""
+        result = _resolve_device_selector(self._sims(), "Max")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].device_name, "iPhone 17 Pro Max")
+
+    def test_no_match_returns_empty(self) -> None:
+        result = _resolve_device_selector(self._sims(), "Pixel 9")
+        self.assertEqual(result, [])
+
+    def test_exact_match_picks_all_matching_instances(self) -> None:
+        """Two simulators with the same exact name (e.g. duplicates) both qualify."""
+        sims = [
+            SimulatorInfo("a", "ios", "iPhone 17", True, "iOS 26.5"),
+            SimulatorInfo("b", "ios", "iPhone 17", False, "iOS 26.4"),
+            SimulatorInfo("c", "ios", "iPhone 17 Pro", True, "iOS 26.5"),
+        ]
+        result = _resolve_device_selector(sims, "iPhone 17")
+        self.assertEqual(len(result), 2)
+        self.assertEqual({s.sim_id for s in result}, {"a", "b"})
+
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch("simemu.discover.list_ios")
+    def test_find_best_device_exact_match_wins(self, mock_list_ios, mock_claimed) -> None:
+        mock_list_ios.return_value = [
+            # Both booted; without exact-match semantics the booted-first
+            # ordering combined with greedy substring would have given us the
+            # wrong device. We pin the input order so the test is unambiguous.
+            SimulatorInfo("a", "ios", "iPhone 17 Pro", True, "iOS 26.5",
+                          device_type_name="iPhone 17 Pro"),
+            SimulatorInfo("b", "ios", "iPhone 17", True, "iOS 26.5",
+                          device_type_name="iPhone 17"),
+        ]
+        from simemu.session import ClaimSpec
+        spec = ClaimSpec(platform="ios", device_selector="iPhone 17")
+        result = find_best_device(spec)
+        self.assertEqual(result.device_name, "iPhone 17")
+
+    @patch("simemu.discover._get_claimed_sim_ids", return_value=set())
+    @patch("simemu.discover.list_ios")
+    def test_find_best_device_ambiguous_raises(self, mock_list_ios, mock_claimed) -> None:
+        mock_list_ios.return_value = [
+            SimulatorInfo("a", "ios", "iPhone 17 Pro", True, "iOS 26.5",
+                          device_type_name="iPhone 17 Pro"),
+            SimulatorInfo("b", "ios", "iPhone 17 Pro Max", True, "iOS 26.5",
+                          device_type_name="iPhone 17 Pro Max"),
+        ]
+        from simemu.session import ClaimSpec
+        spec = ClaimSpec(platform="ios", device_selector="iPhone 17 P")
+        with self.assertRaises(AmbiguousDeviceSelector):
+            find_best_device(spec)
 
 
 if __name__ == "__main__":

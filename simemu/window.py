@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import state
+from .ios import _sim_window_match
 
 
 def _config_path() -> Path:
@@ -112,13 +113,14 @@ def apply_to_all(platform_filter: str | None = None) -> int:
 def _hide_window(sim_id: str, platform: str, device_name: str) -> None:
     """Minimize/hide the simulator window. Retries once if window isn't found."""
     if platform in ("ios", "watchos", "tvos", "visionos"):
+        window_match = _sim_window_match(device_name)
         for attempt in range(2):
             result = subprocess.run([
                 "osascript", "-e",
                 f'''tell application "System Events"
     tell process "Simulator"
         try
-            set miniaturized of (first window whose name contains "{device_name}") to true
+            set miniaturized of (first window whose {window_match}) to true
             return "ok"
         end try
         return "not found"
@@ -218,11 +220,12 @@ def _move_window_to_last_space(device_name: str) -> None:
         space_count = 4  # reasonable default
 
     # Move the window: select it, then use Ctrl+Space# keyboard shortcut
+    window_match = _sim_window_match(device_name)
     script = f'''
     tell application "System Events"
         tell process "Simulator"
             try
-                set w to first window whose name contains "{device_name}"
+                set w to first window whose {window_match}
                 perform action "AXRaise" of w
             end try
         end tell
@@ -272,12 +275,13 @@ def _move_to_corner(sim_id: str, platform: str, device_name: str, corner: str) -
     }
     x, y = positions.get(corner, positions["bottom-right"])
 
+    window_match = _sim_window_match(device_name)
     subprocess.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
         try
-            set w to first window whose name contains "{device_name}"
+            set w to first window whose {window_match}
             set position of w to {{{x}, {y}}}
             set size of w to {{{win_w}, {win_h}}}
         end try
@@ -367,12 +371,13 @@ def _move_to_display(sim_id: str, platform: str, device_name: str, display_index
 
     _display_tile_counter += 1
 
+    window_match = _sim_window_match(device_name)
     subprocess.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
         try
-            set w to first window whose name contains "{device_name}"
+            set w to first window whose {window_match}
             set miniaturized of w to false
             set position of w to {{{target_x}, {target_y}}}
             set size of w to {{{win_w}, {win_h}}}

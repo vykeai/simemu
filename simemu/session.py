@@ -1614,13 +1614,14 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         session = touch(session_id)
         if not session.real_device and session.platform in ("ios", "watchos", "tvos", "visionos"):
             import subprocess
+            window_match = ios._sim_window_match(session.device_name)
             subprocess.run([
                 "osascript", "-e",
                 f'''tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
         try
-            set w to first window whose name contains "{session.device_name}"
+            set w to first window whose {window_match}
             set miniaturized of w to false
             perform action "AXRaise" of w
         end try
