@@ -105,6 +105,55 @@ simemu sessions           # all active sessions
 simemu sessions --json    # JSON output
 ```
 
+### Exclusive claims
+
+A claim is **exclusive**: the device behind the session is reserved for the
+claimant only. Two concurrent `simemu claim ios` invocations from different
+agents will always receive **different UDIDs** — and if the device pool is
+exhausted, the second caller fails fast (exit non-zero) rather than silently
+sharing a device.
+
+```bash
+# Three agents fan out — each gets a distinct device.
+SESSION_A=$(SIMEMU_AGENT=agent-a simemu claim ios | jq -r .session)
+SESSION_B=$(SIMEMU_AGENT=agent-b simemu claim ios | jq -r .session)
+SESSION_C=$(SIMEMU_AGENT=agent-c simemu claim ios | jq -r .session)
+```
+
+If you'd rather wait for a device to free up instead of failing, pass `--wait`:
+
+```bash
+# Block for up to 120 seconds waiting for a free device.
+SESSION=$(simemu claim ios --wait 120 | jq -r .session)
+```
+
+Inspect current ownership and reap stale claims (process died without
+calling `done`):
+
+```bash
+simemu claims              # table view: session, device, PID (alive?), age, token prefix, agent
+simemu claims --json
+simemu claims --reap       # reap entries whose owner PID is no longer alive
+```
+
+How exclusivity is enforced:
+
+- Each `claim` records the **parent PID** of the simemu CLI process (the
+  shell that invoked it) plus an opaque `claim_token`. Override with
+  `SIMEMU_CLAIMANT_PID=<pid>` if you need a long-lived supervisor PID.
+- The session store (`~/.simemu/sessions.json`) is guarded by an
+  `fcntl.flock` exclusive lock during every selection / save / reap.
+- Before each new claim, stale entries (owner PID is dead) are reaped so
+  the freed device becomes available again.
+- Destructive operations (`shutdown`, `erase`, `boot`) are scoped to the
+  UDID bound to a single session — there is no `--all` flag, and `simemu`
+  never invokes `xcrun simctl shutdown all` style sweeps that would nuke
+  sibling-claimed devices.
+- Pass the issued `claim_token` back via `SIMEMU_SESSION_TOKEN=$TOKEN` on
+  `simemu do` calls to enforce strict ownership (rejects calls that don't
+  match the token issued at claim time). The check is opt-in — by default
+  the session id alone is treated as the bearer credential.
+
 ---
 
 ## Architecture
