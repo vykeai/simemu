@@ -314,16 +314,79 @@ def open_url(udid: str, url: str) -> None:
     _simctl("openurl", udid, url)
 
 
-def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> bool:
-    """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff."""
-    _ensure_booted(udid)
-    for _ in range(attempts):
+_SIMCTL_UI_ALERT_AVAILABLE: Optional[bool] = None
+
+
+def _simctl_ui_alert_available() -> bool:
+    """Return True iff `xcrun simctl ui ... alert` is a known subcommand.
+
+    Xcode 26.5+ removed `simctl ui alert`. Calling it returns nonzero with a
+    stderr like `error: unknown subcommand 'alert'`. We probe once per process
+    and cache. T-LU-262: silently no-oping was masking a real automation gap.
+    """
+    global _SIMCTL_UI_ALERT_AVAILABLE
+    if _SIMCTL_UI_ALERT_AVAILABLE is not None:
+        return _SIMCTL_UI_ALERT_AVAILABLE
+    try:
         result = subprocess.run(
-            ["xcrun", "simctl", "ui", udid, "alert", "accept"],
-            capture_output=True, text=True, check=False,
+            ["xcrun", "simctl", "ui", "--help"],
+            capture_output=True, text=True, check=False, timeout=5,
         )
-        if result.returncode == 0:
-            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        _SIMCTL_UI_ALERT_AVAILABLE = False
+        return False
+    combined = (result.stdout or "") + (result.stderr or "")
+    # `simctl ui --help` on supporting Xcode versions lists "alert" as a
+    # subcommand. On Xcode 26.5 the help no longer mentions it.
+    _SIMCTL_UI_ALERT_AVAILABLE = "alert" in combined
+    return _SIMCTL_UI_ALERT_AVAILABLE
+
+
+def _reset_simctl_ui_alert_cache() -> None:
+    """Test hook: clear the cached availability probe."""
+    global _SIMCTL_UI_ALERT_AVAILABLE
+    _SIMCTL_UI_ALERT_AVAILABLE = None
+
+
+# Labels iOS uses on its confirmation overlays, grouped by intended verdict.
+_ACCEPT_LABELS = ["Open", "Continue", "Allow", "OK", "Allow Once",
+                  "Allow While Using App", "Always Allow"]
+_DENY_LABELS = ["Don’t Allow", "Cancel", "Not Now", "Close", "Deny"]
+
+
+def ios26_alert_unreachable_error(verdict: str) -> RuntimeError:
+    """Build the standard 'no working path' error for T-LU-262.
+
+    Public — callable across module boundaries (session.py dispatches to this
+    from the accept-alert handler).
+    """
+    return RuntimeError(
+        f"iOS system permission overlay could not be {verdict} by any automation "
+        "tool we tested: xcrun simctl ui alert (removed in Xcode 26.5+), "
+        "AppleScript click_system_alert_button, Maestro tapOn, and Quartz "
+        "CGEventPost all failed. See T-LU-262 for context. Use TCC pre-grant or "
+        "plist pre-seed instead, or run on iOS <26."
+    )
+
+
+def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> bool:
+    """Best-effort accept of iOS system confirmation alerts after openurl/deeplink handoff.
+
+    Returns True when either simctl or an AppleScript fallback succeeded.
+    Returns False when every retry exhausted with no path working — callers
+    should treat that as the T-LU-262 unreachable-alert case and surface a
+    RuntimeError rather than silently report success.
+    """
+    _ensure_booted(udid)
+    simctl_available = _simctl_ui_alert_available()
+    for _ in range(attempts):
+        if simctl_available:
+            result = subprocess.run(
+                ["xcrun", "simctl", "ui", udid, "alert", "accept"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0:
+                return True
         if _click_open_app_alert_button(udid):
             return True
         time.sleep(delay)
@@ -338,6 +401,47 @@ def click_system_alert_button(udid: str, labels: list[str], attempts: int = 3, d
             return True
         time.sleep(delay)
     return False
+
+
+def dismiss_system_alert(udid: str, verdict: str) -> dict:
+    """Accept or deny an on-screen iOS system permission alert, raising loudly when nothing works.
+
+    verdict: "accept" or "deny".
+
+    T-LU-262: on Xcode 26.5+ the `simctl ui alert` subcommand was removed, and
+    every AppleScript / Maestro / Quartz fallback also fails to actually
+    dismiss iOS 26.4+ permission overlays. Previously we silently returned
+    "denied" or "accepted" without taking any action. Now we surface the
+    failure as a RuntimeError so callers can take it seriously (e.g. pre-grant
+    TCC, pre-seed plists, or run on iOS <26).
+
+    Returns a dict like {"status": "accepted"|"denied", "method": <how>}.
+    """
+    if verdict not in ("accept", "deny"):
+        raise ValueError(f"verdict must be 'accept' or 'deny', got {verdict!r}")
+    _ensure_booted(udid)
+
+    method: Optional[str] = None
+    simctl_alert_ok = _simctl_ui_alert_available()
+    if simctl_alert_ok:
+        result = subprocess.run(
+            ["xcrun", "simctl", "ui", udid, "alert", verdict],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0:
+            method = "simctl"
+
+    if method is None:
+        labels = _ACCEPT_LABELS if verdict == "accept" else _DENY_LABELS
+        if click_system_alert_button(udid, labels):
+            method = "applescript"
+
+    if method is None:
+        raise ios26_alert_unreachable_error(
+            "accepted" if verdict == "accept" else "denied"
+        )
+
+    return {"status": "accepted" if verdict == "accept" else "denied", "method": method}
 
 
 def wait_for_foreground_app(
@@ -392,14 +496,14 @@ def _click_open_app_alert_button(udid: str) -> bool:
 
 def _click_alert_button(udid: str, labels: list[str]) -> bool:
     """Best-effort accessibility click for a visible iOS Simulator alert button."""
-    device_name = _escape_applescript(_get_device_name(udid))
+    window_match = _sim_window_match(_get_device_name(udid))
     label_literals = ", ".join(f'"{label}"' for label in labels)
     script = f'''
 tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
         try
-            set targetWindow to first window whose name contains "{device_name}"
+            set targetWindow to first window whose {window_match}
         on error
             return ""
         end try
@@ -440,14 +544,14 @@ def _click_sheet_button(udid: str, labels: list[str]) -> bool:
     iOS 26 presents URL-confirmation sheets as AXSheet with nested groups.
     This walks all elements looking for AXButton matching the given labels.
     """
-    device_name = _escape_applescript(_get_device_name(udid))
+    window_match = _sim_window_match(_get_device_name(udid))
     label_literals = ", ".join(f'"{label}"' for label in labels)
     script = f'''
 tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
         try
-            set targetWindow to first window whose name contains "{device_name}"
+            set targetWindow to first window whose {window_match}
         on error
             return ""
         end try
@@ -843,6 +947,22 @@ def _escape_applescript(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"')
 
 
+def _sim_window_match(device_name: str) -> str:
+    """AppleScript predicate that matches the Simulator window for `device_name` exactly.
+
+    Simulator window titles take the form '<device-name> (<runtime>)', e.g.
+    'iPhone 17 (26.5)'. A naive `name contains "iPhone 17"` greedy-matches
+    'iPhone 17 Pro (26.5)' too. T-LU-263: anchor on an exact name OR a name
+    that starts with '<device-name> (' so 'iPhone 17' never picks up
+    'iPhone 17 Pro'.
+
+    The returned string is an AppleScript expression suitable for use as
+    `whose <expr>` (it already contains the boolean operators).
+    """
+    escaped = _escape_applescript(device_name)
+    return f'(name is "{escaped}" or name starts with "{escaped} (")'
+
+
 def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     """Activate Simulator and raise the target window for reliable text focus.
 
@@ -850,14 +970,14 @@ def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
     (e.g. window not yet created after boot, Simulator still launching).
     """
     import subprocess as _sp
-    escaped = _escape_applescript(device_name)
+    window_match = _sim_window_match(device_name)
     for attempt in range(max_retries + 1):
         result = _sp.run(
             ["osascript", "-e", f'''tell application "System Events"
     tell application "Simulator" to activate
     delay {0.15 + attempt * 0.1}
     tell process "Simulator"
-        perform action "AXRaise" of (first window whose name contains "{escaped}")
+        perform action "AXRaise" of (first window whose {window_match})
     end tell
 end tell'''],
             capture_output=True, text=True, check=False,
@@ -1134,13 +1254,14 @@ def _get_sim_bounds(udid: str) -> tuple[float, float, float, float]:
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
 
     # Primary approach: find the AXGroup content area (excludes toolbar/chrome)
     r = _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set grp to first UI element of w whose role is "AXGroup"
         set p to position of grp
         set s to size of grp
@@ -1163,7 +1284,7 @@ end tell''',
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set p to position of w
         set s to size of w
         return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
@@ -1209,11 +1330,12 @@ def _get_window_frame(udid: str) -> tuple[float, float, float, float]:
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
     r = _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set p to position of w
         set s to size of w
         return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
@@ -1237,7 +1359,12 @@ end tell''',
         for window in windows:
             owner = str(window.get("kCGWindowOwnerName") or "")
             name = str(window.get("kCGWindowName") or "")
-            if owner != "Simulator" or device_name not in name:
+            # T-LU-263: match exactly or with the parenthesised runtime suffix
+            # (e.g. 'iPhone 17 (26.5)') so 'iPhone 17' never picks up
+            # 'iPhone 17 Pro'.
+            if owner != "Simulator" or not (
+                name == device_name or name.startswith(f"{device_name} (")
+            ):
                 continue
             bounds = window.get("kCGWindowBounds") or {}
             width = float(bounds.get("Width", 0))
@@ -1273,11 +1400,12 @@ def _set_window_frame(udid: str, x: float, y: float, width: float, height: float
     import subprocess as _sp
 
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
     _sp.run([
         "osascript", "-e",
         f'''tell application "System Events"
     tell process "Simulator"
-        set w to first window whose name contains "{device_name}"
+        set w to first window whose {window_match}
         set position of w to {{{int(x)}, {int(y)}}}
         set size of w to {{{int(width)}, {int(height)}}}
         perform action "AXRaise" of w
@@ -2009,10 +2137,11 @@ def focus(udid: str) -> None:
     import subprocess as _sp
     _open_sim_window(udid)
     device_name = _get_device_name(udid)
+    window_match = _sim_window_match(device_name)
     _sp.run(["osascript", "-e", f'''tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
-        perform action "AXRaise" of (first window whose name contains "{device_name}")
+        perform action "AXRaise" of (first window whose {window_match})
     end tell
 end tell'''], capture_output=True, check=False)
 

@@ -277,9 +277,10 @@ class IOSControlTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "never became a live iOS process"):
                 ios._wait_for_app_running("SIM-001", "app.fitkind.dev", timeout=0.2, delay=0.01)
 
+    @patch("simemu.ios._simctl_ui_alert_available", return_value=True)
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
-    def test_accept_open_app_alert_returns_true_on_first_success(self, mock_run, mock_booted) -> None:
+    def test_accept_open_app_alert_returns_true_on_first_success(self, mock_run, mock_booted, mock_available) -> None:
         mock_run.return_value = Mock(returncode=0)
         with patch("simemu.ios._click_open_app_alert_button", return_value=False) as mock_click:
             with patch("simemu.ios.time.sleep"):
@@ -288,9 +289,10 @@ class IOSControlTests(unittest.TestCase):
         # Early exit — should only call once since simctl succeeded
         self.assertEqual(1, mock_run.call_count)
 
+    @patch("simemu.ios._simctl_ui_alert_available", return_value=True)
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
-    def test_accept_open_app_alert_uses_button_fallback(self, mock_run, mock_booted) -> None:
+    def test_accept_open_app_alert_uses_button_fallback(self, mock_run, mock_booted, mock_available) -> None:
         mock_run.return_value = Mock(returncode=1)
         with patch("simemu.ios._click_open_app_alert_button", return_value=True) as mock_click:
             with patch("simemu.ios.time.sleep"):
@@ -298,6 +300,20 @@ class IOSControlTests(unittest.TestCase):
         self.assertTrue(accepted)
         # Early exit on first button click success
         self.assertEqual(1, mock_run.call_count)
+        self.assertEqual(1, mock_click.call_count)
+
+    @patch("simemu.ios._simctl_ui_alert_available", return_value=False)
+    @patch("simemu.ios._ensure_booted")
+    @patch("simemu.ios.subprocess.run")
+    def test_accept_open_app_alert_skips_simctl_on_xcode_26_5(self, mock_run, mock_booted, mock_available) -> None:
+        # Code-review HIGH (T-LU-262 follow-up): when simctl ui alert is not
+        # available, accept_open_app_alert MUST NOT shell out to the missing
+        # subcommand — that's the same waste fixed for dismiss_system_alert.
+        with patch("simemu.ios._click_open_app_alert_button", return_value=True) as mock_click:
+            with patch("simemu.ios.time.sleep"):
+                accepted = ios.accept_open_app_alert("SIM-001", attempts=3, delay=0.01)
+        self.assertTrue(accepted)
+        self.assertEqual(0, mock_run.call_count)
         self.assertEqual(1, mock_click.call_count)
 
     @patch("simemu.ios._ensure_booted")
@@ -399,6 +415,124 @@ class BriefFocusTests(unittest.TestCase):
              patch("simemu.ios._activate_app"):
             with ios._with_brief_focus("SIM-001", action="tap"):
                 mock_raise.assert_called_once_with("iPhone 17 Pro")
+
+
+class SimWindowMatchTests(unittest.TestCase):
+    """T-LU-263: AppleScript predicate must not greedy-match sibling device names."""
+
+    def test_predicate_is_exact_or_starts_with_paren(self) -> None:
+        clause = ios._sim_window_match("iPhone 17")
+        # Must anchor on equality or the parenthesised runtime suffix.
+        self.assertIn('name is "iPhone 17"', clause)
+        self.assertIn('name starts with "iPhone 17 ("', clause)
+        # Must NOT use the greedy `contains` operator.
+        self.assertNotIn("contains", clause)
+
+    def test_predicate_escapes_quotes(self) -> None:
+        clause = ios._sim_window_match('Weird "Sim"')
+        # Quotes get backslash-escaped for safe AppleScript interpolation.
+        self.assertIn(r'\"Sim\"', clause)
+
+
+class DismissSystemAlertTests(unittest.TestCase):
+    """T-LU-262: raise loudly when no automation path can dismiss an iOS 26 alert."""
+
+    def setUp(self) -> None:
+        ios._reset_simctl_ui_alert_cache()
+
+    def tearDown(self) -> None:
+        ios._reset_simctl_ui_alert_cache()
+
+    def _fake_simctl_run_factory(self, alert_available: bool, simctl_alert_returncode: int = 0):
+        """Build a fake subprocess.run that simulates the simctl ui surface."""
+        def fake_run(cmd, *args, **kwargs):
+            result = Mock()
+            result.stdout = ""
+            result.stderr = ""
+            result.returncode = 0
+            if cmd[:3] == ["xcrun", "simctl", "ui"] and len(cmd) >= 4 and cmd[3] == "--help":
+                if alert_available:
+                    result.stdout = "USAGE: simctl ui <device> alert | appearance | ...\n"
+                else:
+                    # Xcode 26.5 help no longer lists `alert`.
+                    result.stdout = "USAGE: simctl ui <device> appearance | content_size\n"
+                return result
+            if cmd[:3] == ["xcrun", "simctl", "ui"] and "alert" in cmd:
+                if not alert_available:
+                    result.returncode = 64
+                    result.stderr = "error: unknown subcommand 'alert'\n"
+                else:
+                    result.returncode = simctl_alert_returncode
+                return result
+            return result
+        return fake_run
+
+    def test_subcommand_unavailable_detected(self) -> None:
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=False)):
+            self.assertFalse(ios._simctl_ui_alert_available())
+
+    def test_subcommand_available_detected(self) -> None:
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=True)):
+            self.assertTrue(ios._simctl_ui_alert_available())
+
+    def test_availability_is_cached_per_process(self) -> None:
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=False)) as run:
+            ios._simctl_ui_alert_available()
+            ios._simctl_ui_alert_available()
+            ios._simctl_ui_alert_available()
+            # Probe runs exactly once even if queried repeatedly.
+            help_calls = [c for c in run.call_args_list
+                          if c.args[0][:4] == ["xcrun", "simctl", "ui", "--help"]]
+            self.assertEqual(len(help_calls), 1)
+
+    def test_raises_when_simctl_missing_and_applescript_fails(self) -> None:
+        """Xcode 26.5 + iOS 26 + every fallback failing => RuntimeError, not silent denial."""
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=False)), \
+             patch("simemu.ios._ensure_booted"), \
+             patch("simemu.ios.click_system_alert_button", return_value=False):
+            with self.assertRaises(RuntimeError) as ctx:
+                ios.dismiss_system_alert("SIM-26", "deny")
+            msg = str(ctx.exception)
+            self.assertIn("T-LU-262", msg)
+            self.assertIn("simctl ui alert", msg)
+
+    def test_raises_for_accept_when_no_path_works(self) -> None:
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=False)), \
+             patch("simemu.ios._ensure_booted"), \
+             patch("simemu.ios.click_system_alert_button", return_value=False):
+            with self.assertRaises(RuntimeError):
+                ios.dismiss_system_alert("SIM-26", "accept")
+
+    def test_succeeds_via_simctl_when_available(self) -> None:
+        """iOS <26 / Xcode <26.5: keep working through the simctl path."""
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=True)), \
+             patch("simemu.ios._ensure_booted"), \
+             patch("simemu.ios.click_system_alert_button", return_value=False) as click:
+            result = ios.dismiss_system_alert("SIM-OLD", "deny")
+            self.assertEqual(result["status"], "denied")
+            self.assertEqual(result["method"], "simctl")
+            click.assert_not_called()
+
+    def test_succeeds_via_applescript_fallback(self) -> None:
+        """If simctl is missing but AppleScript clicks the button, no error."""
+        with patch("simemu.ios.subprocess.run",
+                   side_effect=self._fake_simctl_run_factory(alert_available=False)), \
+             patch("simemu.ios._ensure_booted"), \
+             patch("simemu.ios.click_system_alert_button", return_value=True) as click:
+            result = ios.dismiss_system_alert("SIM-26", "deny")
+            self.assertEqual(result["status"], "denied")
+            self.assertEqual(result["method"], "applescript")
+            click.assert_called_once()
+
+    def test_rejects_invalid_verdict(self) -> None:
+        with self.assertRaises(ValueError):
+            ios.dismiss_system_alert("SIM-X", "maybe")
 
 
 if __name__ == "__main__":

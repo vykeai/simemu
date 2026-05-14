@@ -1682,16 +1682,29 @@ class TestDoStatusBar(DoCommandBase):
 
 
 class TestDoDismissAlert(DoCommandBase):
-    @patch("simemu.session.ios.click_system_alert_button")
-    @patch("subprocess.run")
+    @patch("simemu.session.ios.dismiss_system_alert",
+           return_value={"status": "denied", "method": "applescript"})
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_dismiss_alert_ios(self, mock_serial, mock_run, mock_click) -> None:
+    def test_do_dismiss_alert_ios(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262: dismiss routes through ios.dismiss_system_alert, which
+        # raises if no automation path actually clicked anything.
         result = do_command("s-test01", "dismiss-alert", [])
         self.assertEqual(result["status"], "dismissed")
-        # Verify xcrun simctl ui was called
-        cmd_args = mock_run.call_args[0][0]
-        self.assertIn("simctl", cmd_args)
-        mock_click.assert_called_once()
+        # The dict-union in session.py preserves "method" from the inner call
+        # while overriding "status" to the verb the caller used ("dismissed").
+        # Code-review MED during T-LU-262 review: this invariant must stay tested.
+        self.assertEqual(result["method"], "applescript")
+        mock_dismiss.assert_called_once_with("AAA-111", "deny")
+
+    @patch("simemu.session.ios.dismiss_system_alert",
+           side_effect=RuntimeError("T-LU-262: iOS 26 alert unreachable"))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_dismiss_alert_ios_raises_when_no_path_works(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262 (the actual fix): when every automation path fails we
+        # surface a RuntimeError rather than silently report 'dismissed'.
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "dismiss-alert", [])
+        self.assertIn("T-LU-262", str(ctx.exception))
 
     @patch("subprocess.run")
     @patch("simemu.session.android.get_serial", return_value="emulator-5554")
@@ -1707,31 +1720,56 @@ class TestDoDismissAlert(DoCommandBase):
 
 
 class TestDoAcceptAlert(DoCommandBase):
-    @patch("simemu.session.ios.accept_open_app_alert")
+    @patch("simemu.session.ios.dismiss_system_alert",
+           return_value={"status": "accepted", "method": "applescript"})
     @patch("simemu.session.ios.complete_open_url_handoff", return_value=True)
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_accept_alert(self, mock_serial, mock_complete, mock_accept) -> None:
+        # T-LU-262 / codex P2 (2026-05-14): accept-alert routes through
+        # dismiss_system_alert("accept") so the broader _ACCEPT_LABELS
+        # (Allow Once / Allow While Using App / Always Allow) are tried,
+        # not just the narrow Open/Continue/Allow/OK subset.
         sf = Path(self.tmpdir.name) / "sessions.json"
         data = json.loads(sf.read_text())
         data["sessions"]["s-test01"]["last_app"] = "app.fitkind.dev"
         sf.write_text(json.dumps(data))
         result = do_command("s-test01", "accept-alert", [])
-        mock_accept.assert_called_once_with("AAA-111", attempts=2, delay=0.35)
+        mock_accept.assert_called_once_with("AAA-111", "accept")
         mock_complete.assert_called_once_with("AAA-111", "app.fitkind.dev", attempts=3, foreground_timeout=1.0)
         self.assertEqual(result["status"], "accepted")
+        # method propagation invariant — same as TestDoDismissAlert.
+        self.assertEqual(result["method"], "applescript")
+
+    @patch("simemu.session.ios.dismiss_system_alert",
+           side_effect=RuntimeError("T-LU-262: iOS 26 alert unreachable"))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_accept_alert_raises_when_no_path_works(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262: explicit failure beats silent 'accepted'.
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "accept-alert", [])
+        self.assertIn("T-LU-262", str(ctx.exception))
 
 
 # ── deny-alert ───────────────────────────────────────────────────────────────
 
 
 class TestDoDenyAlert(DoCommandBase):
-    @patch("simemu.session.ios.click_system_alert_button")
-    @patch("subprocess.run")
+    @patch("simemu.session.ios.dismiss_system_alert",
+           return_value={"status": "denied", "method": "simctl"})
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
-    def test_do_deny_alert(self, mock_serial, mock_run, mock_click) -> None:
+    def test_do_deny_alert(self, mock_serial, mock_dismiss) -> None:
         result = do_command("s-test01", "deny-alert", [])
         self.assertEqual(result["status"], "denied")
-        mock_click.assert_called_once()
+        mock_dismiss.assert_called_once_with("AAA-111", "deny")
+
+    @patch("simemu.session.ios.dismiss_system_alert",
+           side_effect=RuntimeError("T-LU-262: iOS 26 alert unreachable"))
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_do_deny_alert_raises_when_no_path_works(self, mock_serial, mock_dismiss) -> None:
+        # T-LU-262: explicit failure beats silent 'denied'.
+        with self.assertRaises(RuntimeError) as ctx:
+            do_command("s-test01", "deny-alert", [])
+        self.assertIn("T-LU-262", str(ctx.exception))
 
 
 # ── grant-all ────────────────────────────────────────────────────────────────

@@ -1614,13 +1614,14 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
         session = touch(session_id)
         if not session.real_device and session.platform in ("ios", "watchos", "tvos", "visionos"):
             import subprocess
+            window_match = ios._sim_window_match(session.device_name)
             subprocess.run([
                 "osascript", "-e",
                 f'''tell application "Simulator" to activate
 tell application "System Events"
     tell process "Simulator"
         try
-            set w to first window whose name contains "{session.device_name}"
+            set w to first window whose {window_match}
             set miniaturized of w to false
             perform action "AXRaise" of w
         end try
@@ -2311,10 +2312,11 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "dismiss-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            # Try simctl ui alert dismiss, fall back to Maestro
-            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
-                     capture_output=True, check=False)
-            ios.click_system_alert_button(sim_id, ["Cancel", "Not Now", "Close", "Don’t Allow"])
+            # T-LU-262: dismiss = deny intent; raise if no path actually worked.
+            # Dict-union preserves "method" from the inner call (which path
+            # actually clicked the button) and overrides "status" to "dismissed"
+            # for caller-API consistency. See TestDoDismissAlert.
+            return ios.dismiss_system_alert(sim_id, "deny") | {"status": "dismissed"}
         else:
             # Android: press Enter key to dismiss
             _sp.run(["adb", "-s", _android_serial_for_session(),
@@ -2325,12 +2327,23 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "accept-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35)
+            # T-LU-262: route through dismiss_system_alert("accept") so the
+            # broader _ACCEPT_LABELS (Allow Once / Allow While Using App /
+            # Always Allow) are tried, not just the narrow Open/Continue/Allow/OK
+            # subset that accept_open_app_alert covers. dismiss_system_alert
+            # already raises ios26_alert_unreachable_error on total failure.
+            # Codex adversarial P2 (2026-05-14): the previous version failed
+            # on real iOS permission dialogs whose affirmative button is one
+            # of the "Allow * Using App" variants.
+            result = ios.dismiss_system_alert(sim_id, "accept")
             expected_bundle = None
             with _locked_sessions() as (data, save):
                 expected_bundle = data["sessions"].get(session_id, {}).get("last_app")
             if expected_bundle:
                 ios.complete_open_url_handoff(sim_id, expected_bundle, attempts=3, foreground_timeout=1.0)
+            # Mirror the dismiss-alert shape: keep "method" from the inner
+            # call, override "status" to the caller-facing verb "accepted".
+            return result | {"status": "accepted"}
         else:
             _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
@@ -2340,9 +2353,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "deny-alert":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "deny"],
-                     capture_output=True, check=False)
-            ios.click_system_alert_button(sim_id, ["Don’t Allow", "Cancel", "Not Now", "Close"])
+            # T-LU-262: returns {"status":"denied", ...} or raises RuntimeError.
+            return ios.dismiss_system_alert(sim_id, "deny")
         else:
             _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_BACK"],
