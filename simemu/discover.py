@@ -255,13 +255,16 @@ class NoSimulatorAvailable(RuntimeError):
     pass
 
 
-class AmbiguousDeviceSelector(RuntimeError):
+class AmbiguousDeviceSelector(NoSimulatorAvailable):
     """Raised when --device <X> substring-matches multiple distinct device names.
 
     T-LU-263: previously, `--device 'iPhone 17'` greedily resolved to
     'iPhone 17 Pro' when both 'iPhone 17' and 'iPhone 17 Pro' were available.
     Now we require either an exact device-name match (case-insensitive) or a
     substring match that resolves to a single distinct device name.
+
+    Subclasses NoSimulatorAvailable so server.py maps ambiguous selectors to
+    HTTP 409 (user error) rather than 500 (server fault).
     """
     pass
 

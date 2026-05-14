@@ -277,9 +277,10 @@ class IOSControlTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "never became a live iOS process"):
                 ios._wait_for_app_running("SIM-001", "app.fitkind.dev", timeout=0.2, delay=0.01)
 
+    @patch("simemu.ios._simctl_ui_alert_available", return_value=True)
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
-    def test_accept_open_app_alert_returns_true_on_first_success(self, mock_run, mock_booted) -> None:
+    def test_accept_open_app_alert_returns_true_on_first_success(self, mock_run, mock_booted, mock_available) -> None:
         mock_run.return_value = Mock(returncode=0)
         with patch("simemu.ios._click_open_app_alert_button", return_value=False) as mock_click:
             with patch("simemu.ios.time.sleep"):
@@ -288,9 +289,10 @@ class IOSControlTests(unittest.TestCase):
         # Early exit — should only call once since simctl succeeded
         self.assertEqual(1, mock_run.call_count)
 
+    @patch("simemu.ios._simctl_ui_alert_available", return_value=True)
     @patch("simemu.ios._ensure_booted")
     @patch("simemu.ios.subprocess.run")
-    def test_accept_open_app_alert_uses_button_fallback(self, mock_run, mock_booted) -> None:
+    def test_accept_open_app_alert_uses_button_fallback(self, mock_run, mock_booted, mock_available) -> None:
         mock_run.return_value = Mock(returncode=1)
         with patch("simemu.ios._click_open_app_alert_button", return_value=True) as mock_click:
             with patch("simemu.ios.time.sleep"):
@@ -298,6 +300,20 @@ class IOSControlTests(unittest.TestCase):
         self.assertTrue(accepted)
         # Early exit on first button click success
         self.assertEqual(1, mock_run.call_count)
+        self.assertEqual(1, mock_click.call_count)
+
+    @patch("simemu.ios._simctl_ui_alert_available", return_value=False)
+    @patch("simemu.ios._ensure_booted")
+    @patch("simemu.ios.subprocess.run")
+    def test_accept_open_app_alert_skips_simctl_on_xcode_26_5(self, mock_run, mock_booted, mock_available) -> None:
+        # Code-review HIGH (T-LU-262 follow-up): when simctl ui alert is not
+        # available, accept_open_app_alert MUST NOT shell out to the missing
+        # subcommand — that's the same waste fixed for dismiss_system_alert.
+        with patch("simemu.ios._click_open_app_alert_button", return_value=True) as mock_click:
+            with patch("simemu.ios.time.sleep"):
+                accepted = ios.accept_open_app_alert("SIM-001", attempts=3, delay=0.01)
+        self.assertTrue(accepted)
+        self.assertEqual(0, mock_run.call_count)
         self.assertEqual(1, mock_click.call_count)
 
     @patch("simemu.ios._ensure_booted")

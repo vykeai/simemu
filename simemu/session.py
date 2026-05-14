@@ -2313,6 +2313,9 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
             # T-LU-262: dismiss = deny intent; raise if no path actually worked.
+            # Dict-union preserves "method" from the inner call (which path
+            # actually clicked the button) and overrides "status" to "dismissed"
+            # for caller-API consistency. See TestDoDismissAlert.
             return ios.dismiss_system_alert(sim_id, "deny") | {"status": "dismissed"}
         else:
             # Android: press Enter key to dismiss
@@ -2327,7 +2330,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             # T-LU-262: raise loudly when no path actually pressed Allow/Open
             # so callers don't think the alert was handled when it wasn't.
             if not ios.accept_open_app_alert(sim_id, attempts=2, delay=0.35):
-                raise ios._ios26_alert_unreachable_error("accepted")
+                raise ios.ios26_alert_unreachable_error("accepted")
             expected_bundle = None
             with _locked_sessions() as (data, save):
                 expected_bundle = data["sessions"].get(session_id, {}).get("last_app")

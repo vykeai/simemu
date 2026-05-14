@@ -1690,6 +1690,10 @@ class TestDoDismissAlert(DoCommandBase):
         # raises if no automation path actually clicked anything.
         result = do_command("s-test01", "dismiss-alert", [])
         self.assertEqual(result["status"], "dismissed")
+        # The dict-union in session.py preserves "method" from the inner call
+        # while overriding "status" to the verb the caller used ("dismissed").
+        # Code-review MED during T-LU-262 review: this invariant must stay tested.
+        self.assertEqual(result["method"], "applescript")
         mock_dismiss.assert_called_once_with("AAA-111", "deny")
 
     @patch("simemu.session.ios.dismiss_system_alert",

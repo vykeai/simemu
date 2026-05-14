@@ -354,8 +354,12 @@ _ACCEPT_LABELS = ["Open", "Continue", "Allow", "OK", "Allow Once",
 _DENY_LABELS = ["Don’t Allow", "Cancel", "Not Now", "Close", "Deny"]
 
 
-def _ios26_alert_unreachable_error(verdict: str) -> RuntimeError:
-    """Build the standard 'no working path' error for T-LU-262."""
+def ios26_alert_unreachable_error(verdict: str) -> RuntimeError:
+    """Build the standard 'no working path' error for T-LU-262.
+
+    Public — callable across module boundaries (session.py dispatches to this
+    from the accept-alert handler).
+    """
     return RuntimeError(
         f"iOS system permission overlay could not be {verdict} by any automation "
         "tool we tested: xcrun simctl ui alert (removed in Xcode 26.5+), "
@@ -374,13 +378,15 @@ def accept_open_app_alert(udid: str, attempts: int = 4, delay: float = 0.6) -> b
     RuntimeError rather than silently report success.
     """
     _ensure_booted(udid)
+    simctl_available = _simctl_ui_alert_available()
     for _ in range(attempts):
-        result = subprocess.run(
-            ["xcrun", "simctl", "ui", udid, "alert", "accept"],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode == 0:
-            return True
+        if simctl_available:
+            result = subprocess.run(
+                ["xcrun", "simctl", "ui", udid, "alert", "accept"],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0:
+                return True
         if _click_open_app_alert_button(udid):
             return True
         time.sleep(delay)
@@ -431,7 +437,7 @@ def dismiss_system_alert(udid: str, verdict: str) -> dict:
             method = "applescript"
 
     if method is None:
-        raise _ios26_alert_unreachable_error(
+        raise ios26_alert_unreachable_error(
             "accepted" if verdict == "accept" else "denied"
         )
 
