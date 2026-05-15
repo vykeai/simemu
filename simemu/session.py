@@ -15,6 +15,7 @@ import re
 import secrets
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
@@ -409,6 +410,30 @@ def _run_maestro_process(cmd: list[str], env: dict[str, str]):
         debug_output.mkdir(parents=True, exist_ok=True)
         (debug_output / "simemu-command.log").write_text(stdout + stderr)
     return result
+
+
+def _start_session_keepalive(session_id: str, interval_seconds: int = 30):
+    """Keep long-running device commands from expiring mid-process."""
+    stop = threading.Event()
+
+    def keepalive() -> None:
+        while not stop.wait(interval_seconds):
+            now = _now_iso()
+            try:
+                with _locked_sessions() as (data, save):
+                    raw = data.get("sessions", {}).get(session_id)
+                    if not raw or raw.get("status") in ("expired", "released"):
+                        return
+                    raw["heartbeat_at"] = now
+                    raw["status"] = "active"
+                    raw["expires_at"] = _compute_expires_at("active", now)
+                    save(data)
+            except Exception:
+                return
+
+    thread = threading.Thread(target=keepalive, name=f"simemu-keepalive-{session_id}", daemon=True)
+    thread.start()
+    return stop
 
 
 def _stabilize_android_maestro_driver(device_id: str) -> None:
@@ -1980,6 +2005,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     extra_args=extra_args,
                 )
                 _stabilize_android_maestro_driver(device_id)
+            keepalive_stop = _start_session_keepalive(session_id)
             try:
                 result = _run_maestro_process(cmd, env)
             except _sp.TimeoutExpired:
@@ -2001,6 +2027,8 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                         failure_class="mobile-flow-timeout",
                     ),
                 }
+            finally:
+                keepalive_stop.set()
             if result.returncode != 0:
                 error = _summarize_maestro_failure(
                     session_id=session_id,
