@@ -501,12 +501,12 @@ def v2_sessions():
     return [s.to_agent_json() for s in sessions.values()]
 
 
-@app.get("/v2/leases", summary="List active Codeuctor device leases")
+@app.get("/v2/leases", summary="List active orchestration device leases")
 def v2_list_leases():
     return [lease.to_json() for lease in list_device_leases()]
 
 
-@app.post("/v2/leases", summary="Claim a Codeuctor device lease")
+@app.post("/v2/leases", summary="Claim a orchestration device lease")
 def v2_claim_lease(req: V2LeaseClaimRequest):
     try:
         state.check_maintenance()
@@ -537,7 +537,7 @@ def v2_claim_lease(req: V2LeaseClaimRequest):
     return lease.to_json()
 
 
-@app.delete("/v2/leases/{lease_id}", summary="Release a Codeuctor device lease")
+@app.delete("/v2/leases/{lease_id}", summary="Release a orchestration device lease")
 def v2_release_lease(lease_id: str):
     try:
         lease = release_device_lease(lease_id)

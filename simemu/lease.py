@@ -1,4 +1,4 @@
-"""Codeuctor-facing device lease API.
+"""orchestration-facing device lease API.
 
 Leases are a machine-readable facade over v2 sessions. The session layer still
 owns allocation, booting, duplicate-device protection, and release semantics.
@@ -53,7 +53,7 @@ class DeviceLease:
 
 
 def claim_device_lease(spec: LeaseClaimSpec) -> DeviceLease:
-    """Claim a simulator/device lease and persist Codeuctor metadata."""
+    """Claim a simulator/device lease and persist orchestration metadata."""
     host = spec.host or socket.gethostname()
     run_id = spec.run_id or os.environ.get("SIMEMU_RUN_ID", "")
     ttl = max(1, spec.expires_in_seconds or DEFAULT_LEASE_TTL_SECONDS)
@@ -103,7 +103,7 @@ def release_device_lease(lease_id: str) -> DeviceLease:
 
 
 def list_device_leases() -> list[DeviceLease]:
-    """Return active/idle/parked leases visible to Codeuctor."""
+    """Return active/idle/parked leases visible to orchestration clients."""
     sessions = session_module.get_active_sessions()
     raw_sessions = session_module._read_sessions_raw().get("sessions", {})
     return [

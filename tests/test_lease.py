@@ -13,7 +13,7 @@ def _session(**overrides) -> Session:
         "form_factor": "phone",
         "os_version": None,
         "real_device": False,
-        "label": "codeuctor",
+        "label": "orchestration",
         "status": "active",
         "sim_id": "UDID-001",
         "device_name": "iPhone 16 Pro",
@@ -87,7 +87,7 @@ class LeaseTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.error_type, "lease_not_found")
 
-    def test_release_device_lease_preserves_codeuctor_metadata(self) -> None:
+    def test_release_device_lease_preserves_orchestration_metadata(self) -> None:
         from simemu.lease import release_device_lease
 
         raw = {

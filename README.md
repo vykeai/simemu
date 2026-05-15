@@ -211,7 +211,7 @@ All commands use the format: `simemu do $SESSION <command> [args...]`
 | `log-crash [bundle]` | Most recent crash report |
 
 `screenshot`, `proof`, and `maestro` results include a
-`simemu.mobile-proof.v1` artifact envelope for Codeuctor, Atlas, Sentinel, and
+`simemu.mobile-proof.v1` artifact envelope for automation clients, Atlas, Sentinel, and
 Proofy. The envelope binds the artifact to the active lease/session, device,
 boot state, connection identifier, optional build artifact, timestamp, and
 SHA-256 file metadata when a screenshot or build artifact exists.
@@ -316,12 +316,12 @@ simemu auto-starts a background API server on `127.0.0.1:8765`:
 POST /v2/claim    -> ClaimSpec body -> Session JSON
 POST /v2/do       -> {session, command, args} -> result
 GET  /v2/sessions -> list all active sessions
-POST /v2/leases   -> Codeuctor lease claim -> DeviceLease JSON
-GET  /v2/leases   -> list active Codeuctor leases
-DELETE /v2/leases/{lease_id} -> release a Codeuctor lease
+POST /v2/leases   -> orchestration lease claim -> DeviceLease JSON
+GET  /v2/leases   -> list active orchestration leases
+DELETE /v2/leases/{lease_id} -> release a orchestration lease
 ```
 
-Codeuctor should use leases when it needs host/run/expiry metadata:
+Automation clients should use leases when it needs host/run/expiry metadata:
 
 ```bash
 simemu lease claim ios --host mac-studio --run-id cdx-123 --expires-in 3600

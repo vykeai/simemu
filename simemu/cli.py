@@ -370,7 +370,7 @@ def cmd_sessions(args):
 
 
 def cmd_lease(args):
-    """Manage Codeuctor-facing simulator/device leases."""
+    """Manage orchestration-facing simulator/device leases."""
     try:
         if args.lease_command == "claim":
             lease = claim_device_lease(
@@ -2137,13 +2137,13 @@ def build_parser() -> argparse.ArgumentParser:
     sess_p.set_defaults(func=cmd_sessions)
 
     # lease
-    lease_p = sub.add_parser("lease", help="Claim, list, and release Codeuctor device leases")
+    lease_p = sub.add_parser("lease", help="Claim, list, and release orchestration device leases")
     lease_sub = lease_p.add_subparsers(dest="lease_command", required=True)
 
-    lease_claim = lease_sub.add_parser("claim", help="Claim a Codeuctor device lease")
+    lease_claim = lease_sub.add_parser("claim", help="Claim a orchestration device lease")
     lease_claim.add_argument("platform", choices=["ios", "android", "macos"])
     lease_claim.add_argument("--host", help="Host that owns the lease (default: local hostname)")
-    lease_claim.add_argument("--run-id", default="", help="Codeuctor run id")
+    lease_claim.add_argument("--run-id", default="", help="orchestration run id")
     lease_claim.add_argument("--device", help="Specific device id, name, or alias")
     lease_claim.add_argument("--version", help="OS version (e.g. 26, 18, 15)")
     lease_claim.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
@@ -2156,11 +2156,11 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Lease TTL in seconds (default: 3600)")
     lease_claim.set_defaults(func=cmd_lease)
 
-    lease_release = lease_sub.add_parser("release", help="Release a Codeuctor device lease")
+    lease_release = lease_sub.add_parser("release", help="Release a orchestration device lease")
     lease_release.add_argument("lease_id")
     lease_release.set_defaults(func=cmd_lease)
 
-    lease_list = lease_sub.add_parser("list", help="List active Codeuctor device leases")
+    lease_list = lease_sub.add_parser("list", help="List active orchestration device leases")
     lease_list.set_defaults(func=cmd_lease)
 
     # status (v2 — system overview)
