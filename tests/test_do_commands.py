@@ -354,6 +354,9 @@ class TestDoScreenshot(DoCommandBase):
         result = do_command("s-test01", "screenshot", ["-o", "/tmp/test.png"])
         mock_screenshot.assert_called_once_with("AAA-111", "/tmp/test.png", fmt=None, max_size=None)
         self.assertEqual(result["status"], "captured")
+        self.assertEqual(result["artifact"]["schema_version"], "simemu.mobile-proof.v1")
+        self.assertEqual(result["artifact"]["kind"], "screenshot")
+        self.assertEqual(result["artifact"]["lease"]["session"], "s-test01")
         self.assertEqual(result["path"], "/tmp/test.png")
 
     @patch("simemu.session.ios.screenshot")
@@ -503,6 +506,9 @@ class TestDoMaestro(DoCommandBase):
         flow.write_text("appId: app.fitkind.dev\n---\n- assertVisible: Vault\n")
         result = do_command("s-test01", "maestro", [str(flow)])
         self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["artifact"]["schema_version"], "simemu.mobile-proof.v1")
+        self.assertEqual(result["artifact"]["kind"], "flow")
+        self.assertEqual(result["artifact"]["flow"]["files"], [str(flow)])
         # Verify maestro was called with the session's sim_id
         cmd_args = mock_run.call_args[0][0]
         self.assertEqual(cmd_args[0], "maestro")
@@ -2081,6 +2087,9 @@ class TestDoProof(DoCommandBase):
         result = do_command("s-test01", "proof", ["-o", "/tmp/proof.png", "--wait", "0.1"])
         self.assertEqual(result["status"], "proved")
         self.assertEqual(result["path"], "/tmp/proof.png")
+        self.assertEqual(result["artifact"]["schema_version"], "simemu.mobile-proof.v1")
+        self.assertEqual(result["artifact"]["kind"], "screenshot-proof")
+        self.assertEqual(result["artifact"]["app"], "com.example.app")
         self.assertIn("status_bar:9:41", result["steps"])
         self.assertIn("dismiss_alerts", result["steps"])
         mock_ss.assert_called_once()
@@ -2180,6 +2189,7 @@ class TestDoProof(DoCommandBase):
         self.assertEqual(prov["last_screenshot"], "/tmp/proof.png")
         self.assertIn("last_proof", prov)
         self.assertEqual(prov["last_proof"]["label"], "test")
+        self.assertEqual(prov["last_proof"]["artifact"]["schema_version"], "simemu.mobile-proof.v1")
 
 
 class TestParseVariants(unittest.TestCase):

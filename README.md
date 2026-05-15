@@ -210,6 +210,12 @@ All commands use the format: `simemu do $SESSION <command> [args...]`
 | `video-stop <pid>` | Stop screen recording |
 | `log-crash [bundle]` | Most recent crash report |
 
+`screenshot`, `proof`, and `maestro` results include a
+`simemu.mobile-proof.v1` artifact envelope for Codeuctor, Atlas, Sentinel, and
+Proofy. The envelope binds the artifact to the active lease/session, device,
+boot state, connection identifier, optional build artifact, timestamp, and
+SHA-256 file metadata when a screenshot or build artifact exists.
+
 ### Device state
 
 | Command | Description |

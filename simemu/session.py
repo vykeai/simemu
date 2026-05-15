@@ -1902,7 +1902,16 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         else:
             android.screenshot(sim_id, output, max_size=max_size, **android_kwargs)
         update_provenance(session_id, last_screenshot=output)
-        return {"status": "captured", "path": output}
+        from .proof import mobile_proof_artifact
+        artifact = mobile_proof_artifact(
+            kind="screenshot",
+            session=session,
+            output_path=output,
+            status="captured",
+            build_path=_get_build_artifact(session_id),
+            app=_screenshot_target_app,
+        )
+        return {"status": "captured", "path": output, "artifact": artifact}
 
     elif command == "maestro":
         if not args:
@@ -1974,11 +1983,23 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             try:
                 result = _run_maestro_process(cmd, env)
             except _sp.TimeoutExpired:
+                from .proof import mobile_proof_artifact
                 return {
                     "status": "failed",
                     "exit_code": 124,
                     "debug_output": debug_output,
+                    "failure_class": "mobile-flow-timeout",
                     "error": f"Maestro timed out after {MAESTRO_TIMEOUT_SECONDS} seconds and was terminated.",
+                    "artifact": mobile_proof_artifact(
+                        kind="flow",
+                        session=session,
+                        status="failed",
+                        build_path=_get_build_artifact(session_id),
+                        app=expected_app,
+                        flow_files=flow_files,
+                        debug_output=debug_output,
+                        failure_class="mobile-flow-timeout",
+                    ),
                 }
             if result.returncode != 0:
                 error = _summarize_maestro_failure(
@@ -2016,11 +2037,35 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                     "status": "failed",
                     "exit_code": result.returncode,
                     "debug_output": debug_output,
+                    "failure_class": "mobile-flow-failed",
                 }
                 if error:
                     payload["error"] = error
+                from .proof import mobile_proof_artifact
+                payload["artifact"] = mobile_proof_artifact(
+                    kind="flow",
+                    session=session,
+                    status="failed",
+                    build_path=_get_build_artifact(session_id),
+                    app=expected_app,
+                    flow_files=flow_files,
+                    debug_output=debug_output,
+                    failure_class="mobile-flow-failed",
+                )
                 return payload
-            return {"status": "passed"}
+            from .proof import mobile_proof_artifact
+            return {
+                "status": "passed",
+                "artifact": mobile_proof_artifact(
+                    kind="flow",
+                    session=session,
+                    status="passed",
+                    build_path=_get_build_artifact(session_id),
+                    app=expected_app,
+                    flow_files=flow_files,
+                    debug_output=debug_output,
+                ),
+            }
 
     elif command == "url":
         if not args:
@@ -3497,6 +3542,17 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
         "expected_app": expected_app,
         "warnings": [e for e in errors if "foreground_mismatch" not in e],
     }
+    from .proof import mobile_proof_artifact
+    artifact = mobile_proof_artifact(
+        kind="screenshot-proof",
+        session=session,
+        output_path=output,
+        status="proved",
+        build_path=_get_build_artifact(session_id),
+        app=expected_app,
+        metadata=dict(proof_metadata),
+    )
+    proof_metadata["artifact"] = artifact
     update_provenance(
         session_id,
         last_screenshot=output,
@@ -3510,6 +3566,7 @@ def _do_proof(session, sim_id: str, platform: str, is_real: bool, session_id: st
         "steps": steps,
         "warnings": errors,
         "metadata": proof_metadata,
+        "artifact": artifact,
     }
 
 
