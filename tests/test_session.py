@@ -559,6 +559,7 @@ class TestClaim(unittest.TestCase):
             sim_id="AAA-111",
             device_name="iPhone 16 Pro",
             status="parked",
+            heartbeat_at=(datetime.now(timezone.utc) - timedelta(seconds=EXPIRE_TIMEOUT + 5)).isoformat(),
             expires_at=expired_at,
         )
         mock_find.return_value = _make_sim(booted=True)

@@ -310,7 +310,23 @@ simemu auto-starts a background API server on `127.0.0.1:8765`:
 POST /v2/claim    -> ClaimSpec body -> Session JSON
 POST /v2/do       -> {session, command, args} -> result
 GET  /v2/sessions -> list all active sessions
+POST /v2/leases   -> Codeuctor lease claim -> DeviceLease JSON
+GET  /v2/leases   -> list active Codeuctor leases
+DELETE /v2/leases/{lease_id} -> release a Codeuctor lease
 ```
+
+Codeuctor should use leases when it needs host/run/expiry metadata:
+
+```bash
+simemu lease claim ios --host mac-studio --run-id cdx-123 --expires-in 3600
+simemu lease list
+simemu lease release s-a7f3b2
+```
+
+Lease responses include the backing session id, host, run id, requested device,
+resolved device id/name, boot state, connection identifier, expiry, and release
+command. Device exclusivity is still enforced by the v2 session lock, so two
+concurrent lease claims cannot receive the same simulator or emulator.
 
 Disable autostart when needed:
 

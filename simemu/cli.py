@@ -28,6 +28,7 @@ from .discover import (
 )
 from . import session as session_module
 from . import window as window_mgr
+from .lease import LeaseClaimSpec, claim_device_lease, list_device_leases, release_device_lease
 from .session import ClaimSpec, SessionError
 
 # Apple platforms all use xcrun simctl — same as iOS
@@ -366,6 +367,40 @@ def cmd_sessions(args):
         os_ver = s.resolved_os_version or s.os_version or "latest"
         label = (s.label or "")[:20]
         print(f"{sid:<12} {s.platform:<10} {s.form_factor:<8} {s.status:<8} {os_ver:<12} {label:<20} {idle_min}m")
+
+
+def cmd_lease(args):
+    """Manage Codeuctor-facing simulator/device leases."""
+    try:
+        if args.lease_command == "claim":
+            lease = claim_device_lease(
+                LeaseClaimSpec(
+                    platform=args.platform,
+                    host=args.host or socket.gethostname(),
+                    run_id=args.run_id or "",
+                    device=args.device,
+                    form_factor=args.form_factor,
+                    os_version=args.version,
+                    real_device=args.real,
+                    visible=args.visible,
+                    label=args.label or "",
+                    expires_in_seconds=args.expires_in,
+                )
+            )
+            _print_json(lease.to_json())
+            return
+
+        if args.lease_command == "release":
+            lease = release_device_lease(args.lease_id)
+            _print_json(lease.to_json())
+            return
+
+        if args.lease_command == "list":
+            _print_json([lease.to_json() for lease in list_device_leases()])
+            return
+    except SessionError as e:
+        _print_json(e.to_json())
+        sys.exit(1)
 
 
 # ── status overview ──────────────────────────────────────────────────────────
@@ -2101,6 +2136,33 @@ def build_parser() -> argparse.ArgumentParser:
     sess_p.add_argument("--json", action="store_true", help="Output as JSON")
     sess_p.set_defaults(func=cmd_sessions)
 
+    # lease
+    lease_p = sub.add_parser("lease", help="Claim, list, and release Codeuctor device leases")
+    lease_sub = lease_p.add_subparsers(dest="lease_command", required=True)
+
+    lease_claim = lease_sub.add_parser("claim", help="Claim a Codeuctor device lease")
+    lease_claim.add_argument("platform", choices=["ios", "android", "macos"])
+    lease_claim.add_argument("--host", help="Host that owns the lease (default: local hostname)")
+    lease_claim.add_argument("--run-id", default="", help="Codeuctor run id")
+    lease_claim.add_argument("--device", help="Specific device id, name, or alias")
+    lease_claim.add_argument("--version", help="OS version (e.g. 26, 18, 15)")
+    lease_claim.add_argument("--form-factor", choices=["phone", "tablet", "watch", "tv", "vision"],
+                             default="phone", help="Device form factor (default: phone)")
+    lease_claim.add_argument("--real", action="store_true", help="Prefer real device over simulator")
+    lease_claim.add_argument("--show", action="store_true", dest="visible",
+                             help="Keep simulator window visible (default: hidden)")
+    lease_claim.add_argument("--label", help="Human label for display")
+    lease_claim.add_argument("--expires-in", type=int, default=3600,
+                             help="Lease TTL in seconds (default: 3600)")
+    lease_claim.set_defaults(func=cmd_lease)
+
+    lease_release = lease_sub.add_parser("release", help="Release a Codeuctor device lease")
+    lease_release.add_argument("lease_id")
+    lease_release.set_defaults(func=cmd_lease)
+
+    lease_list = lease_sub.add_parser("list", help="List active Codeuctor device leases")
+    lease_list.set_defaults(func=cmd_lease)
+
     # status (v2 — system overview)
     st = sub.add_parser("status", help="Show system overview: sessions, simulators, services")
     st.add_argument("--json", action="store_true", help="Output as JSON")
@@ -2771,7 +2833,7 @@ _MAINTENANCE_EXEMPT = {"cmd_status", "cmd_status_overview", "cmd_sessions", "cmd
 
 # v2 + admin commands — everything else is legacy and rejected
 _V2_COMMANDS = {
-    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config",
+    "cmd_claim", "cmd_do", "cmd_sessions", "cmd_config", "cmd_lease",
     "cmd_serve", "cmd_daemon", "cmd_maintenance", "cmd_menubar",
     "cmd_create", "cmd_idle_shutdown",
     "cmd_list", "cmd_list_devices",  # discovery is still useful

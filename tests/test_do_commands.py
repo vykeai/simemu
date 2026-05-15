@@ -99,7 +99,7 @@ class TestDoInstall(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "install", ["/path/to/app.apk"])
-        mock_install.assert_called_once_with("Pixel_7", "/path/to/app.apk")
+        mock_install.assert_called_once_with("Pixel_7", "/path/to/app.apk", pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "installed")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -230,7 +230,7 @@ class TestDoLaunch(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "launch", ["com.example.app/.MainActivity"])
-        mock_launch.assert_called_once_with("Pixel_7", "com.example.app/.MainActivity", [])
+        mock_launch.assert_called_once_with("Pixel_7", "com.example.app/.MainActivity", [], pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "launched")
 
     @patch("simemu.session.android.stop_other_apps", return_value=[])
@@ -285,7 +285,7 @@ class TestDoTap(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "tap", ["50", "300"])
-        mock_tap.assert_called_once_with("Pixel_7", 50.0, 300.0)
+        mock_tap.assert_called_once_with("Pixel_7", 50.0, 300.0, pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "tapped")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -334,7 +334,9 @@ class TestDoSwipe(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "swipe", ["10", "20", "30", "40", "--duration", "500"])
-        mock_swipe.assert_called_once_with("Pixel_7", 10.0, 20.0, 30.0, 40.0, duration=500)
+        mock_swipe.assert_called_once_with(
+            "Pixel_7", 10.0, 20.0, 30.0, 40.0, duration=500, pinned_serial="emulator-5554"
+        )
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_swipe_missing_args(self, mock_serial) -> None:
@@ -1094,7 +1096,9 @@ class TestDoUrl(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "url", ["https://example.com"])
-        mock_url.assert_called_once_with("Pixel_7", "https://example.com", expected_package=None)
+        mock_url.assert_called_once_with(
+            "Pixel_7", "https://example.com", expected_package=None, pinned_serial="emulator-5554"
+        )
 
     @patch("simemu.session.android.open_url")
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
@@ -1107,7 +1111,9 @@ class TestDoUrl(DoCommandBase):
         data["sessions"]["s-droid1"]["last_app"] = "app.fitkind.dev"
         sf.write_text(json.dumps(data))
         result = do_command("s-droid1", "url", ["fitkind://debug/route"])
-        mock_url.assert_called_once_with("Pixel_7", "fitkind://debug/route", expected_package="app.fitkind.dev")
+        mock_url.assert_called_once_with(
+            "Pixel_7", "fitkind://debug/route", expected_package="app.fitkind.dev", pinned_serial="emulator-5554"
+        )
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_url_missing_arg(self, mock_serial) -> None:
@@ -1209,7 +1215,7 @@ class TestDoForegroundApp(DoCommandBase):
     def test_do_foreground_app_android_uses_android_helper(self, mock_serial, mock_foreground) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         result = do_command("s-droid1", "foreground-app", [])
-        mock_foreground.assert_called_once_with("Pixel_7")
+        mock_foreground.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
         self.assertEqual("app.fitkind.dev", result["foreground_app"])
 
     @patch("simemu.session.android.foreground_app", return_value="app.fitkind.dev")
@@ -1258,7 +1264,7 @@ class TestDoVerifyInstall(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         mock_verify.return_value = MagicMock(format_report=lambda: "pm path:\npackage:/data/app")
         result = do_command("s-droid1", "verify-install", ["app.sitches.dev"])
-        mock_verify.assert_called_once_with("Pixel_7", "app.sitches.dev")
+        mock_verify.assert_called_once_with("Pixel_7", "app.sitches.dev", pinned_serial="emulator-5554")
         self.assertEqual("verified", result["status"])
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -1274,7 +1280,9 @@ class TestDoRepairInstall(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         mock_repair.return_value = MagicMock(format_report=lambda: "pm path:\npackage:/data/app")
         result = do_command("s-droid1", "repair-install", ["app.sitches.dev", "/tmp/app.apk"])
-        mock_repair.assert_called_once_with("Pixel_7", "app.sitches.dev", "/tmp/app.apk")
+        mock_repair.assert_called_once_with(
+            "Pixel_7", "app.sitches.dev", "/tmp/app.apk", pinned_serial="emulator-5554"
+        )
         self.assertEqual("repaired", result["status"])
 
 
@@ -1293,11 +1301,11 @@ class TestDoResetApp(DoCommandBase):
     ) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         result = do_command("s-droid1", "reset-app", ["app.sitches.dev", "/tmp/app.apk"])
-        mock_terminate.assert_called_once_with("Pixel_7", "app.sitches.dev")
-        mock_uninstall.assert_called_once_with("Pixel_7", "app.sitches.dev")
-        mock_clear_data.assert_called_once_with("Pixel_7", "app.sitches.dev")
-        mock_install.assert_called_once_with("Pixel_7", "/tmp/app.apk")
-        mock_launch.assert_called_once_with("Pixel_7", "app.sitches.dev", [])
+        mock_terminate.assert_called_once_with("Pixel_7", "app.sitches.dev", pinned_serial="emulator-5554")
+        mock_uninstall.assert_called_once_with("Pixel_7", "app.sitches.dev", pinned_serial="emulator-5554")
+        mock_clear_data.assert_called_once_with("Pixel_7", "app.sitches.dev", pinned_serial="emulator-5554")
+        mock_install.assert_called_once_with("Pixel_7", "/tmp/app.apk", pinned_serial="emulator-5554")
+        mock_launch.assert_called_once_with("Pixel_7", "app.sitches.dev", [], pinned_serial="emulator-5554")
         self.assertEqual("reset", result["status"])
 
 
@@ -1318,7 +1326,7 @@ class TestDoTerminate(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "terminate", ["com.example.app"])
-        mock_term.assert_called_once_with("Pixel_7", "com.example.app")
+        mock_term.assert_called_once_with("Pixel_7", "com.example.app", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_terminate_missing_arg(self, mock_serial) -> None:
@@ -1343,7 +1351,7 @@ class TestDoUninstall(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "uninstall", ["com.example.app"])
-        mock_uninstall.assert_called_once_with("Pixel_7", "com.example.app")
+        mock_uninstall.assert_called_once_with("Pixel_7", "com.example.app", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_uninstall_missing_arg(self, mock_serial) -> None:
@@ -1368,7 +1376,7 @@ class TestDoInput(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "input", ["test text"])
-        mock_input.assert_called_once_with("Pixel_7", "test text")
+        mock_input.assert_called_once_with("Pixel_7", "test text", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_input_missing_arg(self, mock_serial) -> None:
@@ -1393,7 +1401,7 @@ class TestDoLongPress(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "long-press", ["100", "200", "--duration", "2000"])
-        mock_lp.assert_called_once_with("Pixel_7", 100.0, 200.0, duration=2000)
+        mock_lp.assert_called_once_with("Pixel_7", 100.0, 200.0, duration=2000, pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_long_press_missing_args(self, mock_serial) -> None:
@@ -1418,7 +1426,7 @@ class TestDoKey(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "key", ["back"])
-        mock_key.assert_called_once_with("Pixel_7", "back")
+        mock_key.assert_called_once_with("Pixel_7", "back", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_key_missing_arg(self, mock_serial) -> None:
@@ -1443,7 +1451,7 @@ class TestDoAppearance(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "appearance", ["light"])
-        mock_appear.assert_called_once_with("Pixel_7", "light")
+        mock_appear.assert_called_once_with("Pixel_7", "light", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_appearance_missing_arg(self, mock_serial) -> None:
@@ -1468,7 +1476,7 @@ class TestDoRotate(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "rotate", ["portrait"])
-        mock_rotate.assert_called_once_with("Pixel_7", "portrait")
+        mock_rotate.assert_called_once_with("Pixel_7", "portrait", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_rotate_missing_arg(self, mock_serial) -> None:
@@ -1557,7 +1565,7 @@ class TestDoPushPull(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "push", ["/local/file.txt", "/sdcard/file.txt"])
-        mock_push.assert_called_once_with("Pixel_7", "/local/file.txt", "/sdcard/file.txt")
+        mock_push.assert_called_once_with("Pixel_7", "/local/file.txt", "/sdcard/file.txt", pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "pushed")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -1572,7 +1580,7 @@ class TestDoPushPull(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "pull", ["/sdcard/file.txt", "/local/file.txt"])
-        mock_pull.assert_called_once_with("Pixel_7", "/sdcard/file.txt", "/local/file.txt")
+        mock_pull.assert_called_once_with("Pixel_7", "/sdcard/file.txt", "/local/file.txt", pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "pulled")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -1613,7 +1621,7 @@ class TestDoAddMedia(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "add-media", ["/tmp/photo.jpg"])
-        mock_media.assert_called_once_with("Pixel_7", "/tmp/photo.jpg")
+        mock_media.assert_called_once_with("Pixel_7", "/tmp/photo.jpg", pinned_serial="emulator-5554")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
     def test_do_add_media_missing_arg(self, mock_serial) -> None:
@@ -1638,7 +1646,7 @@ class TestDoShake(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "shake", [])
-        mock_shake.assert_called_once_with("Pixel_7")
+        mock_shake.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
 
 # ── status-bar ───────────────────────────────────────────────────────────────
@@ -1666,8 +1674,10 @@ class TestDoStatusBar(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "status-bar", ["--time", "10:00"])
-        mock_sb.assert_called_once_with("Pixel_7", time_str="10:00", battery=None,
-                                        wifi=None, network=None)
+        mock_sb.assert_called_once_with(
+            "Pixel_7", time_str="10:00", battery=None,
+            wifi=None, network=None, pinned_serial="emulator-5554"
+        )
 
     @patch("simemu.session.android.status_bar_clear")
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -1675,7 +1685,7 @@ class TestDoStatusBar(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "status-bar", ["--clear"])
-        mock_clear.assert_called_once_with("Pixel_7")
+        mock_clear.assert_called_once_with("Pixel_7", pinned_serial="emulator-5554")
 
 
 # ── dismiss-alert ────────────────────────────────────────────────────────────
@@ -1821,7 +1831,7 @@ class TestDoClearData(DoCommandBase):
         self._seed("s-droid1", platform="android", sim_id="Pixel_7",
                     device_name="Pixel 7")
         result = do_command("s-droid1", "clear-data", ["com.example.app"])
-        mock_clear.assert_called_once_with("Pixel_7", "com.example.app")
+        mock_clear.assert_called_once_with("Pixel_7", "com.example.app", pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "cleared")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
@@ -1837,8 +1847,8 @@ class TestDoCleanRetry(DoCommandBase):
     def test_do_clean_retry_android(self, mock_serial, mock_clear, mock_launch) -> None:
         self._seed("s-droid1", platform="android", sim_id="Pixel_7", device_name="Pixel 7")
         result = do_command("s-droid1", "clean-retry", ["com.example.app"])
-        mock_clear.assert_called_once_with("Pixel_7", "com.example.app")
-        mock_launch.assert_called_once_with("Pixel_7", "com.example.app", [])
+        mock_clear.assert_called_once_with("Pixel_7", "com.example.app", pinned_serial="emulator-5554")
+        mock_launch.assert_called_once_with("Pixel_7", "com.example.app", [], pinned_serial="emulator-5554")
         self.assertEqual(result["status"], "clean_retried")
 
     @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")

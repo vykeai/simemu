@@ -40,6 +40,7 @@ from .discover import (
 )
 from . import create as _create
 from . import session as session_module
+from .lease import LeaseClaimSpec, claim_device_lease, list_device_leases, release_device_lease
 from .session import ClaimSpec, SessionError
 
 
@@ -443,6 +444,19 @@ class V2DoRequest(BaseModel):
     args: list[str] = []
 
 
+class V2LeaseClaimRequest(BaseModel):
+    platform: str
+    host: str = ""
+    run_id: str = ""
+    device: str | None = None
+    form_factor: str = "phone"
+    os_version: str | None = None
+    real_device: bool = False
+    visible: bool = False
+    label: str = ""
+    expires_in_seconds: int = 3600
+
+
 @app.post("/v2/claim", summary="Claim a device session (v2 API)")
 def v2_claim(req: V2ClaimRequest):
     try:
@@ -485,6 +499,53 @@ def v2_do(req: V2DoRequest):
 def v2_sessions():
     sessions = session_module.get_active_sessions()
     return [s.to_agent_json() for s in sessions.values()]
+
+
+@app.get("/v2/leases", summary="List active Codeuctor device leases")
+def v2_list_leases():
+    return [lease.to_json() for lease in list_device_leases()]
+
+
+@app.post("/v2/leases", summary="Claim a Codeuctor device lease")
+def v2_claim_lease(req: V2LeaseClaimRequest):
+    try:
+        state.check_maintenance()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    try:
+        lease = claim_device_lease(
+            LeaseClaimSpec(
+                platform=req.platform,
+                host=req.host,
+                run_id=req.run_id,
+                device=req.device,
+                form_factor=req.form_factor,
+                os_version=req.os_version,
+                real_device=req.real_device,
+                visible=req.visible,
+                label=req.label,
+                expires_in_seconds=req.expires_in_seconds,
+            )
+        )
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=e.to_json())
+    except NoSimulatorAvailable as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return lease.to_json()
+
+
+@app.delete("/v2/leases/{lease_id}", summary="Release a Codeuctor device lease")
+def v2_release_lease(lease_id: str):
+    try:
+        lease = release_device_lease(lease_id)
+    except SessionError as e:
+        raise HTTPException(status_code=409, detail=e.to_json())
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return lease.to_json()
 
 
 # ── v2 convenience routes ────────────────────────────────────────────────────

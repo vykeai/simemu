@@ -12,6 +12,7 @@ _tmpdir = tempfile.mkdtemp()
 os.environ["SIMEMU_STATE_DIR"] = _tmpdir
 
 from simemu.session import ClaimSpec, Session, SessionError
+from simemu.lease import lease_from_session
 
 # Patch lifespan to avoid starting background tasks during tests
 _lifespan_patch = patch("simemu.server.lifespan")
@@ -109,6 +110,43 @@ class ServerV2SessionTests(unittest.TestCase):
                 "command": "screenshot",
             })
         self.assertEqual(resp.status_code, 409)
+
+    def test_v2_lease_claim(self) -> None:
+        lease = lease_from_session(_make_session(), host="mac-studio", run_id="run-123")
+        with patch("simemu.server.state.check_maintenance"):
+            with patch("simemu.server.claim_device_lease", return_value=lease) as claim_mock:
+                resp = client.post("/v2/leases", json={
+                    "platform": "ios",
+                    "host": "mac-studio",
+                    "run_id": "run-123",
+                    "device": "iPhone 16 Pro",
+                    "expires_in_seconds": 600,
+                })
+
+        self.assertEqual(resp.status_code, 200)
+        claim_mock.assert_called_once()
+        data = resp.json()
+        self.assertEqual(data["lease_id"], "s-abc123")
+        self.assertEqual(data["host"], "mac-studio")
+        self.assertEqual(data["run_id"], "run-123")
+        self.assertEqual(data["connection"]["identifier_kind"], "simulator_id")
+
+    def test_v2_lease_release(self) -> None:
+        lease = lease_from_session(_make_session(status="released"), host="mac-studio", run_id="run-123")
+        with patch("simemu.server.release_device_lease", return_value=lease) as release_mock:
+            resp = client.delete("/v2/leases/s-abc123")
+
+        self.assertEqual(resp.status_code, 200)
+        release_mock.assert_called_once_with("s-abc123")
+        self.assertEqual(resp.json()["status"], "released")
+
+    def test_v2_lease_list(self) -> None:
+        lease = lease_from_session(_make_session(), host="mac-studio", run_id="run-123")
+        with patch("simemu.server.list_device_leases", return_value=[lease]):
+            resp = client.get("/v2/leases")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()[0]["lease_id"], "s-abc123")
 
 
 class ServerDiscoveryTests(unittest.TestCase):
