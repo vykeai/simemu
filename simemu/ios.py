@@ -1057,15 +1057,12 @@ def _notify_shared_desktop_wait() -> None:
     if now - _LAST_BUSY_NOTIFICATION_AT < 10:
         return
     _LAST_BUSY_NOTIFICATION_AT = now
-    subprocess.run(
-        [
-            "osascript",
-            "-e",
-            'display notification "Simemu is using a simulator for a moment. Please pause keyboard and mouse input." with title "simemu"',
-        ],
-        capture_output=True,
-        check=False,
-    )
+    _hud_send({
+        "mode": "warning",
+        "title": "SIMEMU",
+        "action": "Please pause keyboard and mouse input",
+        "detail": "Waiting for desktop idle before next interaction",
+    })
 
 
 def _handle_pause_signal(_signum, _frame) -> None:
