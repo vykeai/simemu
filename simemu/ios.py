@@ -78,6 +78,8 @@ def boot(udid: str, minimize: bool = False) -> None:
     try:
         _simctl("boot", udid)
     except subprocess.CalledProcessError as exc:
+        if _is_booted(udid):
+            return
         stderr = (exc.stderr or b"").decode(errors="ignore") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
         stdout = (exc.stdout or b"").decode(errors="ignore") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
         msg = f"{stderr}\n{stdout}".lower()
