@@ -1472,16 +1472,6 @@ def screenshot(avd_name: str, output_path: str, max_size: Optional[int] = None,
                 except OSError:
                     pass
 
-        if (
-            not captured
-            and os.environ.get("SIMEMU_DISABLE_WINDOW_SCREENSHOT_FALLBACK") != "1"
-        ):
-            # If adb screencap stalls after a Maestro/grpc hiccup, the slower
-            # on-device pull/video fallbacks can compound the outage for minutes.
-            # Host-window capture is still a real visible screen capture and is
-            # fast enough to unblock proof collection.
-            captured = _capture_window_fallback(avd_name, output_path)
-
         if not captured:
             # Fallback for devices where adb exec-out stalls or returns an empty
             # stream under GPU load: write the screenshot on-device, then pull it.
