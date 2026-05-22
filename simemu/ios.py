@@ -28,6 +28,7 @@ _PAUSE_REQUESTED = False
 _STOP_REQUESTED = False
 _LAST_SIM_BOUNDS: dict[str, tuple[float, float, float, float]] = {}
 _LAST_WINDOW_FRAMES: dict[str, tuple[float, float, float, float]] = {}
+_DEVICE_TYPE_BY_UDID: dict[str, str] = {}
 
 
 def _simctl(
@@ -751,6 +752,11 @@ def input_text(udid: str, text: str) -> None:
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to set pasteboard: {proc.stderr.decode().strip()}")
     with _with_brief_focus(udid, action="input"):
+        if _input_text_maestro(udid, text):
+            return
+        if _tap_software_keyboard_text(udid, text):
+            return
+        _connect_hardware_keyboard()
         _type_text(text)
 
 
@@ -866,6 +872,20 @@ def _get_device_logical_size(device_name: str) -> tuple[int, int]:
     return (390, 844)
 
 
+def _get_device_logical_size_for_udid(udid: str, device_name: str | None = None) -> tuple[int, int]:
+    name = device_name or _get_device_name(udid)
+    size = _get_device_logical_size(name)
+    if size != (390, 844):
+        return size
+
+    device_type = _DEVICE_TYPE_BY_UDID.get(udid, "")
+    normalized = device_type.lower().replace(" ", "").replace("-", "").replace(".", "")
+    for token, candidate in _IOS_DEVICE_LOGICAL_SIZE.items():
+        if token.lower() in normalized:
+            return candidate
+    return size
+
+
 def _get_device_pixel_size(device_name: str, logical_size: tuple[int, int] | None = None) -> tuple[int, int]:
     """Return the native screenshot pixel size for a simulator display name."""
     normalized = device_name.lower().replace(" ", "").replace("-", "")
@@ -894,6 +914,7 @@ def _normalize_tap_coordinates(
     device_name: str,
     content_width: float,
     content_height: float,
+    udid: str | None = None,
 ) -> tuple[float, float, str, tuple[int, int], tuple[int, int]]:
     """Normalize tap input to logical points.
 
@@ -902,7 +923,12 @@ def _normalize_tap_coordinates(
     screenshots and existing callers.
     """
     landscape = content_width > content_height
-    logical_size = _orient_size(_get_device_logical_size(device_name), landscape)
+    base_logical_size = (
+        _get_device_logical_size_for_udid(udid, device_name)
+        if udid
+        else _get_device_logical_size(device_name)
+    )
+    logical_size = _orient_size(base_logical_size, landscape)
     pixel_size = _orient_size(_get_device_pixel_size(device_name, logical_size), landscape)
     logical_w, logical_h = logical_size
     pixel_w, pixel_h = pixel_size
@@ -940,6 +966,7 @@ def _get_device_name(udid: str) -> str:
     for _runtime, devices in data["devices"].items():
         for dev in devices:
             if dev["udid"] == udid:
+                _DEVICE_TYPE_BY_UDID[udid] = dev.get("deviceTypeIdentifier", "")
                 return dev["name"]
     raise RuntimeError(f"Simulator {udid} not found in simctl list")
 
@@ -1685,9 +1712,13 @@ _VK_RETURN = 36
 _VK_LEFT  = 123
 _VK_RIGHT = 124
 
-def _run_system_events(script: str) -> None:
-    """Execute a small System Events script, ignoring AppleScript UI noise."""
-    subprocess.run(["osascript", "-e", script], capture_output=True, check=False)
+def _run_system_events(script: str, *, check: bool = False) -> subprocess.CompletedProcess:
+    """Execute a small System Events script."""
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=False)
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"System Events script failed: {detail}")
+    return result
 
 
 def _post_key(vk: int, modifiers: tuple[str, ...] = ()) -> None:
@@ -1708,15 +1739,115 @@ tell application "System Events"
 end tell''')
 
 
+def _applescript_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _connect_hardware_keyboard() -> None:
+    _run_system_events('''
+tell application "System Events"
+    tell process "Simulator"
+        set frontmost to true
+        try
+            set keyboardMenu to menu 1 of menu item "Keyboard" of menu 1 of menu bar item "I/O" of menu bar 1
+            set hardwareItem to menu item "Connect Hardware Keyboard" of keyboardMenu
+            set markChar to ""
+            try
+                set markChar to value of attribute "AXMenuItemMarkChar" of hardwareItem
+            end try
+            if markChar is missing value or markChar is "" then
+                click hardwareItem
+            end if
+        end try
+        try
+            set inputItem to menu item "Send Keyboard Input to Device" of keyboardMenu
+            set inputMarkChar to ""
+            try
+                set inputMarkChar to value of attribute "AXMenuItemMarkChar" of inputItem
+            end try
+            if inputMarkChar is missing value or inputMarkChar is "" then
+                click inputItem
+            end if
+        end try
+    end tell
+end tell''')
+
+
 def _type_text(text: str) -> None:
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    lines = []
+    for character in text:
+        lines.append(f"        keystroke {_applescript_string(character)}")
+        lines.append("        delay 0.03")
+    body = "\n".join(lines)
     _run_system_events(f'''
 tell application "System Events"
     tell process "Simulator"
         set frontmost to true
-        keystroke "{escaped}"
+{body}
     end tell
-end tell''')
+end tell''', check=True)
+
+
+_EMAIL_KEYBOARD_POINTS: dict[str, tuple[float, float]] = {
+    "q": (0.057, 0.703), "w": (0.157, 0.703), "e": (0.254, 0.703),
+    "r": (0.353, 0.703), "t": (0.450, 0.703), "y": (0.550, 0.703),
+    "u": (0.647, 0.703), "i": (0.746, 0.703), "o": (0.846, 0.703),
+    "p": (0.943, 0.703),
+    "a": (0.107, 0.777), "s": (0.206, 0.777), "d": (0.303, 0.777),
+    "f": (0.403, 0.777), "g": (0.500, 0.777), "h": (0.600, 0.777),
+    "j": (0.697, 0.777), "k": (0.796, 0.777), "l": (0.896, 0.777),
+    "z": (0.204, 0.850), "x": (0.303, 0.850), "c": (0.403, 0.850),
+    "v": (0.500, 0.850), "b": (0.600, 0.850), "n": (0.697, 0.850),
+    "m": (0.796, 0.850), "@": (0.562, 0.922), ".": (0.684, 0.922),
+}
+
+_NUMERIC_KEYBOARD_POINTS: dict[str, tuple[float, float]] = {
+    "1": (0.167, 0.705), "2": (0.500, 0.705), "3": (0.833, 0.705),
+    "4": (0.167, 0.780), "5": (0.500, 0.780), "6": (0.833, 0.780),
+    "7": (0.167, 0.855), "8": (0.500, 0.855), "9": (0.833, 0.855),
+    "0": (0.500, 0.930),
+}
+
+
+def _tap_software_keyboard_text(udid: str, text: str) -> bool:
+    if not text:
+        return True
+
+    lower = text.lower()
+    if lower.isdigit():
+        key_points = _NUMERIC_KEYBOARD_POINTS
+        sequence = lower
+    elif all(character in _EMAIL_KEYBOARD_POINTS for character in lower):
+        key_points = _EMAIL_KEYBOARD_POINTS
+        sequence = lower
+    else:
+        return False
+
+    import time as _time
+    device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
+    device_w, device_h = _get_device_logical_size_for_udid(udid, device_name)
+    for character in sequence:
+        fx, fy = key_points[character]
+        sx, sy = _logical_to_screen(fx * device_w, fy * device_h, px, py, sw, sh, device_w, device_h)
+        _click_simulator_at(sx, sy)
+        _time.sleep(0.04)
+    return True
+
+
+def _input_text_maestro(udid: str, text: str) -> bool:
+    if not shutil.which("maestro"):
+        return False
+    try:
+        _run_maestro_flow(
+            udid,
+            "\n".join([
+                "- inputText:",
+                f"    text: {json.dumps(text)}",
+            ]),
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _click_simulator_at(x: int, y: int) -> None:
@@ -1823,7 +1954,7 @@ def tap(udid: str, x: float, y: float) -> None:
         _ensure_booted(udid)
         device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
         logical_x, logical_y, _coord_space, logical_size, _pixel_size = _normalize_tap_coordinates(
-            x, y, device_name, sw, sh
+            x, y, device_name, sw, sh, udid=udid
         )
         device_w, device_h = logical_size
         cx, cy = _logical_to_screen(logical_x, logical_y, px, py, sw, sh, device_w, device_h)
@@ -1849,7 +1980,7 @@ def _swipe_quartz(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float
         _wait_for_desktop_idle()
         _ensure_booted(udid)
         device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
-        device_w, device_h = _get_device_logical_size(device_name)
+        device_w, device_h = _get_device_logical_size_for_udid(udid, device_name)
 
         sx1, sy1 = _logical_to_screen(x1, y1, px, py, sw, sh, device_w, device_h)
         sx2, sy2 = _logical_to_screen(x2, y2, px, py, sw, sh, device_w, device_h)
@@ -1889,7 +2020,7 @@ def swipe(udid: str, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) 
     """
     _ensure_booted(udid)
     device_name = _get_device_name(udid)
-    device_w, device_h = _get_device_logical_size(device_name)
+    device_w, device_h = _get_device_logical_size_for_udid(udid, device_name)
 
     with _with_brief_focus(udid, action="swipe"):
         try:
@@ -1918,7 +2049,7 @@ def _long_press_quartz(udid: str, x: int, y: int, duration: float) -> None:
         _wait_for_desktop_idle()
         _ensure_booted(udid)
         device_name, (px, py, sw, sh) = _stabilized_bounds(udid)
-        device_w, device_h = _get_device_logical_size(device_name)
+        device_w, device_h = _get_device_logical_size_for_udid(udid, device_name)
         cx, cy = _logical_to_screen(x, y, px, py, sw, sh, device_w, device_h)
 
         def _press(Q):
@@ -1949,7 +2080,7 @@ def long_press(udid: str, x: int, y: int, duration: float = 1.0) -> None:
     """
     _ensure_booted(udid)
     device_name = _get_device_name(udid)
-    device_w, device_h = _get_device_logical_size(device_name)
+    device_w, device_h = _get_device_logical_size_for_udid(udid, device_name)
 
     with _with_brief_focus(udid, action="long-press"):
         if abs(duration - 1.0) > 0.05:

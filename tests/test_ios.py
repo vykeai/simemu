@@ -208,10 +208,15 @@ class IOSControlTests(unittest.TestCase):
             ios.software_keyboard("SIM-001", "show")
 
     @patch("simemu.ios._type_text")
+    @patch("simemu.ios._tap_software_keyboard_text", return_value=False)
+    @patch("simemu.ios._input_text_maestro", return_value=False)
+    @patch("simemu.ios._connect_hardware_keyboard")
     @patch("simemu.ios._with_brief_focus")
     @patch("simemu.ios.subprocess.run")
     @patch("simemu.ios._ensure_booted")
-    def test_input_text_copies_then_types(self, mock_booted, mock_run, mock_focus, mock_type_text) -> None:
+    def test_input_text_copies_then_types(
+        self, mock_booted, mock_run, mock_focus, mock_keyboard, mock_maestro, mock_tap_keyboard, mock_type_text
+    ) -> None:
         mock_run.return_value = Mock(returncode=0, stderr=b"")
         mock_focus.return_value.__enter__.return_value = None
         mock_focus.return_value.__exit__.return_value = None
@@ -225,7 +230,79 @@ class IOSControlTests(unittest.TestCase):
             capture_output=True,
         )
         mock_focus.assert_called_once_with("SIM-001", action="input")
+        mock_maestro.assert_called_once_with("SIM-001", "review@sitches.app")
+        mock_tap_keyboard.assert_called_once_with("SIM-001", "review@sitches.app")
+        mock_keyboard.assert_called_once()
         mock_type_text.assert_called_once_with("review@sitches.app")
+
+    @patch("simemu.ios._type_text")
+    @patch("simemu.ios._tap_software_keyboard_text", return_value=True)
+    @patch("simemu.ios._input_text_maestro", return_value=False)
+    @patch("simemu.ios._connect_hardware_keyboard")
+    @patch("simemu.ios._with_brief_focus")
+    @patch("simemu.ios.subprocess.run")
+    @patch("simemu.ios._ensure_booted")
+    def test_input_text_prefers_visible_software_keyboard(
+        self, mock_booted, mock_run, mock_focus, mock_keyboard, mock_maestro, mock_tap_keyboard, mock_type_text
+    ) -> None:
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+        mock_focus.return_value.__enter__.return_value = None
+        mock_focus.return_value.__exit__.return_value = None
+
+        ios.input_text("SIM-001", "review@sitches.app")
+
+        mock_maestro.assert_called_once_with("SIM-001", "review@sitches.app")
+        mock_tap_keyboard.assert_called_once_with("SIM-001", "review@sitches.app")
+        mock_keyboard.assert_not_called()
+        mock_type_text.assert_not_called()
+
+    @patch("simemu.ios._type_text")
+    @patch("simemu.ios._tap_software_keyboard_text")
+    @patch("simemu.ios._input_text_maestro", return_value=True)
+    @patch("simemu.ios._connect_hardware_keyboard")
+    @patch("simemu.ios._with_brief_focus")
+    @patch("simemu.ios.subprocess.run")
+    @patch("simemu.ios._ensure_booted")
+    def test_input_text_prefers_maestro_when_available(
+        self, mock_booted, mock_run, mock_focus, mock_keyboard, mock_maestro, mock_tap_keyboard, mock_type_text
+    ) -> None:
+        mock_run.return_value = Mock(returncode=0, stderr=b"")
+        mock_focus.return_value.__enter__.return_value = None
+        mock_focus.return_value.__exit__.return_value = None
+
+        ios.input_text("SIM-001", "review@sitches.app")
+
+        mock_maestro.assert_called_once_with("SIM-001", "review@sitches.app")
+        mock_tap_keyboard.assert_not_called()
+        mock_keyboard.assert_not_called()
+        mock_type_text.assert_not_called()
+
+    @patch("simemu.ios._run_system_events")
+    def test_connect_hardware_keyboard_clicks_simulator_menu_item(self, mock_events) -> None:
+        ios._connect_hardware_keyboard()
+
+        script = mock_events.call_args.args[0]
+        self.assertIn('menu item "Connect Hardware Keyboard"', script)
+        mock_events.assert_called_once()
+
+    @patch("simemu.ios._run_system_events")
+    def test_type_text_sends_characters_individually(self, mock_events) -> None:
+        ios._type_text('a@"')
+
+        script = mock_events.call_args.args[0]
+        self.assertIn('keystroke "a"', script)
+        self.assertIn('keystroke "@"', script)
+        self.assertIn('keystroke "\\""', script)
+        self.assertEqual(3, script.count("delay 0.03"))
+        mock_events.assert_called_once()
+        self.assertTrue(mock_events.call_args.kwargs["check"])
+
+    @patch("simemu.ios.subprocess.run")
+    def test_run_system_events_can_raise_on_applescript_failure(self, mock_run) -> None:
+        mock_run.return_value = Mock(returncode=1, stderr="not allowed", stdout="")
+
+        with self.assertRaisesRegex(RuntimeError, "not allowed"):
+            ios._run_system_events("bad script", check=True)
 
     def test_normalize_tap_coordinates_keeps_logical_points(self) -> None:
         logical_x, logical_y, space, logical_size, pixel_size = ios._normalize_tap_coordinates(
