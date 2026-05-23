@@ -1513,7 +1513,11 @@ _COMMAND_HELP: dict[str, str] = {
     "dismiss-alert":    "Dismiss any visible system alert",
     "accept-alert":     "Tap Allow/OK on a system alert",
     "deny-alert":       "Tap Don't Allow/Cancel on a system alert",
-    "auto-dismiss":     "Accept pending alerts + disable animation + reset privacy",
+    "auto-dismiss":     "Accept pending alerts (focuses window first)",
+    "allow-dialog":     "Tap Allow (or custom label) in a permission dialog — focuses window first",
+    "deny-dialog":      "Tap Don't Allow (or custom label) in a permission dialog",
+    "permission-grant": "Pre-authorize a permission before launch: <bundle> <service>",
+    "launch-with-args": "Launch app with custom arguments: <bundle> [arg1 arg2 ...]",
     # Device state
     "appearance":       "Set light or dark mode",
     "rotate":           "Set orientation (portrait, landscape, left, right)",
@@ -1695,7 +1699,8 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
             "Capture": ["screenshot", "proof", "deeplink-proof", "wait-for-render", "video-start",
                         "video-stop", "log-crash"],
             "Navigate": ["url", "maestro"],
-            "Alerts": ["dismiss-alert", "accept-alert", "deny-alert", "auto-dismiss"],
+            "Alerts": ["dismiss-alert", "accept-alert", "deny-alert", "auto-dismiss",
+                       "allow-dialog", "deny-dialog", "permission-grant"],
             "Device": ["appearance", "rotate", "location", "status-bar", "biometrics",
                        "network", "clipboard-set", "clipboard-get"],
             "Files": ["push", "pull", "add-media", "contacts-import"],
@@ -1927,6 +1932,21 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             provenance_fields["last_launch_component"] = bundle
         update_provenance(session_id, **provenance_fields)
         return {"status": "launched", "app": bundle}
+
+    elif command == "launch-with-args":
+        # Alias for `launch` that makes passing app args explicit.
+        # Usage: simemu do <session> launch-with-args <bundle> [arg1 arg2 ...]
+        if not args:
+            raise RuntimeError("Usage: simemu do <session> launch-with-args <bundle> [arg1 arg2 ...]")
+        args = ["launch"] + list(args)
+        # Delegate by re-entering via the launch branch above isn't possible here;
+        # call ios.launch directly for iOS (Android not supported for arg-passing).
+        bundle = args[1]
+        extra = args[2:]
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("launch-with-args is iOS-only; Android launch args not supported")
+        ios.launch(sim_id, bundle, extra)
+        return {"status": "launched", "app": bundle, "args": extra}
 
     elif command == "tap":
         if platform == "tvos":
@@ -2499,7 +2519,6 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             # for caller-API consistency. See TestDoDismissAlert.
             return ios.dismiss_system_alert(sim_id, "deny") | {"status": "dismissed"}
         else:
-            # Android: press Enter key to dismiss
             _sp.run(["adb", "-s", _android_serial_for_session(),
                       "shell", "input", "keyevent", "KEYCODE_ENTER"],
                      capture_output=True, check=False)
@@ -2541,6 +2560,36 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                       "shell", "input", "keyevent", "KEYCODE_BACK"],
                      capture_output=True, check=False)
         return {"status": "denied"}
+
+    elif command == "allow-dialog":
+        # Dedicated permission-dialog handler: focuses window first, clicks by label.
+        # Usage: simemu do <session> allow-dialog [button-label]
+        # Default button: "Allow". Works for notifications, photos, camera, etc.
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("allow-dialog is iOS-only")
+        label = args[0] if args else "Allow"
+        clicked = ios.permission_dialog_tap(sim_id, label)
+        return {"status": "clicked" if clicked else "not_found", "label": label}
+
+    elif command == "deny-dialog":
+        # Like allow-dialog but denies. Default button: "Don’t Allow".
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("deny-dialog is iOS-only")
+        label = args[0] if args else "Don’t Allow"
+        clicked = ios.permission_dialog_tap(sim_id, label)
+        return {"status": "clicked" if clicked else "not_found", "label": label}
+
+    elif command == "permission-grant":
+        # Pre-authorize a specific permission before app launch.
+        # Usage: simemu do <session> permission-grant <bundle> <service>
+        # service: notifications, photos, camera, microphone, contacts, location, all
+        if len(args) < 2:
+            raise RuntimeError("Usage: simemu do <session> permission-grant <bundle> <service>")
+        bundle, service = args[0], args[1]
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("permission-grant is iOS-only; use grant-all for Android")
+        ios.privacy(sim_id, bundle, "grant", service)
+        return {"status": "granted", "app": bundle, "service": service}
 
     elif command == "grant-all":
         if not args:
@@ -2658,14 +2707,13 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
     elif command == "auto-dismiss":
         import subprocess as _sp
         if platform in ("ios", "watchos", "tvos", "visionos"):
-            # Grant common permissions preemptively + reset privacy warnings
+            # Accept any pending alert. Do NOT reset privacy — resetting causes
+            # permission dialogs to reappear on next launch (was the old bug).
+            ios.permission_dialog_tap(sim_id, "Allow")
             _sp.run(["xcrun", "simctl", "ui", sim_id, "alert", "accept"],
                      capture_output=True, check=False)
-            # Reset privacy warnings so they don't re-appear
-            _sp.run(["xcrun", "simctl", "privacy", sim_id, "reset", "all"],
-                     capture_output=True, check=False)
             return {"status": "dismissed", "platform": "ios",
-                    "hint": "Accepted pending alert and reset privacy warnings"}
+                    "hint": "Accepted pending alert"}
         else:
             serial = _android_serial_for_session()
             # Disable window animation scale
@@ -3472,9 +3520,10 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             f"Unknown command '{command}'. Available: boot, show, hide, install, launch, tap, swipe, "
             f"screenshot, maestro, url, done, renew, terminate, uninstall, input, "
             f"long-press, key, appearance, rotate, location, push, pull, add-media, "
-            f"dismiss-alert, accept-alert, deny-alert, grant-all, clear-data, clean-retry, "
+            f"dismiss-alert, accept-alert, deny-alert, deny-dialog, allow-dialog, "
+            f"permission-grant, grant-all, clear-data, clean-retry, "
             f"clipboard-set, clipboard-get, shake, status-bar, build, env, "
-            f"auto-dismiss, wait-for-render, deeplink-proof, reset-app, "
+            f"auto-dismiss, wait-for-render, deeplink-proof, reset-app, launch-with-args, "
             f"foreground-app, is-running, network, keychain-reset, icloud-sync, "
             f"app-info, a11y-tree, a11y-tap, type-submit, scroll, back, home, "
             f"software-keyboard, notifications-clear, app-container, clone, siri, contacts-import, "

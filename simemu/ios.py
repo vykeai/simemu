@@ -179,7 +179,11 @@ def _extract_ipa(ipa_path: Path) -> str:
 def launch(udid: str, bundle_id: str, args: list[str] | None = None) -> None:
     _ensure_booted(udid)
     cmd_args = ["launch", "--terminate-running-process", udid, bundle_id] + (args or [])
-    _simctl(*cmd_args)
+    result = subprocess.run(["xcrun", "simctl"] + cmd_args, capture_output=True, check=False)
+    if result.returncode != 0:
+        # iOS 26+ may reject --terminate-running-process for cold-start; retry without it.
+        fallback = ["launch", udid, bundle_id] + (args or [])
+        subprocess.run(["xcrun", "simctl"] + fallback, check=True)
     _wait_for_app_running(udid, bundle_id)
 
 
@@ -445,6 +449,37 @@ def dismiss_system_alert(udid: str, verdict: str) -> dict:
         )
 
     return {"status": "accepted" if verdict == "accept" else "denied", "method": method}
+
+
+def permission_dialog_tap(udid: str, button_label: str, attempts: int = 4, delay: float = 0.5) -> bool:
+    """Click a button in an iOS permission dialog (notifications, photos, camera, etc.).
+
+    Ensures the Simulator window is visible before attempting the click, which is
+    required for the AppleScript fallback path — hidden windows are not accessible
+    via System Events. Tries simctl ui alert first (pre-iOS 26), then AppleScript.
+
+    button_label: exact button text, e.g. "Allow", "Don't Allow", "OK", "Cancel"
+    """
+    _ensure_booted(udid)
+    _open_sim_window(udid)
+    focus(udid)
+    time.sleep(0.3)
+    for _ in range(attempts):
+        # Pre-iOS 26: simctl ui alert accept/deny
+        action = "accept" if button_label.lower() in ("allow", "ok", "continue") else "deny"
+        result = subprocess.run(
+            ["xcrun", "simctl", "ui", udid, "alert", action],
+            capture_output=True, check=False,
+        )
+        if result.returncode == 0:
+            return True
+        # iOS 26+: use AppleScript to click by exact label, then try sheet variant
+        if _click_alert_button(udid, [button_label]):
+            return True
+        if _click_sheet_button(udid, [button_label]):
+            return True
+        time.sleep(delay)
+    return False
 
 
 def wait_for_foreground_app(
