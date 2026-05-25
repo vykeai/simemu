@@ -309,9 +309,29 @@ def get_reservation(agent: str, platform: str) -> dict | None:
     return agent_res.get(platform)
 
 
+def get_excluded_udids() -> set[str]:
+    """Return UDIDs that must never be claimed (e.g. xcodebuild primary simulator).
+
+    Reads from ~/.simemu/config.json under "excluded_udids":
+    {
+      "excluded_udids": ["F3F8FDFE-F798-49BC-AD05-D33CADD08905"]
+    }
+    """
+    from . import state as _state
+    config_path = _state.config_dir() / "config.json"
+    if not config_path.exists():
+        return set()
+    try:
+        config = json.loads(config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return set()
+    return set(config.get("excluded_udids", []))
+
+
 def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
     """Return all available devices matching a ClaimSpec without choosing one."""
     allocated_ids = _get_claimed_sim_ids()
+    excluded_ids = get_excluded_udids()
     platform = {
         "watch": "watchos",
         "tv": "tvos",
@@ -336,6 +356,9 @@ def find_matching_devices(spec: "ClaimSpec") -> list[SimulatorInfo]:
         if not list_fn:
             return []
         candidates = list_fn(allocated_ids)
+
+    if excluded_ids:
+        candidates = [sim for sim in candidates if sim.sim_id not in excluded_ids]
 
     if spec.device_selector:
         selector = spec.device_selector.lower()
@@ -395,6 +418,10 @@ def find_best_device(spec: "ClaimSpec") -> SimulatorInfo:
             raise NoSimulatorAvailable(f"Unknown platform '{platform}'.")
         candidates = list_fn(allocated_ids)
         kind = "simulators"
+
+    excluded_ids = get_excluded_udids()
+    if excluded_ids:
+        candidates = [sim for sim in candidates if sim.sim_id not in excluded_ids]
 
     if not candidates:
         raise NoSimulatorAvailable(
