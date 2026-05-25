@@ -89,11 +89,13 @@ def boot(udid: str, minimize: bool = False) -> None:
     try:
         # Redirect bootstatus output to stderr — it's verbose and contaminates
         # stdout when agents parse JSON from `simemu claim`.
+        # 90-second hard timeout: bootstatus can stall forever when a simulator
+        # is stuck (e.g. "Waiting on System App" loop after erase or bad state).
         subprocess.run(
             ["xcrun", "simctl", "bootstatus", udid, "-b"],
-            stdout=sys.stderr, check=True,
+            stdout=sys.stderr, check=True, timeout=90,
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         # bootstatus can fail or stall even when the simulator is already usable.
         # Fall back to a short poll of simctl list instead of treating this as fatal.
         deadline = time.time() + 15
