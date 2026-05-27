@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -293,30 +295,105 @@ def ios_launch(udid: str, bundle_id: str) -> None:
         raise RuntimeError(f"Launch failed: {detail}")
 
 
+_TUNNELD_DEFAULT_ADDRESS = ("127.0.0.1", 49151)
+_PYMOBILEDEVICE3_PYTHON = (
+    "/Users/luke/.local/pipx/venvs/pymobiledevice3/bin/python"
+)
+
+
+def _find_rsd_addr(udid: str) -> "tuple[str, int] | None":
+    """Query the tunneld HTTP API for the RSD tunnel address+port for *udid*.
+
+    tunneld exposes a JSON HTTP endpoint at http://127.0.0.1:49151 that maps
+    UDID → list[{tunnel-address, tunnel-port, interface}].  Returns the first
+    matching entry, or None if tunneld is not running or has no tunnel for
+    this device.
+    """
+    host, port = _TUNNELD_DEFAULT_ADDRESS
+    url = f"http://{host}:{port}"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            data: dict = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError):
+        return None
+
+    # data is keyed by UDID; each value is a list of tunnel detail dicts.
+    tunnels = data.get(udid, [])
+    if not tunnels:
+        return None
+
+    entry = tunnels[0]
+    addr = entry.get("tunnel-address")
+    port_num = entry.get("tunnel-port")
+    if addr and port_num is not None:
+        return (addr, int(port_num))
+    return None
+
+
 def ios_screenshot(udid: str, output_path: str, max_size: int | None = None) -> None:
     """Take a screenshot of a real iOS device.
 
-    Xcode 26's `devicectl` no longer exposes a screenshot subcommand for real
-    devices, so libimobiledevice's `idevicescreenshot` is the reliable path.
+    Strategy (in order):
+    1. ``idevicescreenshot`` — fast, works on iOS ≤ 17 / older libimobiledevice.
+    2. pymobiledevice3 via tunneld — required for iOS 17+ / iOS 26.x where the
+       old lockdownd-based API is deprecated.  Needs ``sudo pymobiledevice3
+       remote tunneld`` running in the background.
+
+    If both fail a descriptive RuntimeError is raised with remediation steps.
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
+    # --- fast path: idevicescreenshot ---
     if shutil.which("idevicescreenshot"):
-        subprocess.run(
+        result = subprocess.run(
             ["idevicescreenshot", "-u", udid, output_path],
-            check=True,
+            capture_output=True,
+            text=True,
         )
-    else:
+        if result.returncode == 0 and Path(output_path).exists():
+            if max_size:
+                subprocess.run(
+                    ["sips", "-Z", str(max_size), output_path],
+                    capture_output=True, check=False,
+                )
+            return
+        # idevicescreenshot failed — fall through to tunneld
+
+    # --- tunneld path: pymobiledevice3 developer screenshot --rsd ---
+    rsd = _find_rsd_addr(udid)
+    if rsd is not None:
+        addr, rsd_port = rsd
+        cmd = [
+            _PYMOBILEDEVICE3_PYTHON, "-m", "pymobiledevice3",
+            "developer", "screenshot",
+            "--rsd", addr, str(rsd_port),
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and Path(output_path).exists():
+            if max_size:
+                subprocess.run(
+                    ["sips", "-Z", str(max_size), output_path],
+                    capture_output=True, check=False,
+                )
+            return
+        detail = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(
-            "Real iOS screenshots require libimobiledevice on this Xcode build.\n"
-            "Install it with: brew install libimobiledevice"
+            f"pymobiledevice3 screenshot failed (RSD {addr}:{rsd_port}): {detail}"
         )
 
-    if max_size:
-        subprocess.run(
-            ["sips", "-Z", str(max_size), output_path],
-            capture_output=True, check=False,
-        )
+    # --- tunneld not running or no tunnel for this device ---
+    raise RuntimeError(
+        f"Cannot take screenshot of device {udid}:\n"
+        "  • idevicescreenshot failed or is not installed.\n"
+        "  • tunneld is not running or has no tunnel for this device.\n"
+        "\n"
+        "Start tunneld (requires root):\n"
+        f"  sudo {_PYMOBILEDEVICE3_PYTHON} -m pymobiledevice3 remote tunneld\n"
+        "\n"
+        "Then retry.  To install libimobiledevice (legacy fallback):\n"
+        "  brew install libimobiledevice"
+    )
 
 
 def ios_get_env(udid: str) -> dict:
