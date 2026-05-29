@@ -2412,8 +2412,8 @@ def crash_log(
     seconds = since_minutes * 60
 
     def _run(cmd: list[str]) -> list[str]:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
-        return result.stdout.splitlines()
+        result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)
+        return result.stdout.decode("utf-8", errors="replace").splitlines()
 
     def _with_context(lines: list[str], indices: list[int], radius: int = 2) -> list[str]:
         if not indices:
