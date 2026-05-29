@@ -94,15 +94,16 @@ class TestMaestroBridgeCleanup(unittest.TestCase):
         mock_sleep,
     ) -> None:
         mock_run.side_effect = [
-            MagicMock(stdout="123\n"),
-            MagicMock(stdout="/tmp/maestro-driver-iosUITests-Runner.app/maestro-driver-iosUITests-Runner\n"),
+            MagicMock(stdout="123\n", returncode=0),
+            MagicMock(stdout="03:00 /tmp/maestro-driver-iosUITests-Runner.app/maestro-driver-iosUITests-Runner\n", returncode=0),
+            MagicMock(stdout="", returncode=0),
         ]
 
         killed = _clear_stale_maestro_host_bridge()
 
         self.assertEqual(killed, [123])
         mock_kill.assert_called_once_with(123, 15)
-        mock_sleep.assert_called_once_with(1.0)
+        mock_sleep.assert_not_called()
 
     @patch("simemu.session.time.sleep")
     @patch("simemu.session.os.kill")
@@ -114,8 +115,8 @@ class TestMaestroBridgeCleanup(unittest.TestCase):
         mock_sleep,
     ) -> None:
         mock_run.side_effect = [
-            MagicMock(stdout="456\n"),
-            MagicMock(stdout="/usr/local/bin/node server.js\n"),
+            MagicMock(stdout="456\n", returncode=0),
+            MagicMock(stdout="03:00 /usr/local/bin/node server.js\n", returncode=0),
         ]
 
         killed = _clear_stale_maestro_host_bridge()
@@ -123,6 +124,23 @@ class TestMaestroBridgeCleanup(unittest.TestCase):
         self.assertEqual(killed, [])
         mock_kill.assert_not_called()
         mock_sleep.assert_not_called()
+
+    @patch("simemu.session.os.kill")
+    @patch("subprocess.run")
+    def test_clear_stale_maestro_host_bridge_refuses_active_listener(
+        self,
+        mock_run,
+        mock_kill,
+    ) -> None:
+        mock_run.side_effect = [
+            MagicMock(stdout="789\n", returncode=0),
+            MagicMock(stdout="00:05 /tmp/maestro-driver-iosUITests-Runner.app/maestro-driver-iosUITests-Runner\n", returncode=0),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "Refusing to kill"):
+            _clear_stale_maestro_host_bridge()
+
+        mock_kill.assert_not_called()
 
 
 # ── install ──────────────────────────────────────────────────────────────────

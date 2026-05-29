@@ -38,6 +38,7 @@ EXPIRE_TIMEOUT = 2 * 60 * 60  # parked → expired after 2hr total idle
 ANDROID_DISCONNECT_GRACE = int(os.environ.get("SIMEMU_ANDROID_DISCONNECT_GRACE", str(10 * 60)))  # tolerate transient adb loss before expiring
 MAESTRO_TIMEOUT_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "300"))
 MAESTRO_ANDROID_BRIDGE_PORT = int(os.environ.get("SIMEMU_ANDROID_MAESTRO_BRIDGE_PORT", "7001"))
+MAESTRO_STALE_BRIDGE_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_STALE_BRIDGE_SECONDS", "120"))
 
 # Default memory budget in MB
 DEFAULT_MEMORY_BUDGET_MB = 16 * 1024  # 16GB
@@ -445,14 +446,32 @@ def _is_maestro_bridge_process(command: str) -> bool:
     )
 
 
-def _clear_stale_maestro_host_bridge(port: int = MAESTRO_ANDROID_BRIDGE_PORT) -> list[int]:
-    """Free Maestro's fixed host bridge port when a stale driver owns it.
+def _parse_elapsed_seconds(value: str) -> int:
+    value = value.strip()
+    if not value:
+        return 0
+    days = 0
+    if "-" in value:
+        day_part, value = value.split("-", 1)
+        try:
+            days = int(day_part)
+        except ValueError:
+            days = 0
+    parts = value.split(":")
+    try:
+        if len(parts) == 2:
+            hours = 0
+            minutes, seconds = (int(part) for part in parts)
+        elif len(parts) == 3:
+            hours, minutes, seconds = (int(part) for part in parts)
+        else:
+            return 0
+    except ValueError:
+        return 0
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
-    Android Maestro talks gRPC through localhost:7001. A previous iOS/Android
-    Maestro driver can survive a failed run and keep that port bound while
-    returning plain HTTP, which makes the next Android run fail with
-    "First received frame was not SETTINGS" before the app flow starts.
-    """
+
+def _maestro_bridge_listener_pids(port: int) -> list[int]:
     import subprocess as _sp
 
     try:
@@ -463,30 +482,59 @@ def _clear_stale_maestro_host_bridge(port: int = MAESTRO_ANDROID_BRIDGE_PORT) ->
             check=False,
             timeout=5,
         )
-    except Exception:
+    except Exception as exc:
+        print(f"Could not inspect Maestro bridge port {port}: {exc}", file=sys.stderr)
         return []
 
     stdout = result.stdout if isinstance(result.stdout, str) else ""
-    killed: list[int] = []
+    pids: list[int] = []
     for raw_pid in stdout.splitlines():
         raw_pid = raw_pid.strip()
-        if not raw_pid.isdigit():
+        if raw_pid.isdigit():
+            pids.append(int(raw_pid))
+    return pids
+
+
+def _process_age_and_command(pid: int) -> tuple[int, str]:
+    import subprocess as _sp
+
+    result = _sp.run(
+        ["ps", "-p", str(pid), "-o", "etime=", "-o", "command="],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    line = stdout.strip()
+    if result.returncode != 0 or not line:
+        return 0, ""
+    parts = line.split(None, 1)
+    if len(parts) == 1:
+        return _parse_elapsed_seconds(parts[0]), ""
+    return _parse_elapsed_seconds(parts[0]), parts[1]
+
+
+def _clear_stale_maestro_host_bridge(port: int = MAESTRO_ANDROID_BRIDGE_PORT) -> list[int]:
+    """Free Maestro's fixed host bridge port when a stale driver owns it.
+
+    Android Maestro talks gRPC through localhost:7001. A previous iOS/Android
+    Maestro driver can survive a failed run and keep that port bound while
+    returning plain HTTP, which makes the next Android run fail with
+    "First received frame was not SETTINGS" before the app flow starts.
+    """
+    killed: list[int] = []
+    for pid in _maestro_bridge_listener_pids(port):
+        age_seconds, command = _process_age_and_command(pid)
+        if not command:
             continue
-        pid = int(raw_pid)
-        try:
-            command_result = _sp.run(
-                ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-        except Exception:
-            continue
-        command_stdout = command_result.stdout if isinstance(command_result.stdout, str) else ""
-        command = command_stdout.strip()
         if not _is_maestro_bridge_process(command):
             continue
+        if age_seconds < MAESTRO_STALE_BRIDGE_SECONDS:
+            raise RuntimeError(
+                f"Maestro bridge port {port} is owned by an active Maestro process "
+                f"(pid {pid}, age {age_seconds}s). Refusing to kill it; retry after that flow exits."
+            )
         try:
             os.kill(pid, signal.SIGTERM)
             killed.append(pid)
@@ -494,7 +542,17 @@ def _clear_stale_maestro_host_bridge(port: int = MAESTRO_ANDROID_BRIDGE_PORT) ->
             continue
 
     if killed:
-        time.sleep(1.0)
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            remaining = set(_maestro_bridge_listener_pids(port)).intersection(killed)
+            if not remaining:
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError(
+                f"Maestro bridge port {port} is still owned by stale process(es) "
+                f"{', '.join(str(pid) for pid in killed)} after SIGTERM."
+            )
     return killed
 
 
@@ -786,7 +844,7 @@ def _locked_sessions():
 
 @contextmanager
 def _locked_android_maestro():
-    """Serialize Android Maestro runs because its driver uses fixed host port 7001."""
+    """Serialize Maestro runs that can contend for the fixed host bridge port."""
     base = state.state_dir()
     base.mkdir(parents=True, exist_ok=True)
     lock_fd = open(_android_maestro_lock_file(), "w")
@@ -2170,8 +2228,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
             )
         else:
             cmd, env, debug_output = [], {}, ""
-        lock_context = _locked_android_maestro() if platform == "android" else nullcontext()
-        with lock_context:
+        with _locked_android_maestro():
             if platform == "android":
                 try:
                     device_id, android_kwargs = _preflight_android_maestro_device(
