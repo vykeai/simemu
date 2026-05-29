@@ -13,6 +13,7 @@ import os
 import platform as _platform_mod
 import re
 import secrets
+import signal
 import sys
 import tempfile
 import threading
@@ -36,6 +37,7 @@ PARK_TIMEOUT = 40 * 60        # idle → parked after 40min more (60min total)
 EXPIRE_TIMEOUT = 2 * 60 * 60  # parked → expired after 2hr total idle
 ANDROID_DISCONNECT_GRACE = int(os.environ.get("SIMEMU_ANDROID_DISCONNECT_GRACE", str(10 * 60)))  # tolerate transient adb loss before expiring
 MAESTRO_TIMEOUT_SECONDS = int(os.environ.get("SIMEMU_MAESTRO_TIMEOUT_SECONDS", "300"))
+MAESTRO_ANDROID_BRIDGE_PORT = int(os.environ.get("SIMEMU_ANDROID_MAESTRO_BRIDGE_PORT", "7001"))
 
 # Default memory budget in MB
 DEFAULT_MEMORY_BUDGET_MB = 16 * 1024  # 16GB
@@ -434,6 +436,68 @@ def _run_maestro_process(cmd: list[str], env: dict[str, str]):
     return result
 
 
+def _is_maestro_bridge_process(command: str) -> bool:
+    lowered = command.lower()
+    return (
+        "maestro-driver" in lowered
+        or "maestro.cli.appkt" in lowered
+        or "maestro-d" in lowered
+    )
+
+
+def _clear_stale_maestro_host_bridge(port: int = MAESTRO_ANDROID_BRIDGE_PORT) -> list[int]:
+    """Free Maestro's fixed host bridge port when a stale driver owns it.
+
+    Android Maestro talks gRPC through localhost:7001. A previous iOS/Android
+    Maestro driver can survive a failed run and keep that port bound while
+    returning plain HTTP, which makes the next Android run fail with
+    "First received frame was not SETTINGS" before the app flow starts.
+    """
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["lsof", "-nP", f"-tiTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        return []
+
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    killed: list[int] = []
+    for raw_pid in stdout.splitlines():
+        raw_pid = raw_pid.strip()
+        if not raw_pid.isdigit():
+            continue
+        pid = int(raw_pid)
+        try:
+            command_result = _sp.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            continue
+        command_stdout = command_result.stdout if isinstance(command_result.stdout, str) else ""
+        command = command_stdout.strip()
+        if not _is_maestro_bridge_process(command):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed.append(pid)
+        except OSError:
+            continue
+
+    if killed:
+        time.sleep(1.0)
+    return killed
+
+
 def _start_session_keepalive(session_id: str, interval_seconds: int = 30):
     """Keep long-running device commands from expiring mid-process."""
     stop = threading.Event()
@@ -466,6 +530,8 @@ def _stabilize_android_maestro_driver(device_id: str) -> None:
     with "First received frame was not SETTINGS" before the app flow starts.
     """
     import subprocess as _sp
+
+    _clear_stale_maestro_host_bridge()
 
     def run(args: list[str], timeout: int = 10) -> str:
         try:

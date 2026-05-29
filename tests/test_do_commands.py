@@ -12,6 +12,7 @@ os.environ["SIMEMU_STATE_DIR"] = _tmpdir
 os.environ["SIMEMU_CONFIG_DIR"] = _tmpdir
 
 from simemu.session import (
+    _clear_stale_maestro_host_bridge,
     _compute_expires_at,
     _now_iso,
     do_command,
@@ -80,6 +81,48 @@ class DoCommandBase(unittest.TestCase):
             data = {"sessions": {}}
         data["sessions"][session_id] = session_data
         sf.write_text(json.dumps(data))
+
+
+class TestMaestroBridgeCleanup(unittest.TestCase):
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.os.kill")
+    @patch("subprocess.run")
+    def test_clear_stale_maestro_host_bridge_kills_maestro_listener(
+        self,
+        mock_run,
+        mock_kill,
+        mock_sleep,
+    ) -> None:
+        mock_run.side_effect = [
+            MagicMock(stdout="123\n"),
+            MagicMock(stdout="/tmp/maestro-driver-iosUITests-Runner.app/maestro-driver-iosUITests-Runner\n"),
+        ]
+
+        killed = _clear_stale_maestro_host_bridge()
+
+        self.assertEqual(killed, [123])
+        mock_kill.assert_called_once_with(123, 15)
+        mock_sleep.assert_called_once_with(1.0)
+
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session.os.kill")
+    @patch("subprocess.run")
+    def test_clear_stale_maestro_host_bridge_leaves_non_maestro_listener(
+        self,
+        mock_run,
+        mock_kill,
+        mock_sleep,
+    ) -> None:
+        mock_run.side_effect = [
+            MagicMock(stdout="456\n"),
+            MagicMock(stdout="/usr/local/bin/node server.js\n"),
+        ]
+
+        killed = _clear_stale_maestro_host_bridge()
+
+        self.assertEqual(killed, [])
+        mock_kill.assert_not_called()
+        mock_sleep.assert_not_called()
 
 
 # ── install ──────────────────────────────────────────────────────────────────
