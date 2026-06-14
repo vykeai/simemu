@@ -340,13 +340,18 @@ class IOSInstallTests(unittest.TestCase):
 
 class IOSScreenshotTests(unittest.TestCase):
     def test_uses_idevicescreenshot_when_available(self) -> None:
+        def _exists(self) -> bool:
+            return str(self) == "/tmp/out.png"
         with patch("simemu.device.shutil.which", return_value="/opt/homebrew/bin/idevicescreenshot"):
             with patch("simemu.device.subprocess.run") as mock_run:
-                device.ios_screenshot("UDID-001", "/tmp/out.png")
+                mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+                with patch("simemu.device.Path.exists", _exists):
+                    device.ios_screenshot("UDID-001", "/tmp/out.png")
 
         mock_run.assert_called_once_with(
             ["idevicescreenshot", "-u", "UDID-001", "/tmp/out.png"],
-            check=True,
+            capture_output=True,
+            text=True,
         )
 
     def test_raises_clear_error_when_idevicescreenshot_missing(self) -> None:

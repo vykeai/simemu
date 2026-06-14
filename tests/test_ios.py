@@ -159,12 +159,15 @@ class IOSControlTests(unittest.TestCase):
         self.assertIsNone(ios.foreground_app("SIM-001"))
 
     @patch("simemu.ios._wait_for_app_running")
-    @patch("simemu.ios._simctl")
+    @patch("simemu.ios.subprocess.run")
     @patch("simemu.ios._ensure_booted")
-    def test_launch_terminates_existing_process_and_verifies_running(self, mock_booted, mock_simctl, mock_wait) -> None:
+    def test_launch_terminates_existing_process_and_verifies_running(self, mock_booted, mock_run, mock_wait) -> None:
+        mock_run.return_value = Mock(returncode=0, stdout=b"", stderr=b"")
         ios.launch("SIM-001", "app.fitkind.dev", ["--debug-route=foo"])
-        mock_simctl.assert_called_once_with(
-            "launch", "--terminate-running-process", "SIM-001", "app.fitkind.dev", "--debug-route=foo"
+        mock_run.assert_called_once_with(
+            ["xcrun", "simctl", "launch", "--terminate-running-process",
+             "SIM-001", "app.fitkind.dev", "--debug-route=foo"],
+            capture_output=True, check=False,
         )
         mock_wait.assert_called_once_with("SIM-001", "app.fitkind.dev")
 
