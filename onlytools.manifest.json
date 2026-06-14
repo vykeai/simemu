@@ -4,7 +4,7 @@
   "name": "Simemu",
   "catalog": {
     "tier": "T1",
-    "classification": "dev-tool",
+    "classification": "core-tool",
     "status": "active",
     "repoPath": "simemu",
     "owner": "luke",
@@ -15,6 +15,28 @@
     "path": "pyproject.toml"
   },
   "serviceMode": "cli-only",
+  "environments": [
+    {
+      "slug": "prod",
+      "displayName": "Production",
+      "configRoot": "~/.simemu",
+      "dataRoot": "~/.simemu",
+      "cacheRoot": "~/.simemu/cache",
+      "serviceSlug": "simemu",
+      "fedIdentity": "simemu",
+      "inheritsFrom": null
+    },
+    {
+      "slug": "dev",
+      "displayName": "Development",
+      "configRoot": "~/.simemu-dev",
+      "dataRoot": "~/.simemu-dev",
+      "cacheRoot": "~/.simemu-dev/cache",
+      "serviceSlug": "simemu-dev",
+      "fedIdentity": "simemu-dev",
+      "inheritsFrom": null
+    }
+  ],
   "commands": {
     "install": {
       "argv": [
@@ -46,6 +68,7 @@
         "-m",
         "pytest",
         "tests/",
+        "-x",
         "-q"
       ],
       "cwd": ".",
