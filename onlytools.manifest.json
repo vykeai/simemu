@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "onlytools.manifest.v1",
+  "slug": "simemu",
+  "name": "Simemu",
+  "catalog": {
+    "tier": "T1",
+    "classification": "dev-tool",
+    "status": "active",
+    "repoPath": "simemu",
+    "owner": "luke",
+    "releaseOwner": "luke"
+  },
+  "version": {
+    "source": "pyproject",
+    "path": "pyproject.toml"
+  },
+  "serviceMode": "cli-only",
+  "commands": {
+    "install": {
+      "argv": [
+        "python3",
+        "-m",
+        "pip",
+        "install",
+        "-e",
+        "."
+      ],
+      "cwd": ".",
+      "timeoutSeconds": 300
+    },
+    "build": {
+      "argv": [
+        "python3",
+        "-m",
+        "build"
+      ],
+      "cwd": ".",
+      "outputs": [
+        "dist/"
+      ],
+      "timeoutSeconds": 600
+    },
+    "test": {
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/",
+        "-q"
+      ],
+      "cwd": ".",
+      "timeoutSeconds": 900
+    }
+  },
+  "services": [],
+  "dependencies": [],
+  "proof": {
+    "receipts": [
+      {
+        "kind": "onlytools.test",
+        "requiredFor": [
+          "test"
+        ],
+        "provider": "proofy"
+      }
+    ],
+    "sentinel": {
+      "required": true,
+      "checks": [
+        "manifest",
+        "graph"
+      ]
+    }
+  }
+}
