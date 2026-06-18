@@ -1,0 +1,40 @@
+{
+  "id": "T-LU-048",
+  "title": "privacy: Maintainer's home path + username hardcoded in SHIPPING source: simemu/device.py:300 sets _PYMOBILEDEVICE…",
+  "description": "[P1 · privacy · audit] Maintainer's home path + username hardcoded in SHIPPING source: simemu/device.py:300 sets _PYMOBILEDEVICE3_PYTHON = \"/Users/luke/.local/pipx/venvs/pymobiledevice3/bin/python\". It is used as the python interpreter for the iOS 17+/iOS 26 real-device screenshot path (device.py:367) and printed in the remediation message (device.py:392). On any community member's machine this path does not exist and there is no shutil.which/env fallback, so the tunneld screenshot path is BROKEN — and it leaks the username 'luke'.\n\nEvidence: simemu/device.py:300 `_PYMOBILEDEVICE3_PYTHON = (\"/Users/luke/.local/pipx/venvs/pymobiledevice3/bin/python\")`; used at device.py:367 and :392\n\nFix: Resolve the interpreter dynamically: `shutil.which('pymobiledevice3')` or `os.environ.get('SIMEMU_PMD3_PYTHON', sys.executable)`; never hardcode an absolute /Users/<name> path.\n\nSource: launch-readiness audit 2026-06-18",
+  "product": null,
+  "lane": "launch-readiness",
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "high",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-06-18T16:37:40.743Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-06-18T16:37:40.742Z",
+  "updatedAt": "2026-06-18T16:37:40.742Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}
