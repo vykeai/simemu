@@ -1,0 +1,40 @@
+{
+  "id": "T-LU-051",
+  "title": "supply-chain: Makefile ships `publish:` and `publish-test:` targets that run `python3 -m twine upload dist/*` to P…",
+  "description": "[P2 · supply-chain · audit] Makefile ships `publish:` and `publish-test:` targets that run `python3 -m twine upload dist/*` to PyPI/TestPyPI, contradicting the repo's stated GitHub-only distribution policy. Not auto-run, but a footgun that could publish this private community tool to public PyPI.\n\nEvidence: Makefile:6-10 `publish: build` / `python3 -m twine upload dist/*` and `publish-test:` → testpypi\n\nFix: Remove the publish/publish-test twine targets (or replace with a `gh release` flow). pyproject has no publishConfig, so no other PyPI exposure — just the Makefile.\n\nSource: launch-readiness audit 2026-06-18",
+  "product": null,
+  "lane": "launch-readiness",
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-06-18T16:37:41.322Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-06-18T16:37:41.321Z",
+  "updatedAt": "2026-06-18T16:37:41.321Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}
