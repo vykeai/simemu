@@ -1,0 +1,46 @@
+{
+  "id": "T-LU-053",
+  "title": "Tag and push v0.x release — first public OSS release of simemu",
+  "description": "",
+  "product": null,
+  "lane": "launch-readiness",
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [
+    "git tag vX.Y.Z pushed to origin matching pyproject.toml version",
+    "GitHub release created with release notes",
+    "648 pytest tests still pass on the tagged commit",
+    "All P0 launch-readiness tasks closed before tag is pushed",
+    "PyPI publish target in Makefile is guarded/removed so accidental publish is impossible"
+  ],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-06-23T15:17:53.266Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-06-23T15:17:53.265Z",
+  "updatedAt": "2026-06-23T15:17:53.265Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}
