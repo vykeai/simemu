@@ -1,44 +1,51 @@
 {
-    "id": "T-LU-037",
-    "title": "Audit all onlytools repos for hardcoded ports/URLs, replace with fed slug-based discovery",
-    "description": "",
-    "product": null,
-    "lane": "infra",
-    "wave": "wave-22",
-    "space": null,
-    "status": "todo",
-    "priority": "critical",
-    "platform": "api",
-    "assignee": null,
-    "dependsOn": [],
-    "spec": null,
-    "parentId": null,
-    "dueDate": null,
-    "context": [],
-    "acceptanceCriteria": [
-        "grep -r \"localhost:[0-9]\" across all onlytools repos finds zero hardcoded ports (excluding tests)",
-        "grep -r \"127.0.0.1:[0-9]\" finds zero hardcoded ports (excluding tests)",
-        "Each tool has a fed slug in its config",
-        "fed discover <slug> returns correct port for each running tool",
-        "Tools that previously hardcoded ports now use fed discovery",
-        "Does NOT break tools when fed is not running (graceful fallback)"
-    ],
-    "cloudy_run": null,
-    "statusHistory": [
-        {
-            "status": "todo",
-            "ts": "2026-04-30T08:13:47.203Z"
-        }
-    ],
-    "attachments": [],
-    "stage": null,
-    "runStatus": null,
-    "stageHistory": [],
-    "recurring": null,
-    "createdAt": "2026-04-30T08:13:47.202Z",
-    "updatedAt": "2026-04-30T08:13:47.202Z",
-    "validationOverrides": null,
-    "executionMode": null,
-    "cloudyTaskGraph": null,
-    "cloudy": null
+  "id": "T-LU-037",
+  "title": "Audit all onlytools repos for hardcoded ports/URLs, replace with fed slug-based discovery",
+  "description": "",
+  "product": null,
+  "lane": "infra",
+  "wave": "wave-22",
+  "space": null,
+  "status": "active",
+  "priority": "critical",
+  "platform": "api",
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [
+    "grep -r \"localhost:[0-9]\" across all onlytools repos finds zero hardcoded ports (excluding tests)",
+    "grep -r \"127.0.0.1:[0-9]\" finds zero hardcoded ports (excluding tests)",
+    "Each tool has a fed slug in its config",
+    "fed discover <slug> returns correct port for each running tool",
+    "Tools that previously hardcoded ports now use fed discovery",
+    "Does NOT break tools when fed is not running (graceful fallback)"
+  ],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-04-30T08:13:47.203Z"
+    },
+    {
+      "status": "active",
+      "ts": "2026-06-25T15:55:59.813Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-04-30T08:13:47.202Z",
+  "updatedAt": "2026-06-25T15:55:59.813Z",
+  "validationOverrides": null,
+  "executionMode": null,
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "taskGraph": null,
+  "runtime": null
 }
