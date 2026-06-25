@@ -2,14 +2,7 @@
   "schemaVersion": "onlytools.manifest.v1",
   "slug": "simemu",
   "name": "Simemu",
-  "catalog": {
-    "tier": "T1",
-    "classification": "core-tool",
-    "status": "active",
-    "repoPath": "simemu",
-    "owner": "luke",
-    "releaseOwner": "luke"
-  },
+  "catalogSlug": "simemu",
   "version": {
     "source": "pyproject",
     "path": "pyproject.toml"
