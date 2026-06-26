@@ -2936,6 +2936,11 @@ def _maybe_print_help_and_exit(parser: argparse.ArgumentParser, raw_args: list[s
 
 
 def main():
+    try:
+        from setproctitle import setproctitle
+        setproctitle('simemu')
+    except ImportError:
+        pass
     _warn_if_module_invocation()
     parser = build_parser()
     raw_args = sys.argv[1:]
