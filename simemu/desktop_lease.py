@@ -17,6 +17,10 @@ import urllib.request
 from contextlib import contextmanager
 from typing import Any
 
+from ._fed import fed_tool_url
+
+_SCOUTY_DEFAULT_PORT = 7331
+
 
 _ACTION_EMOJI = {
     "tap": "\U0001f446",       # 👆
@@ -33,7 +37,7 @@ _ACTION_EMOJI = {
 
 
 def _base_url() -> str:
-    return (os.environ.get("SCOUTY_BASE_URL") or "http://127.0.0.1:7331").rstrip("/")
+    return (os.environ.get("SCOUTY_BASE_URL") or fed_tool_url("scouty", _SCOUTY_DEFAULT_PORT)).rstrip("/")
 
 
 def _json_request(method: str, path: str, payload: dict | None = None, timeout: float = 2.0) -> dict:

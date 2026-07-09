@@ -12,7 +12,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 from . import session as session_module
+from ._fed import fed_tool_url
 from .session import ClaimSpec, Session, SessionError
+
+_SIMEMU_DEFAULT_PORT = 8765
 
 DEFAULT_LEASE_TTL_SECONDS = 60 * 60
 
@@ -181,5 +184,5 @@ def connection_details(session: Session, host: str) -> dict:
         "host": host,
         "identifier_kind": identifier_kind,
         "identifier": identifier,
-        "server_url": os.environ.get("SIMEMU_SERVER_URL", "http://127.0.0.1:8765"),
+        "server_url": os.environ.get("SIMEMU_SERVER_URL") or fed_tool_url("simemu", _SIMEMU_DEFAULT_PORT),
     }

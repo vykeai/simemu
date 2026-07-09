@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import state, ios, android, device
+from ._fed import fed_tool_url, fed_tool_port
 from .discover import (
     list_ios, list_android, list_watchos, list_tvos, list_visionos,
     list_real_ios, list_real_android,
@@ -30,6 +31,9 @@ from . import session as session_module
 from . import window as window_mgr
 from .lease import LeaseClaimSpec, claim_device_lease, list_device_leases, release_device_lease
 from .session import ClaimSpec, SessionError
+
+_SIMEMU_DEFAULT_PORT = 8765
+_SCOUTY_DEFAULT_PORT = 7331
 
 # Apple platforms all use xcrun simctl — same as iOS
 _APPLE_PLATFORMS = {"ios", "watchos", "tvos", "visionos"}
@@ -71,7 +75,7 @@ def _project_name(alloc: state.Allocation) -> str:
 
 
 def _scouty_base_url() -> str:
-    return (os.environ.get("SCOUTY_BASE_URL") or "http://127.0.0.1:7331").rstrip("/")
+    return (os.environ.get("SCOUTY_BASE_URL") or fed_tool_url("scouty", _SCOUTY_DEFAULT_PORT)).rstrip("/")
 
 
 def _scouty_json(method: str, path: str, payload: dict | None = None, timeout: float = 2.0) -> dict:
@@ -174,9 +178,9 @@ def _autostart_disabled() -> bool:
     return no_value in {"1", "true", "yes", "on"}
 
 
-def _server_reachable(host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.5) -> bool:
+def _server_reachable(host: str = "127.0.0.1", port: int | None = None, timeout: float = 0.5) -> bool:
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((host, port or fed_tool_port("simemu", _SIMEMU_DEFAULT_PORT)), timeout=timeout):
             return True
     except OSError:
         return False
@@ -599,9 +603,10 @@ def cmd_status_overview(args):
         pass
 
     # Server
+    _simemu_port = fed_tool_port("simemu", _SIMEMU_DEFAULT_PORT)
     server_status = "stopped"
     try:
-        with socket.create_connection(("127.0.0.1", 8765), timeout=0.5):
+        with socket.create_connection(("127.0.0.1", _simemu_port), timeout=0.5):
             server_status = "running"
     except OSError:
         pass
@@ -622,7 +627,7 @@ def cmd_status_overview(args):
 
     data["services"] = {
         "monitor": {"status": monitor_status, "last_tick": monitor_last_tick},
-        "server": {"status": server_status, "port": 8765},
+        "server": {"status": server_status, "port": _simemu_port},
         "menubar": {"status": menubar_status, "pid": menubar_pid},
     }
 
@@ -683,7 +688,7 @@ def cmd_status_overview(args):
         menubar_detail = f"{menubar_status} (pid {menubar_pid})"
 
     print(f"Monitor: {monitor_detail}")
-    print(f"Server: {server_status}" + (f" on :8765" if server_status == "running" else ""))
+    print(f"Server: {server_status}" + (f" on :{_simemu_port}" if server_status == "running" else ""))
     print(f"Menubar: {menubar_detail}")
 
 
@@ -2813,7 +2818,8 @@ def cmd_daemon(args):
 
     elif args.action == "status":
         manual_server = None
-        for url in ("http://127.0.0.1:8765/health", "http://127.0.0.1:8765/status"):
+        _base = fed_tool_url("simemu", _SIMEMU_DEFAULT_PORT)
+        for url in (f"{_base}/health", f"{_base}/status"):
             try:
                 with urllib.request.urlopen(url, timeout=1.5) as resp:
                     manual_server = {
