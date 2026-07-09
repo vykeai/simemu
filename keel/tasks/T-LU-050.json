@@ -1,0 +1,40 @@
+{
+  "id": "T-LU-050",
+  "title": "privacy: tests/test_docs_regression.py:30-35 hardcodes absolute paths to the maintainer's private projects: /Users…",
+  "description": "[P2 · privacy · audit] tests/test_docs_regression.py:30-35 hardcodes absolute paths to the maintainer's private projects: /Users/luke/dev/products/{goala,fitkind,sitches,univiirse}/... — leaks both home path and private project names. (Test body is gated behind SIMEMU_CHECK_LOCAL_PRODUCT_DOCS=1 and skips missing paths, so it does not fail on members' clones — privacy leak only, not a functional break.) Also manifest owner/releaseOwner = \"luke\" and install.sh:3 usage comment uses /Users/luke/dev/onlytools/simemu.\n\nEvidence: tests/test_docs_regression.py:30 `Path(\"/Users/luke/dev/products/goala/AUTONOMOUS_EXECUTION.md\")`; onlytools.manifest.json:10-11 `\"owner\": \"luke\", \"releaseOwner\": \"luke\"`; install.sh:3\n\nFix: Delete the local-product-docs test (or move those paths to an untracked local fixture); set manifest owner/releaseOwner to the org handle 'vykeai'; drop the absolute path from install.sh:3 comment.\n\nSource: launch-readiness audit 2026-06-18",
+  "product": null,
+  "lane": "launch-readiness",
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-06-18T16:37:41.162Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-06-18T16:37:41.161Z",
+  "updatedAt": "2026-06-18T16:37:41.161Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}

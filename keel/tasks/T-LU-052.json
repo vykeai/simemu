@@ -1,0 +1,46 @@
+{
+  "id": "T-LU-052",
+  "title": "Add smoke E2E test — verify simemu monitor starts and claim returns a session ID",
+  "description": "",
+  "product": null,
+  "lane": "launch-readiness",
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "high",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [
+    "pytest tests/test_smoke_e2e.py passes in a fresh venv",
+    "test starts the monitor process and waits for /health to return 200",
+    "test runs simemu claim macos and checks a non-empty session ID is returned",
+    "test cleans up the monitor process on exit even if assertions fail",
+    "test does NOT require a real device attached"
+  ],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-06-23T15:17:50.545Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-06-23T15:17:50.544Z",
+  "updatedAt": "2026-06-23T15:17:50.544Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}

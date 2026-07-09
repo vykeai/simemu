@@ -188,6 +188,11 @@ async def _idle_shutdown_loop(timeout_minutes: int) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        from setproctitle import setproctitle
+        setproctitle('simemu-daemon')
+    except ImportError:
+        pass
     timeout = int(os.environ.get("SIMEMU_IDLE_TIMEOUT", "20"))
     task = asyncio.create_task(_idle_shutdown_loop(timeout))
 

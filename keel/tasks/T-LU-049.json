@@ -1,0 +1,40 @@
+{
+  "id": "T-LU-049",
+  "title": "privacy: Private/internal product names (goala, sitches, fitkind, univiirse, vivii, up2much, StrikeThePose, settle…",
+  "description": "[P1 · privacy · audit] Private/internal product names (goala, sitches, fitkind, univiirse, vivii, up2much, StrikeThePose, settle) are baked into shipping code and docs across 23 tracked files. Most damaging: simemu/swift/Sources/SimEmuBar/SimEmuApp.swift:87 contains a LIVE hardcoded allowlist `[\"goala\",\"sitches\",\"fitkind\",\"vivii\",\"univiirse\",\"up2much\"]` used for project-name inference (also a latent bug — community members' projects won't match). Also in simemu/discover.py:339, simemu/cli.py:2176/2246, simemu/state.py:4-9 (help/docstrings), README.md:88, AGENTS.md:207-208, docs/shared-desktop-plan.md:40-41, PRODUCT_IT_WAS_MEANT_TO_BE.md:58.\n\nEvidence: git grep -liE 'goala|fitkind|sitches|univiirse|strikethepose' → 23 files; SimEmuApp.swift:87 `for name in [\"goala\", \"sitches\", \"fitkind\", \"vivii\", \"univiirse\", \"up2much\"]`\n\nFix: Replace hardcoded private product names with generic examples (e.g. 'myapp', 'demo-ios'); make the Swift project-inference list config-driven (read from ~/.simemu/config.json) instead of a hardcoded allowlist.\n\nSource: launch-readiness audit 2026-06-18",
+  "product": null,
+  "lane": "launch-readiness",
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "high",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-06-18T16:37:40.974Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-06-18T16:37:40.973Z",
+  "updatedAt": "2026-06-18T16:37:40.973Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}

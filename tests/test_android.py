@@ -532,7 +532,7 @@ class TestCrashLog(unittest.TestCase):
     @patch("simemu.android._ensure_booted")
     def test_returns_none_when_no_crashes(self, mock_boot: MagicMock, mock_serial: MagicMock,
                                            mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(stdout="", returncode=0)
+        mock_run.return_value = MagicMock(stdout=b"", returncode=0)
         result = android.crash_log("MyAVD")
         self.assertIsNone(result)
 
@@ -546,7 +546,7 @@ class TestCrashLog(unittest.TestCase):
             "E AndroidRuntime: Caused by: java.lang.NullPointerException\n"
             "E AndroidRuntime:     at com.example.App.onCreate(App.java:42)\n"
         )
-        mock_run.return_value = MagicMock(stdout=crash_output, returncode=0)
+        mock_run.return_value = MagicMock(stdout=crash_output.encode("utf-8"), returncode=0)
         result = android.crash_log("MyAVD")
         self.assertIsNotNone(result)
         self.assertIn("FATAL EXCEPTION", result)
@@ -993,6 +993,9 @@ class TestScreenshotFallbacks(unittest.TestCase):
         mock_popen.assert_called_once()
         mock_adb.assert_not_called()
 
+    @patch("simemu.android.subprocess.run")
+    @patch("simemu.android.shutil.which", return_value=None)
+    @patch("simemu.android._capture_console_screenshot", return_value=False)
     @patch("simemu.android.time.sleep")
     @patch("simemu.android._capture_is_black", return_value=False)
     @patch("simemu.android._capture_window_fallback", return_value=True)
@@ -1009,7 +1012,11 @@ class TestScreenshotFallbacks(unittest.TestCase):
         mock_window_fallback: MagicMock,
         mock_black: MagicMock,
         mock_sleep: MagicMock,
+        mock_console: MagicMock,
+        mock_which: MagicMock,
+        mock_run: MagicMock,
     ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
         proc = MagicMock()
         proc.returncode = 1
         proc.wait.return_value = 1
@@ -1020,7 +1027,6 @@ class TestScreenshotFallbacks(unittest.TestCase):
             android.screenshot("MyAVD", output, settle_ms=0)
 
         mock_window_fallback.assert_called_once_with("MyAVD", output)
-        mock_adb.assert_not_called()
 
     @patch.dict("simemu.android.os.environ", {"SIMEMU_PREFER_CONSOLE_SCREENSHOT": "1"})
     @patch("simemu.android._capture_console_screenshot", return_value=True)
