@@ -320,13 +320,20 @@ def _maestro_debug_output_dir(session_id: str) -> str:
 
 def _maestro_env(platform: str) -> dict[str, str]:
     env = dict(os.environ)
-    if platform != "android":
-        return env
 
-    prefer_ipv4 = "-Djava.net.preferIPv4Stack=true"
-    current = env.get("JAVA_TOOL_OPTIONS", "").strip()
-    if prefer_ipv4 not in current.split():
-        env["JAVA_TOOL_OPTIONS"] = f"{current} {prefer_ipv4}".strip()
+    # Maestro's PostHog analytics queue thread is non-daemon: when the
+    # analytics call stalls (filtered/slow network), the JVM never exits
+    # after the flow finishes — every flow "hangs" until the caller's
+    # timeout. Maestro itself documents MAESTRO_CLI_NO_ANALYTICS as the
+    # opt-out. Flows must be hermetic; analytics must never gate them.
+    env.setdefault("MAESTRO_CLI_NO_ANALYTICS", "1")
+    env.setdefault("MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED", "1")
+
+    if platform == "android":
+        prefer_ipv4 = "-Djava.net.preferIPv4Stack=true"
+        current = env.get("JAVA_TOOL_OPTIONS", "").strip()
+        if prefer_ipv4 not in current.split():
+            env["JAVA_TOOL_OPTIONS"] = f"{current} {prefer_ipv4}".strip()
     return env
 
 

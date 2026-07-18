@@ -1928,11 +1928,16 @@ def _run_maestro_flow(udid: str, commands: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(flow)
 
+        # Analytics must never gate a flow — see session._maestro_env.
+        env = dict(os.environ)
+        env.setdefault("MAESTRO_CLI_NO_ANALYTICS", "1")
+        env.setdefault("MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED", "1")
         result = subprocess.run(
             ["maestro", "--device", udid, "test", flow_path, "--format", "NOOP", "--no-ansi"],
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip()
