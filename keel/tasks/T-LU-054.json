@@ -14,7 +14,13 @@
   "spec": null,
   "parentId": null,
   "dueDate": null,
-  "context": [],
+  "context": [
+    {
+      "at": "2026-08-04T23:33:17.441Z",
+      "by": "human",
+      "text": "codex gate returned FAIL. Guard fails OPEN: ps probe failure returns [] which reads as device-idle and reaps the claim - the exact double-claim the change prevents. Test test_probe_failure_does_not_block_reaping asserts the unsafe behaviour. Also TOCTTOU between snapshot and expiry write, and process table can be scanned twice under the session lock. Proof at proof/T-LU-054/codex-verdict.txt. NOT merged."
+    }
+  ],
   "acceptanceCriteria": [
     "A claim whose claimant PID is dead is NOT reaped while any live process references its device UDID",
     "A claim whose claimant PID is dead AND whose device has no live referencing process IS reaped as before",
@@ -37,7 +43,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-08-04T22:41:40.290Z",
-  "updatedAt": "2026-08-04T23:33:17.095Z",
+  "updatedAt": "2026-08-04T23:33:17.441Z",
   "proofReferences": [],
   "proofOverrides": [],
   "surfaces": [],
