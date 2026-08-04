@@ -1,0 +1,40 @@
+{
+  "id": "T-LU-054",
+  "title": "Guard claim reaping with device-in-use check",
+  "description": "",
+  "product": null,
+  "lane": null,
+  "wave": "v2 Polish",
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [],
+  "acceptanceCriteria": [],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-08-04T22:41:40.294Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-08-04T22:41:40.290Z",
+  "updatedAt": "2026-08-04T22:41:40.290Z",
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}
