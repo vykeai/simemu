@@ -6,7 +6,7 @@
   "lane": null,
   "wave": "v2 Polish",
   "space": null,
-  "status": "todo",
+  "status": "blocked",
   "priority": "medium",
   "platform": null,
   "assignee": null,
@@ -25,6 +25,10 @@
     {
       "status": "todo",
       "ts": "2026-08-04T22:41:40.294Z"
+    },
+    {
+      "status": "blocked",
+      "ts": "2026-08-04T23:33:17.098Z"
     }
   ],
   "attachments": [],
@@ -33,7 +37,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-08-04T22:41:40.290Z",
-  "updatedAt": "2026-08-04T22:41:51.187Z",
+  "updatedAt": "2026-08-04T23:33:17.095Z",
   "proofReferences": [],
   "proofOverrides": [],
   "surfaces": [],
