@@ -1,7 +1,7 @@
 {
   "id": "T-LU-054",
   "title": "Guard claim reaping with device-in-use check",
-  "description": "",
+  "description": "collect_stale_session_ids() reaps a claim purely on is_pid_alive(claimant_pid). claimant_pid() binds the claim to os.getppid() — the shell that ran 'simemu claim'. When that shell is short-lived (zsh -c wrapper), the claim reads dead while the DEVICE is still in active use by a different process (xcodebuild -destination id=<udid>). _reap_dead_claims_locked then marks the session expired, freeing the device for a sibling to claim — producing the double-claim incident exclusive.py exists to prevent. Observed live: session s-32cc55 held chard (16D8CDC7) with dead claimant pid 62666 while xcodebuild ran a Vivii test against that same UDID.",
   "product": null,
   "lane": null,
   "wave": "v2 Polish",
@@ -15,7 +15,12 @@
   "parentId": null,
   "dueDate": null,
   "context": [],
-  "acceptanceCriteria": [],
+  "acceptanceCriteria": [
+    "A claim whose claimant PID is dead is NOT reaped while any live process references its device UDID",
+    "A claim whose claimant PID is dead AND whose device has no live referencing process IS reaped as before",
+    "Device-in-use detection is a pure, injectable function so tests need no real simulator",
+    "Existing tests in tests/test_exclusive_claim.py and tests/test_claim_policy.py still pass"
+  ],
   "statusHistory": [
     {
       "status": "todo",
@@ -28,7 +33,7 @@
   "stageHistory": [],
   "recurring": null,
   "createdAt": "2026-08-04T22:41:40.290Z",
-  "updatedAt": "2026-08-04T22:41:40.290Z",
+  "updatedAt": "2026-08-04T22:41:51.187Z",
   "proofReferences": [],
   "proofOverrides": [],
   "surfaces": [],
@@ -36,5 +41,9 @@
   "validationOverrides": null,
   "executionMode": null,
   "taskGraph": null,
-  "runtime": null
+  "runtime": null,
+  "proofRequirements": [
+    "pytest output showing new device-in-use guard tests passing plus the full suite green",
+    "proof/T-LU-054/codex-verdict.txt with final line VERDICT: PASS"
+  ]
 }
