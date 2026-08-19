@@ -65,6 +65,11 @@ def _normalize_launch_args(args: list[str] | None) -> list[str]:
             normalized.append(arg)
             continue
 
+        if arg == "--":
+            # argument separator, not a launch extra — dropping it prevents an
+            # empty --ez key that fails am start and silently monkey-launches
+            # the app with no extras
+            continue
         raw = arg[2:]
         if "=" in raw:
             key, value = raw.split("=", 1)
