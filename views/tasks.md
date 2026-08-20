@@ -136,3 +136,9 @@
 | T-031 | Add session claim rate limiting — max 5 active per agent | done | low | — | — |
 | T-032 | Menubar app macOS 26 compatibility — fix SwiftUI rendering issues on macOS 26 | done | high | — | — |
 | T-033 | Desktop lease coordination — simemu present command for canonical window placement and focus management | done | high | — | — |
+| T-LU-048 | privacy: Maintainer's home path + username hardcoded in SHIPPING source: simemu/device.py:300 sets _PYMOBILEDEVICE… | todo | high | — | launch-readiness |
+| T-LU-049 | privacy: Private/internal product names (goala, sitches, fitkind, univiirse, vivii, up2much, StrikeThePose, settle… | todo | high | — | launch-readiness |
+| T-LU-050 | privacy: tests/test_docs_regression.py:30-35 hardcodes absolute paths to the maintainer's private projects: /Users… | todo | medium | — | launch-readiness |
+| T-LU-051 | supply-chain: Makefile ships `publish:` and `publish-test:` targets that run `python3 -m twine upload dist/*` to P… | todo | medium | — | launch-readiness |
+| T-LU-052 | Add smoke E2E test — verify simemu monitor starts and claim returns a session ID | todo | high | — | launch-readiness |
+| T-LU-053 | Tag and push v0.x release — first public OSS release of simemu | todo | medium | — | launch-readiness |
