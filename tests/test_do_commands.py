@@ -980,17 +980,17 @@ class TestDoMaestro(DoCommandBase):
 
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
+        # The first attempt failed on transport loss ("device offline"), so the
+        # retry re-resolves the live serial and must not carry the stale pin.
         mock_verify.assert_called_once_with(
             "Pixel_7",
             "app.sitches.dev",
             timeout=10,
-            pinned_serial="emulator-5554",
         )
         mock_launch.assert_called_once_with(
             "Pixel_7",
             alias,
             ["--profile=pepper"],
-            pinned_serial="emulator-5554",
         )
 
     @patch("simemu.session.time.sleep")
@@ -1058,14 +1058,15 @@ class TestDoMaestro(DoCommandBase):
         result = do_command("s-droid1", "maestro", [str(flow)])
 
         self.assertEqual(result["status"], "passed")
+        # Transport loss on the first attempt means the retry re-resolves the
+        # live serial fresh — the stale pinned serial must not be reused.
         mock_repair.assert_called_once_with(
             "Pixel_7",
             "app.sitches.dev",
             str(apk),
             timeout=90,
-            pinned_serial="emulator-5554",
         )
-        mock_launch.assert_called_once_with("Pixel_7", alias, [], pinned_serial="emulator-5554")
+        mock_launch.assert_called_once_with("Pixel_7", alias, [])
 
     @patch("simemu.session.time.sleep")
     @patch("simemu.session.android.verify_install")
@@ -2280,6 +2281,197 @@ class TestParseVariants(unittest.TestCase):
         from simemu.session import _parse_build_variants
         result = _parse_build_variants("nothing: here")
         self.assertIsNone(result)
+
+
+# ── android maestro transport-loss retry ─────────────────────────────────────
+
+
+class TestAndroidMaestroTransportLossRetry(DoCommandBase):
+    """Transport-loss retry: drop the stale pin, re-resolve, rerun once."""
+
+    def _write_log(self, debug_dir: str, text: str) -> None:
+        (Path(debug_dir) / "simemu-command.log").write_text(text)
+
+    def test_lost_transport_detected_from_log(self) -> None:
+        from simemu.session import _android_maestro_lost_transport
+        with tempfile.TemporaryDirectory() as debug_dir:
+            self._write_log(debug_dir, "Device emulator-5554 was requested, but it is not connected\n")
+            self.assertTrue(_android_maestro_lost_transport(debug_dir))
+
+    def test_lost_transport_false_for_generic_failure(self) -> None:
+        from simemu.session import _android_maestro_lost_transport
+        with tempfile.TemporaryDirectory() as debug_dir:
+            self._write_log(debug_dir, "Assertion failed: element not found\n")
+            self.assertFalse(_android_maestro_lost_transport(debug_dir))
+
+    def test_lost_transport_false_without_logs(self) -> None:
+        from simemu.session import _android_maestro_lost_transport
+        with tempfile.TemporaryDirectory() as debug_dir:
+            self.assertFalse(_android_maestro_lost_transport(debug_dir))
+
+    def test_summarize_transport_loss_still_reports_reclaim(self) -> None:
+        from simemu.session import _summarize_maestro_failure
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", pinned_serial="emulator-5554")
+        with tempfile.TemporaryDirectory() as debug_dir:
+            self._write_log(debug_dir, "Device emulator-5554 was requested, but it is not connected\n")
+            error = _summarize_maestro_failure(
+                session_id="s-droid1", platform="android", debug_output=debug_dir
+            )
+        self.assertIsNotNone(error)
+        self.assertIn("lost adb/gRPC transport", error)
+
+    @patch("simemu.session._summarize_maestro_failure", return_value=None)
+    @patch("simemu.session._run_maestro_process")
+    @patch("simemu.session._prepare_maestro_invocation")
+    @patch("simemu.session._stabilize_android_maestro_driver")
+    @patch("simemu.session.android._serial", return_value="emulator-5556")
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session._ensure_maestro_target_foreground")
+    @patch("simemu.session._verify_or_repair_android_maestro_target")
+    @patch("simemu.session._restore_android_location_if_recorded")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session._wait_for_android_maestro_transport", return_value="emulator-5556")
+    def test_retry_with_drop_pinned_serial_resolves_fresh(
+        self,
+        mock_wait_transport,
+        _mock_dismiss,
+        _mock_restore_location,
+        _mock_verify_repair,
+        _mock_foreground,
+        _mock_sleep,
+        mock_serial,
+        _mock_stabilize,
+        mock_prepare,
+        mock_run,
+        _mock_summarize,
+    ) -> None:
+        from simemu.session import _retry_android_maestro_bridge
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", pinned_serial="emulator-5554")
+        mock_prepare.return_value = (["maestro", "test"], {}, "/tmp/retry-debug")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        recovered, retry_debug, retry_error = _retry_android_maestro_bridge(
+            session_id="s-droid1",
+            sim_id="Pixel_7",
+            expected_app=None,
+            android_kwargs={"pinned_serial": "emulator-5554"},
+            flow_files=["flow.yaml"],
+            extra_args=[],
+            drop_pinned_serial=True,
+        )
+
+        self.assertTrue(recovered)
+        self.assertIsNone(retry_error)
+        self.assertEqual(retry_debug, "/tmp/retry-debug")
+        wait_kwargs = mock_wait_transport.call_args.args[1]
+        self.assertNotIn("pinned_serial", wait_kwargs)
+        mock_serial.assert_called_once_with("Pixel_7", pinned=None)
+        self.assertEqual(mock_prepare.call_args.kwargs["device_id"], "emulator-5556")
+
+    @patch("simemu.session._summarize_maestro_failure", return_value=None)
+    @patch("simemu.session._run_maestro_process")
+    @patch("simemu.session._prepare_maestro_invocation")
+    @patch("simemu.session._stabilize_android_maestro_driver")
+    @patch("simemu.session.android._serial", return_value="emulator-5554")
+    @patch("simemu.session.time.sleep")
+    @patch("simemu.session._ensure_maestro_target_foreground")
+    @patch("simemu.session._verify_or_repair_android_maestro_target")
+    @patch("simemu.session._restore_android_location_if_recorded")
+    @patch("simemu.session.android.dismiss_system_dialogs")
+    @patch("simemu.session._wait_for_android_maestro_transport", return_value="emulator-5554")
+    def test_retry_without_drop_keeps_store_pin(
+        self,
+        mock_wait_transport,
+        _mock_dismiss,
+        _mock_restore_location,
+        _mock_verify_repair,
+        _mock_foreground,
+        _mock_sleep,
+        mock_serial,
+        _mock_stabilize,
+        mock_prepare,
+        mock_run,
+        _mock_summarize,
+    ) -> None:
+        from simemu.session import _retry_android_maestro_bridge
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", pinned_serial="emulator-5554")
+        mock_prepare.return_value = (["maestro", "test"], {}, "/tmp/retry-debug")
+        mock_run.return_value = MagicMock(returncode=0)
+
+        recovered, _, _ = _retry_android_maestro_bridge(
+            session_id="s-droid1",
+            sim_id="Pixel_7",
+            expected_app=None,
+            android_kwargs={},
+            flow_files=["flow.yaml"],
+            extra_args=[],
+        )
+
+        self.assertTrue(recovered)
+        wait_kwargs = mock_wait_transport.call_args.args[1]
+        self.assertEqual(wait_kwargs.get("pinned_serial"), "emulator-5554")
+        mock_serial.assert_called_once_with("Pixel_7", pinned="emulator-5554")
+
+    @patch("simemu.session._retry_android_maestro_bridge", return_value=(True, "/tmp/retry-debug", None))
+    @patch("simemu.session._run_maestro_process", return_value=MagicMock(returncode=1))
+    @patch("simemu.session._start_session_keepalive", return_value=MagicMock())
+    @patch("simemu.session._stabilize_android_maestro_driver")
+    @patch("simemu.session._ensure_maestro_target_foreground")
+    @patch("simemu.session._preflight_android_maestro_device")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_dispatch_drops_pin_on_transport_loss(
+        self,
+        _mock_get_serial,
+        mock_preflight,
+        _mock_foreground,
+        _mock_stabilize,
+        _mock_keepalive,
+        _mock_run,
+        mock_retry,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", pinned_serial="emulator-5554")
+        mock_preflight.return_value = ("emulator-5554", {"pinned_serial": "emulator-5554"})
+        with tempfile.TemporaryDirectory() as debug_dir:
+            self._write_log(debug_dir, "Device emulator-5554 was requested, but it is not connected\n")
+            with patch(
+                "simemu.session._prepare_maestro_invocation",
+                return_value=(["maestro", "test"], {}, debug_dir),
+            ):
+                result = do_command("s-droid1", "maestro", ["flow.yaml"])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["recovered"], "android_maestro_bridge_retry")
+        self.assertTrue(mock_retry.call_args.kwargs["drop_pinned_serial"])
+
+    @patch("simemu.session._retry_android_maestro_bridge", return_value=(True, "/tmp/retry-debug", None))
+    @patch("simemu.session._run_maestro_process", return_value=MagicMock(returncode=1))
+    @patch("simemu.session._start_session_keepalive", return_value=MagicMock())
+    @patch("simemu.session._stabilize_android_maestro_driver")
+    @patch("simemu.session._ensure_maestro_target_foreground")
+    @patch("simemu.session._preflight_android_maestro_device")
+    @patch("simemu.session.android.get_android_serial", return_value="emulator-5554")
+    def test_dispatch_keeps_pin_on_driver_boot_error(
+        self,
+        _mock_get_serial,
+        mock_preflight,
+        _mock_foreground,
+        _mock_stabilize,
+        _mock_keepalive,
+        _mock_run,
+        mock_retry,
+    ) -> None:
+        self._seed("s-droid1", platform="android", sim_id="Pixel_7", pinned_serial="emulator-5554")
+        mock_preflight.return_value = ("emulator-5554", {"pinned_serial": "emulator-5554"})
+        with tempfile.TemporaryDirectory() as debug_dir:
+            self._write_log(debug_dir, "Connection refused: localhost/127.0.0.1:7001\n")
+            with patch(
+                "simemu.session._prepare_maestro_invocation",
+                return_value=(["maestro", "test"], {}, debug_dir),
+            ):
+                result = do_command("s-droid1", "maestro", ["flow.yaml"])
+
+        self.assertEqual(result["status"], "passed")
+        self.assertFalse(mock_retry.call_args.kwargs["drop_pinned_serial"])
 
 
 if __name__ == "__main__":

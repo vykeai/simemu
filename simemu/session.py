@@ -363,12 +363,7 @@ def _prepare_maestro_invocation(
     return cmd, _maestro_env(platform), debug_output
 
 
-def _summarize_maestro_failure(
-    *,
-    session_id: str,
-    platform: str,
-    debug_output: str,
-) -> str | None:
+def _newest_maestro_log_text(debug_output: str) -> str | None:
     debug_root = Path(debug_output)
     log_candidates: list[Path] = []
     command_log = debug_root / "simemu-command.log"
@@ -383,8 +378,25 @@ def _summarize_maestro_failure(
     log_path = max(log_candidates, key=lambda path: path.stat().st_mtime)
 
     try:
-        log_text = log_path.read_text(errors="ignore")
+        return log_path.read_text(errors="ignore")
     except OSError:
+        return None
+
+
+def _android_maestro_lost_transport(debug_output: str) -> bool:
+    """True when the newest Maestro log shows an adb/gRPC transport loss."""
+    log_text = _newest_maestro_log_text(debug_output)
+    return bool(log_text) and _MAESTRO_ANDROID_TRANSPORT_LOSS_RE.search(log_text) is not None
+
+
+def _summarize_maestro_failure(
+    *,
+    session_id: str,
+    platform: str,
+    debug_output: str,
+) -> str | None:
+    log_text = _newest_maestro_log_text(debug_output)
+    if log_text is None:
         return None
 
     if platform == "android" and _MAESTRO_ANDROID_DRIVER_BOOT_ERROR_RE.search(log_text):
@@ -663,13 +675,21 @@ def _retry_android_maestro_bridge(
     android_kwargs: dict,
     flow_files: list[str],
     extra_args: list[str],
+    drop_pinned_serial: bool = False,
 ) -> tuple[bool, str, str | None]:
     import subprocess as _sp
 
-    raw_session = _read_sessions_raw().get("sessions", {}).get(session_id, {})
-    pinned_serial = raw_session.get("pinned_serial")
-    if pinned_serial:
-        android_kwargs = {**android_kwargs, "pinned_serial": pinned_serial}
+    if drop_pinned_serial:
+        # Transport loss usually means the emulator rebooted mid-run and adb
+        # reassigned the serial, so the pinned serial is stale and would aim
+        # the retry at a dead transport. Re-resolve the live serial from
+        # scratch instead of trusting the pin.
+        android_kwargs = {k: v for k, v in android_kwargs.items() if k != "pinned_serial"}
+    else:
+        raw_session = _read_sessions_raw().get("sessions", {}).get(session_id, {})
+        pinned_serial = raw_session.get("pinned_serial")
+        if pinned_serial:
+            android_kwargs = {**android_kwargs, "pinned_serial": pinned_serial}
     _wait_for_android_maestro_transport(sim_id, android_kwargs)
     android.dismiss_system_dialogs(sim_id, **android_kwargs)
     _restore_android_location_if_recorded(session_id, sim_id, android_kwargs)
@@ -2296,10 +2316,12 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                 if platform == "android" and error:
                     import sys as _sys
 
+                    transport_loss = _android_maestro_lost_transport(debug_output)
                     print(json.dumps({
                         "diagnostic": "android_maestro_bridge_retry",
                         "session": session_id,
                         "sim_id": sim_id,
+                        "transport_loss": transport_loss,
                     }), file=_sys.stderr, flush=True)
                     try:
                         recovered, retry_debug_output, retry_error = _retry_android_maestro_bridge(
@@ -2309,6 +2331,7 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
                             android_kwargs=android_kwargs,
                             flow_files=flow_files,
                             extra_args=extra_args,
+                            drop_pinned_serial=transport_loss,
                         )
                     except RuntimeError as exc:
                         recovered = False
