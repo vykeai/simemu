@@ -319,5 +319,44 @@ class TestApiKeyAuth(unittest.TestCase):
             srv._API_KEY = old
 
 
+class KillRogueEmulatorsAgeGuardTests(unittest.TestCase):
+    """Young emulators may be mid-boot for an unregistered claim — never kill them."""
+
+    @staticmethod
+    def _ps_line(pid: int, age_seconds: int, avd: str) -> str:
+        return f"{pid:>5} {age_seconds:>6} qemu-system-aarch64 -avd {avd} -no-window\n"
+
+    def _run(self, ps_stdout: str, tracked: dict | None = None) -> tuple[list[int], MagicMock]:
+        import simemu.server as srv
+
+        alloc = MagicMock()
+        alloc.platform = "android"
+        alloc.device_name = "Pixel_7"
+        alloc.sim_id = "Pixel_7"
+        tracked_map = {"s-1": alloc} if tracked else {}
+
+        with patch.object(srv.state, "get_all", return_value=tracked_map), \
+             patch.object(srv.session_module, "get_active_sessions", return_value={}), \
+             patch("subprocess.run", return_value=MagicMock(stdout=ps_stdout)), \
+             patch("os.kill") as mock_kill:
+            killed = srv._kill_rogue_emulators()
+        return killed, mock_kill
+
+    def test_young_untracked_emulator_is_spared(self) -> None:
+        killed, mock_kill = self._run(self._ps_line(111, 120, "Pixel_8"))
+        self.assertEqual(killed, [])
+        mock_kill.assert_not_called()
+
+    def test_old_untracked_emulator_is_killed(self) -> None:
+        killed, mock_kill = self._run(self._ps_line(222, 7200, "Pixel_8"))
+        self.assertEqual(killed, [222])
+        mock_kill.assert_called_once()
+
+    def test_old_tracked_emulator_is_spared(self) -> None:
+        killed, mock_kill = self._run(self._ps_line(333, 7200, "Pixel_7"), tracked=True)
+        self.assertEqual(killed, [])
+        mock_kill.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
