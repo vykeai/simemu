@@ -745,6 +745,33 @@ def set_appearance(udid: str, mode: str) -> None:
     _simctl("ui", udid, "appearance", mode)
 
 
+CONTENT_SIZES = (
+    "extra-small", "small", "medium", "large", "extra-large",
+    "extra-extra-large", "extra-extra-extra-large",
+    "accessibility-medium", "accessibility-large",
+    "accessibility-extra-large", "accessibility-extra-extra-large",
+    "accessibility-extra-extra-extra-large",
+)
+
+
+def set_content_size(udid: str, size: str) -> None:
+    """Set the Dynamic Type content size category.
+
+    `size` is one of CONTENT_SIZES, or 'increment'/'decrement'. The largest
+    accessibility size — what an accessibility audit actually has to be shown
+    at — is 'accessibility-extra-extra-extra-large'.
+    """
+    _ensure_booted(udid)
+    if size not in CONTENT_SIZES and size not in ("increment", "decrement"):
+        raise ValueError(
+            f"unknown content size '{size}'. Use one of: "
+            + ", ".join(CONTENT_SIZES)
+            + ", increment, decrement"
+        )
+    # simctl spells the option with an underscore and the sizes with hyphens.
+    _simctl("ui", udid, "content_size", size)
+
+
 def shake(udid: str) -> None:
     _ensure_booted(udid)
     """Send a shake gesture (triggers React Native dev menu)."""

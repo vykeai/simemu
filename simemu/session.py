@@ -1644,6 +1644,7 @@ _COMMAND_HELP: dict[str, str] = {
     "launch-with-args": "Launch app with custom arguments: <bundle> [arg1 arg2 ...]",
     # Device state
     "appearance":       "Set light or dark mode",
+    "content-size":     "Set Dynamic Type size (e.g. accessibility-extra-extra-extra-large)",
     "rotate":           "Set orientation (portrait, landscape, left, right)",
     "location":         "Set GPS coordinates (lat lng)",
     "status-bar":       "Override status bar (--time, --battery, --wifi, --clear)",
@@ -1825,7 +1826,7 @@ def do_command(session_id: str, command: str, args: list[str]) -> dict | None:
             "Navigate": ["url", "maestro"],
             "Alerts": ["dismiss-alert", "accept-alert", "deny-alert", "auto-dismiss",
                        "allow-dialog", "deny-dialog", "permission-grant"],
-            "Device": ["appearance", "rotate", "location", "status-bar", "biometrics",
+            "Device": ["appearance", "content-size", "rotate", "location", "status-bar", "biometrics",
                        "network", "clipboard-set", "clipboard-get"],
             "Files": ["push", "pull", "add-media", "contacts-import"],
             "System": ["keychain-reset", "icloud-sync", "clone", "pair", "font-size",
@@ -2528,6 +2529,18 @@ def _do_command_dispatch(session_id: str, session, sim_id: str, platform: str,
         else:
             android.set_appearance(sim_id, mode, **android_kwargs)
         return {"status": "set", "appearance": mode}
+
+    elif command == "content-size":
+        if not args:
+            raise RuntimeError(
+                "Usage: simemu do <session> content-size <size>\n"
+                "Sizes: " + ", ".join(ios.CONTENT_SIZES) + ", increment, decrement"
+            )
+        size = args[0]
+        if platform not in ("ios", "watchos", "tvos", "visionos"):
+            raise RuntimeError("content-size is an Apple-platform command")
+        ios.set_content_size(sim_id, size)
+        return {"status": "set", "content_size": size}
 
     elif command == "rotate":
         if not args:
