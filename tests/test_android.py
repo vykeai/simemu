@@ -1274,5 +1274,29 @@ class TestScreenshotFallbacks(unittest.TestCase):
         mock_window_fallback.assert_not_called()
 
 
+class TestBootWipeData(unittest.TestCase):
+    """SIMEMU_ANDROID_WIPE_DATA=1 opts into -wipe-data at emulator launch."""
+
+    def _boot_cmd(self, env_value: str) -> list[str]:
+        proc = MagicMock()
+        proc.poll.return_value = None
+        with patch("simemu.state.check_maintenance"), \
+             patch("simemu.genymotion.is_genymotion_id", return_value=False), \
+             patch("simemu.android.get_android_serial", side_effect=[None, "emulator-5554"]), \
+             patch("simemu.android.subprocess.Popen", return_value=proc) as mock_popen, \
+             patch("simemu.android.subprocess.run", return_value=MagicMock(stdout="1\n")), \
+             patch.dict("os.environ", {"SIMEMU_ANDROID_WIPE_DATA": env_value}):
+            android.boot("Pixel_7", headless=True)
+        return mock_popen.call_args_list[0].args[0]
+
+    def test_wipe_data_appended_when_enabled(self) -> None:
+        cmd = self._boot_cmd("1")
+        self.assertIn("-wipe-data", cmd)
+
+    def test_wipe_data_absent_when_disabled(self) -> None:
+        cmd = self._boot_cmd("0")
+        self.assertNotIn("-wipe-data", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

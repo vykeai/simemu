@@ -65,6 +65,11 @@ def _normalize_launch_args(args: list[str] | None) -> list[str]:
             normalized.append(arg)
             continue
 
+        if arg == "--":
+            # argument separator, not a launch extra — dropping it prevents an
+            # empty --ez key that fails am start and silently monkey-launches
+            # the app with no extras
+            continue
         raw = arg[2:]
         if "=" in raw:
             key, value = raw.split("=", 1)
@@ -1013,6 +1018,10 @@ def boot(avd_name: str, headless: bool = False) -> None:
     # Memory cap to prevent runaway qemu processes
     memory_mb = int(os.environ.get("SIMEMU_ANDROID_MEMORY_MB", "2048"))
     base_cmd = ["emulator", "-avd", avd_name, "-memory", str(memory_mb)]
+    # Some AVD images only inject the host adb key on a first post-wipe boot,
+    # so recurring "unauthorized" devices need an opt-in wipe at boot time.
+    if os.environ.get("SIMEMU_ANDROID_WIPE_DATA") == "1":
+        base_cmd.append("-wipe-data")
     if headless:
         base_cmd += ["-no-window", "-no-audio", "-no-boot-anim", "-gpu", "swiftshader_indirect"]
 

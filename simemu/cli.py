@@ -16,6 +16,8 @@ import socket
 import sys
 import time
 import urllib.error
+
+from . import __version__
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
@@ -2115,7 +2117,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Simulator allocation manager for multi-agent development.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--version", action="version", version="simemu 0.3.0")
+    p.add_argument("--version", action="version", version=f"simemu {__version__}")
     p.add_argument("--no-autostart", action="store_true",
                    help="Do not auto-start the simemu API server for this invocation")
     sub = p.add_subparsers(dest="command", required=True)

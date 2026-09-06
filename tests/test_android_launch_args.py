@@ -21,3 +21,16 @@ class TestLaunchArgNormalization(unittest.TestCase):
             android._normalize_launch_args(["--activity-clear-top", "--user", "0"]),
             ["--activity-clear-top", "--user", "0"],
         )
+
+    def test_drops_bare_double_dash_separator(self) -> None:
+        # A bare -- must not become an empty --ez key: that fails `am start`
+        # and the monkey fallback launches the app with no extras.
+        self.assertEqual(
+            android._normalize_launch_args(
+                ["--debug-route=journey/root", "--", "--theme=dark"]
+            ),
+            [
+                "--es", "debug_route", "journey/root",
+                "--es", "theme", "dark",
+            ],
+        )

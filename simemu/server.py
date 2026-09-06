@@ -122,7 +122,7 @@ def _kill_rogue_emulators() -> list[int]:
     # Find all qemu/emulator processes
     try:
         out = subprocess.run(
-            ["ps", "-Ao", "pid,command"],
+            ["ps", "-Ao", "pid,etimes,command"],
             capture_output=True, text=True
         ).stdout
     except Exception:
@@ -133,16 +133,22 @@ def _kill_rogue_emulators() -> list[int]:
         line = line.strip()
         if not any(x in line for x in ("qemu-system-aarch64", "emulator -avd")):
             continue
-        parts = line.split(None, 1)
-        if len(parts) < 2:
+        parts = line.split(None, 2)
+        if len(parts) < 3:
             continue
         try:
             pid = int(parts[0])
+            age_seconds = int(parts[1])
         except ValueError:
             continue
 
+        # A young emulator may be mid-boot for a claim that has not registered
+        # its session yet — never treat it as rogue.
+        if age_seconds < 600:
+            continue
+
         # Extract AVD name if present (-avd <name>)
-        avd_match = _re.search(r'-avd\s+(\S+)', parts[1])
+        avd_match = _re.search(r'-avd\s+(\S+)', parts[2])
         avd_name = _norm_avd(avd_match.group(1)) if avd_match else None
 
         # If we can identify the AVD and simemu is tracking it, leave it alone
