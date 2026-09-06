@@ -1049,11 +1049,23 @@ def _sim_window_match(device_name: str) -> str:
     that starts with '<device-name> (' so 'iPhone 17' never picks up
     'iPhone 17 Pro'.
 
+    Newer Xcode/macOS builds (observed on mac-studio, Xcode with macOS
+    26.6.2) title the window '<device-name> – iOS <version>' (en dash,
+    'iOS' prefix, no parentheses) instead. Found 2026-09-06 during Demix
+    E2E proof: tap/swipe/type all failed with "Could not get device
+    content bounds" against a real, visible 'iPhone 17 Pro – iOS 26.5'
+    window because this predicate only recognized the parenthesized form.
+    Anchor on that form too, same exact-or-startswith-with-separator shape,
+    so a bare 'iPhone 17' still can't greedy-match 'iPhone 17 Pro'.
+
     The returned string is an AppleScript expression suitable for use as
     `whose <expr>` (it already contains the boolean operators).
     """
     escaped = _escape_applescript(device_name)
-    return f'(name is "{escaped}" or name starts with "{escaped} (")'
+    return (
+        f'(name is "{escaped}" or name starts with "{escaped} (" '
+        f'or name starts with "{escaped} – ")'
+    )
 
 
 def _raise_sim_window(device_name: str, max_retries: int = 2) -> None:
