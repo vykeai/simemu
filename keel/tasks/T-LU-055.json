@@ -1,0 +1,53 @@
+{
+  "id": "T-LU-055",
+  "title": "Fix _sim_window_match for newer Xcode window-title format (en dash, no parens)",
+  "description": "_sim_window_match() only recognized Simulator window titles in the \"<device> (<runtime>)\" form (parens). Newer Xcode/macOS builds (observed 2026-09-06, macOS 26.6.2 on mac-studio, Xcode shipping iOS 26.5 runtimes) title windows \"<device> - iOS <version>\" (en dash, \"iOS\" prefix, no parens) instead.\n\nEvery AppleScript-driven interaction that depends on window lookup (tap, swipe, long-press, type, _get_sim_bounds) failed outright with \"Could not get device content bounds for simulator <udid>. AXGroup error: ... Window error: Can't get window 1 of process Simulator whose name = ... or name starts with ... (-1719)\" against a real, correctly-named, visible Simulator window. show/hide silently no-op'd instead of erroring (AppleScript error swallowed by capture_output + check=False), which made the bug much harder to spot — worth a follow-up to surface that failure instead of swallowing it.\n\nFound and fixed ad hoc while proving Demix end-to-end across two Macs (demix repo, task T-LU-571, see demix-v2/analysis/app-state/e2e.html). Fix: extended the match predicate to accept both \"(<runtime>)\" and \" - iOS <version>\" forms, anchored the same exact-or-startswith-with-separator way so a short device name still cannot greedy-match a longer one that shares its prefix.\n\nShipped as commit 34a8e4c (version bump 0.4.0 -> 0.4.1, tests green 662/662, gate passed) via the release pre-push gate, not through this project's own keel-tracked SDLC — filing this after the fact per house rule (a fix nobody can find is a fix that gets made again).",
+  "product": null,
+  "lane": null,
+  "wave": null,
+  "space": null,
+  "status": "todo",
+  "priority": "medium",
+  "platform": null,
+  "assignee": null,
+  "dependsOn": [],
+  "spec": null,
+  "parentId": null,
+  "dueDate": null,
+  "context": [
+    {
+      "at": "2026-09-06T10:36:29.894Z",
+      "by": "human",
+      "text": "Partial progress: the core fix (predicate now matching both title formats) is shipped in commit 34a8e4c, version 0.4.1, tests green 662/662. Left as todo because two acceptance criteria are not yet done: no regression test added for the new title format, and show/hide still silently swallow the AppleScript error instead of surfacing a real failure when the window cannot be found."
+    }
+  ],
+  "acceptanceCriteria": [
+    "sim_window_match recognizes both the legacy device-plus-parens and the newer device-dash-iOS-version window-title forms",
+    "tap/swipe/long-press/type succeed against a real Simulator window titled in the newer form (regression test added)",
+    "show/hide surface a real failure instead of silently swallowing the AppleScript error when the window cannot be found"
+  ],
+  "statusHistory": [
+    {
+      "status": "todo",
+      "ts": "2026-09-06T10:35:44.385Z"
+    }
+  ],
+  "attachments": [],
+  "stage": null,
+  "runStatus": null,
+  "stageHistory": [],
+  "recurring": null,
+  "createdAt": "2026-09-06T10:35:44.367Z",
+  "updatedAt": "2026-09-06T10:36:29.895Z",
+  "proofRequirements": [
+    "test run showing the new window-title-format case passing; already true in prod for 0.4.1, commit 34a8e4c"
+  ],
+  "proofReferences": [],
+  "proofOverrides": [],
+  "surfaces": [],
+  "parityPair": null,
+  "validationOverrides": null,
+  "executionMode": null,
+  "taskGraph": null,
+  "runtime": null
+}
